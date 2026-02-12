@@ -13,6 +13,7 @@
 //!   default SipHash with significantly faster Fibonacci hashing for
 //!   compiler-typical small string and integer keys.
 
+pub mod encoding;
 pub mod fx_hash;
 pub mod target;
 

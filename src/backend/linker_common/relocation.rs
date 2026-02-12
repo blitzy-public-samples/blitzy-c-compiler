@@ -383,7 +383,7 @@ impl RelocationProcessor {
         for (idx, pending) in self.pending_relocations.iter().enumerate() {
             section_reloc_indices
                 .entry(pending.output_section_index)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(idx);
         }
 
@@ -666,8 +666,10 @@ impl RelocationProcessor {
     /// architecture context when available via [`Target::elf_machine`].
     fn format_symbol_id(&self, pending: &PendingRelocation) -> String {
         let base = format!(
-            "symbol_index_{} (object {})",
-            pending.input_reloc.symbol_index, pending.object_index
+            "symbol_index_{} (object {}, section {})",
+            pending.input_reloc.symbol_index,
+            pending.object_index,
+            pending.input_section_index,
         );
         if let Some(target) = self.target {
             format!("{} [e_machine={}]", base, target.elf_machine())
@@ -1018,6 +1020,7 @@ mod tests {
         let id = proc.format_symbol_id(&pending);
         assert!(id.contains("42"));
         assert!(id.contains("object 3"));
+        assert!(id.contains("section 1"));
         // Target::X86_64.elf_machine() == 62 (EM_X86_64)
         assert!(id.contains("e_machine="));
     }
@@ -1041,6 +1044,7 @@ mod tests {
         let id = proc.format_symbol_id(&pending);
         assert!(id.contains("7"));
         assert!(id.contains("object 1"));
+        assert!(id.contains("section 0"));
         assert!(!id.contains("e_machine"));
     }
 
@@ -1050,8 +1054,6 @@ mod tests {
 
     #[test]
     fn test_build_flat_section_data_empty_section() {
-        use super::super::section_merger::{InputSection, MergedInput};
-
         let section = OutputSection {
             name: ".text".to_string(),
             section_type: 1,

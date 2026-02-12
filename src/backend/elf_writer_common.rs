@@ -697,7 +697,7 @@ impl ElfWriter {
     /// determine relocation sizes, GOT entry widths, and PLT stub layouts.
     #[inline]
     pub fn pointer_size(&self) -> u8 {
-        self.target.pointer_width()
+        self.target.pointer_width() as u8
     }
 
     /// Sets the ELF object file type.
@@ -729,6 +729,11 @@ impl ElfWriter {
     /// The section index that can be used in symbol `section_index` fields,
     /// relocation section `sh_info` fields, etc.
     pub fn add_section(&mut self, section: ElfSection) -> usize {
+        // Pre-register the section name in the section header string table
+        // for deduplication during serialization.
+        if !section.name.is_empty() {
+            self.section_string_table.add_string(&section.name);
+        }
         self.sections.push(section);
         // Section index = position + 1 (accounting for the null section at index 0)
         self.sections.len()
@@ -921,16 +926,11 @@ impl ElfWriter {
         // User sections
         for (i, section) in self.sections.iter().enumerate() {
             let sh_name = shstrtab.get_offset(&section.name).unwrap_or(0);
-            let sh_offset = if section.section_type == SHT_NOBITS {
-                section_offsets[i] as u64
-            } else {
-                section_offsets[i] as u64
-            };
-            let sh_size = if section.section_type == SHT_NOBITS {
-                section.data.len() as u64
-            } else {
-                section.data.len() as u64
-            };
+            // For SHT_NOBITS, sh_offset is still set to the computed offset
+            // (indicating the conceptual position) and sh_size reflects the
+            // virtual allocation size stored in the data vector's length.
+            let sh_offset = section_offsets[i] as u64;
+            let sh_size = section.data.len() as u64;
             self.write_section_header(
                 &mut output,
                 is_64bit,

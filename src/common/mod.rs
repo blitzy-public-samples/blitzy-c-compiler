@@ -13,6 +13,7 @@
 //!   default SipHash with significantly faster Fibonacci hashing for
 //!   compiler-typical small string and integer keys.
 
+pub mod diagnostics;
 pub mod encoding;
 pub mod fx_hash;
 pub mod long_double;
@@ -21,6 +22,10 @@ pub mod string_interner;
 pub mod target;
 pub mod temp_files;
 pub mod types;
+
+// Re-export diagnostic types for ergonomic access via `crate::common::Diagnostic`,
+// `crate::common::DiagnosticEngine`, etc.
+pub use diagnostics::{Diagnostic, DiagnosticEngine, FixSuggestion, Severity, Span};
 
 // Re-export commonly used types for ergonomic access via `crate::common::FxHashMap`
 // instead of requiring the longer `crate::common::fx_hash::FxHashMap` path.

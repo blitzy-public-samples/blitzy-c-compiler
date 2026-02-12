@@ -946,19 +946,11 @@ impl LinkerScript {
 
         // If every section is NOBITS, use a zero file offset
         if min_offset == u64::MAX {
-            min_offset = if min_vaddr < u64::MAX { 0 } else { 0 };
+            min_offset = 0;
         }
 
-        let filesz = if max_file_end > min_offset {
-            max_file_end - min_offset
-        } else {
-            0
-        };
-        let memsz = if max_mem_end > min_vaddr {
-            max_mem_end - min_vaddr
-        } else {
-            0
-        };
+        let filesz = max_file_end.saturating_sub(min_offset);
+        let memsz = max_mem_end.saturating_sub(min_vaddr);
 
         ProgramHeader {
             p_type: PT_LOAD,
@@ -999,11 +991,7 @@ impl LinkerScript {
             }
         }
 
-        let raw_size = if max_end > min_vaddr {
-            max_end - min_vaddr
-        } else {
-            0
-        };
+        let raw_size = max_end.saturating_sub(min_vaddr);
         let aligned_size = align_up(raw_size, page_size);
 
         ProgramHeader {
@@ -1040,11 +1028,7 @@ impl LinkerScript {
             }
         }
 
-        let size = if max_end > min_vaddr {
-            max_end - min_vaddr
-        } else {
-            0
-        };
+        let size = max_end.saturating_sub(min_vaddr);
 
         ProgramHeader {
             p_type: rule.segment_type,

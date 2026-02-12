@@ -521,10 +521,12 @@ impl IrType {
             CType::Short { .. } => IrType::I16,
             CType::Int { .. } => IrType::I32,
             CType::Long { .. } => {
-                // LP64 targets: long is 64-bit; ILP32: 32-bit.
-                match target.data_model() {
-                    DataModel::LP64 => IrType::I64,
-                    DataModel::ILP32 => IrType::I32,
+                // LP64 targets (long_size == 8): long is 64-bit.
+                // ILP32 targets (long_size == 4): long is 32-bit.
+                if target.long_size() == 8 {
+                    IrType::I64
+                } else {
+                    IrType::I32
                 }
             }
             CType::LongLong { .. } => IrType::I64,
@@ -533,11 +535,14 @@ impl IrType {
             CType::Float => IrType::F32,
             CType::Double => IrType::F64,
             CType::LongDouble => {
-                // x86 targets use 80-bit extended precision; ARM/RISC-V map
-                // long double to IEEE double.
-                match *target {
-                    Target::X86_64 | Target::I686 => IrType::F80,
-                    Target::AArch64 | Target::RiscV64 => IrType::F64,
+                // long_double_size() returns:
+                //   16 (x86-64) → F80 (80-bit extended, 16-byte padded storage)
+                //   12 (i686)   → F80 (80-bit extended, 12-byte padded storage)
+                //    8 (AArch64/RISC-V) → F64 (IEEE double)
+                if target.long_double_size() == 8 {
+                    IrType::F64
+                } else {
+                    IrType::F80
                 }
             }
 

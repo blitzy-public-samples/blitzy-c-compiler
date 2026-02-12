@@ -16,6 +16,7 @@
 pub mod encoding;
 pub mod fx_hash;
 pub mod long_double;
+pub mod source_map;
 pub mod target;
 pub mod temp_files;
 
@@ -26,6 +27,10 @@ pub use fx_hash::{FxBuildHasher, FxHashMap, FxHashSet, FxHasher};
 
 // Re-export LongDouble for ergonomic access via `crate::common::LongDouble`
 pub use long_double::LongDouble;
+
+// Re-export source map types for ergonomic access via `crate::common::SourceMap`,
+// `crate::common::FileId`, etc.
+pub use source_map::{FileId, LineDirective, SourceFile, SourceLocation, SourceMap};
 
 // Re-export target architecture types for ergonomic access via `crate::common::Target`
 // instead of requiring `crate::common::target::Target`.

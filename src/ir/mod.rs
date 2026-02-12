@@ -42,8 +42,19 @@
 /// from the frontend to machine register classes in the backend.
 pub mod types;
 
+/// IR instruction definitions — the central [`Instruction`] enum representing
+/// all intermediate representation operations. Also defines [`ValueId`] and
+/// [`BasicBlockId`] handle types, along with [`BinOp`], [`ICmpPredicate`],
+/// and [`FCmpPredicate`] supporting enums.
+pub mod instructions;
+
 // ── Convenience re-exports ──────────────────────────────────────────────────
 // Re-export the most commonly used types so that other modules can write
 // `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.
 
 pub use types::IrType;
+
+// Re-export instruction-layer types for convenient access.
+pub use instructions::{
+    BasicBlockId, BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId,
+};

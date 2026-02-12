@@ -33,3 +33,12 @@ pub mod token;
 /// O(1) lookahead, byte-offset and line/column position tracking, source
 /// slice extraction, and character classification that respects PUA opacity.
 pub mod scanner;
+
+/// String and character literal lexing.
+///
+/// Handles parsing of C11 string and character literals with full escape
+/// sequence support (simple, octal, hex, universal character names),
+/// wide/unicode encoding prefixes (L, u8, u, U), adjacent string literal
+/// concatenation per C11 §6.4.5, and PUA transparency for non-UTF-8
+/// source byte round-tripping (Section 0.7.9).
+pub mod string_literal;

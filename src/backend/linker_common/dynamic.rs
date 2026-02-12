@@ -25,7 +25,7 @@ use crate::backend::elf_writer_common::{ProgramHeader, PF_R, PF_W, PT_DYNAMIC, P
 use crate::backend::linker_common::symbol_resolver::{
     SymbolBinding, SymbolEntry, SymbolType, SymbolVisibility,
 };
-use crate::common::fx_hash::FxHashMap;
+use crate::common::fx_hash::{fx_hash_map, FxHashMap};
 use crate::common::target::Target;
 
 // ===========================================================================
@@ -392,7 +392,7 @@ impl DynamicSymbolTable {
         };
         let mut string_table = Vec::with_capacity(256);
         string_table.push(0u8); // NUL byte at offset 0
-        let mut string_offsets = FxHashMap::new();
+        let mut string_offsets = fx_hash_map();
         string_offsets.insert(String::new(), 0);
 
         Self {
@@ -440,9 +440,9 @@ impl DynamicSymbolTable {
             name: sym.name.clone(),
             value: sym.value,
             size: sym.size,
-            binding: sym.binding.clone(),
-            sym_type: sym.sym_type.clone(),
-            visibility: sym.visibility.clone(),
+            binding: sym.binding,
+            sym_type: sym.sym_type,
+            visibility: sym.visibility,
             section_index,
         });
     }
@@ -506,6 +506,12 @@ impl DynamicSymbolTable {
     /// Delegates to the standalone [`build_gnu_hash`] function.
     pub fn build_gnu_hash(&self) -> Vec<u8> {
         build_gnu_hash(&self.symbols, &self.string_table)
+    }
+}
+
+impl Default for DynamicSymbolTable {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -745,7 +751,7 @@ impl DynamicSectionBuilder {
         // Build a temporary .dynstr-like table for DT_NEEDED/DT_SONAME
         // string offsets. In practice the linker has already built .dynstr;
         // here we compute offsets into that table.
-        let mut dynstr_map: FxHashMap<String, u64> = FxHashMap::new();
+        let mut dynstr_map: FxHashMap<String, u64> = fx_hash_map();
         let mut offset: u64 = 1; // offset 0 = empty string (NUL byte)
         for lib in &self.needed_libs {
             if !dynstr_map.contains_key(lib) {
@@ -835,6 +841,12 @@ impl DynamicSectionBuilder {
             }
         }
         out
+    }
+}
+
+impl Default for DynamicSectionBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1339,14 +1351,14 @@ impl PltBuilder {
             // ld t3(x28), lo12(GOT+16)(t2)
             let offset2 = got2_addr as i64 - plt0_addr as i64;
             let (_hi20_2, lo12_2) = riscv_split_imm(offset2 as i32);
-            out.extend_from_slice(&riscv_ld(28, 7, lo12_2 as i32).to_le_bytes());
+            out.extend_from_slice(&riscv_ld(28, 7, lo12_2).to_le_bytes());
 
             // addi t1, t1, -(plt_header_size + 12)
             let neg_off = -((plt0_bytes as i32) + 12);
             out.extend_from_slice(&riscv_addi(6, 6, neg_off).to_le_bytes());
 
             // addi t0(x5), t2, lo12(GOT+8) — pointer to link_map
-            out.extend_from_slice(&riscv_addi(5, 7, lo12_1 as i32).to_le_bytes());
+            out.extend_from_slice(&riscv_addi(5, 7, lo12_1).to_le_bytes());
 
             // srli t1, t1, 4 (log2(16) = 4, plt entry size)
             out.extend_from_slice(&riscv_srli(6, 6, 4).to_le_bytes());
@@ -1370,7 +1382,7 @@ impl PltBuilder {
             out.extend_from_slice(&riscv_auipc(28, hi20 as u32).to_le_bytes());
 
             // ld t3, lo12(t3)
-            out.extend_from_slice(&riscv_ld(28, 28, lo12 as i32).to_le_bytes());
+            out.extend_from_slice(&riscv_ld(28, 28, lo12).to_le_bytes());
 
             // jalr t1(x6), t3, 0  (t1 = return address for lazy resolver)
             out.extend_from_slice(&riscv_jalr(6, 28, 0).to_le_bytes());
@@ -1421,7 +1433,7 @@ fn encode_add_imm(rd: u32, rn: u32, imm12: u32) -> u32 {
 /// Splits a 32-bit signed immediate into (hi20, lo12) for RISC-V
 /// AUIPC+load/addi pairs, with lo12 sign-extension compensation.
 fn riscv_split_imm(imm: i32) -> (i32, i32) {
-    let lo = ((imm as i32) << 20) >> 20; // sign-extend low 12 bits
+    let lo = (imm << 20) >> 20; // sign-extend low 12 bits
     let mut hi = imm.wrapping_sub(lo);
     // hi must be aligned to 0x1000 (the low 12 bits are zero after the sub).
     // Shift right by 12 to get the hi20 value for AUIPC.
@@ -1441,18 +1453,24 @@ fn riscv_ld(rd: u32, rs1: u32, offset: i32) -> u32 {
 }
 
 /// Encodes RISC-V ADDI: `addi rd, rs1, imm12`.
+/// funct3 = 0b000 (bits [14:12]), opcode = 0x13 (OP-IMM).
+#[allow(clippy::identity_op)]
 fn riscv_addi(rd: u32, rs1: u32, imm12: i32) -> u32 {
     let imm = (imm12 as u32) & 0xFFF;
     (imm << 20) | ((rs1 & 0x1F) << 15) | (0x0 << 12) | ((rd & 0x1F) << 7) | 0x13
 }
 
 /// Encodes RISC-V JALR: `jalr rd, rs1, offset`.
+/// funct3 = 0b000 (bits [14:12]), opcode = 0x67 (JALR).
+#[allow(clippy::identity_op)]
 fn riscv_jalr(rd: u32, rs1: u32, offset: i32) -> u32 {
     let imm = (offset as u32) & 0xFFF;
     (imm << 20) | ((rs1 & 0x1F) << 15) | (0x0 << 12) | ((rd & 0x1F) << 7) | 0x67
 }
 
 /// Encodes RISC-V SUB: `sub rd, rs1, rs2`.
+/// funct7 = 0x20 (bits [31:25]), funct3 = 0b000 (bits [14:12]), opcode = 0x33 (OP).
+#[allow(clippy::identity_op)]
 fn riscv_sub(rd: u32, rs1: u32, rs2: u32) -> u32 {
     (0x20 << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | (0x0 << 12) | ((rd & 0x1F) << 7) | 0x33
 }
@@ -1616,8 +1634,8 @@ mod tests {
     #[test]
     fn test_gnu_hash_known_values() {
         // GNU hash is: h=5381; for each byte c: h = h*33 + c
-        // For "a" (0x61): h = 5381*33 + 97 = 177670 + 97 = 177767 = 0x2B607
-        assert_eq!(gnu_hash("a"), 177767);
+        // For "a" (0x61): h = 5381*33 + 97 = 177573 + 97 = 177670 = 0x2B606
+        assert_eq!(gnu_hash("a"), 177670);
     }
 
     #[test]
@@ -1633,6 +1651,7 @@ mod tests {
             sym_type: SymbolType::Func,
             visibility: SymbolVisibility::Default,
             section_index: 1,
+            defining_object: 0,
             is_defined: true,
         };
         table.add_symbol(&local_sym);
@@ -1647,6 +1666,7 @@ mod tests {
             sym_type: SymbolType::Func,
             visibility: SymbolVisibility::Default,
             section_index: 1,
+            defining_object: 0,
             is_defined: true,
         };
         table.add_symbol(&global_sym);
@@ -1661,6 +1681,7 @@ mod tests {
             sym_type: SymbolType::Func,
             visibility: SymbolVisibility::Hidden,
             section_index: 1,
+            defining_object: 0,
             is_defined: true,
         };
         table.add_symbol(&hidden_sym);
@@ -1675,6 +1696,7 @@ mod tests {
             sym_type: SymbolType::Object,
             visibility: SymbolVisibility::Protected,
             section_index: 2,
+            defining_object: 0,
             is_defined: true,
         };
         table.add_symbol(&weak_sym);
@@ -1692,6 +1714,7 @@ mod tests {
             sym_type: SymbolType::Func,
             visibility: SymbolVisibility::Default,
             section_index: 1,
+            defining_object: 0,
             is_defined: true,
         };
         table.add_symbol(&sym);

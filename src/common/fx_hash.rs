@@ -560,9 +560,13 @@ mod tests {
         let hasher = FxHasher::default();
         assert_eq!(hasher.finish(), 0, "Default hasher should start at 0");
 
-        let builder = FxBuildHasher::default();
+        let builder = FxBuildHasher;
         let h = builder.build_hasher();
-        assert_eq!(h.finish(), 0, "Default builder should produce zero-state hasher");
+        assert_eq!(
+            h.finish(),
+            0,
+            "Default builder should produce zero-state hasher"
+        );
     }
 
     #[test]
@@ -571,7 +575,11 @@ mod tests {
         let h2 = FxHasher::with_seed(42);
         let h3 = FxHasher::with_seed(99);
 
-        assert_eq!(h1.finish(), h2.finish(), "Same seed must yield same initial state");
+        assert_eq!(
+            h1.finish(),
+            h2.finish(),
+            "Same seed must yield same initial state"
+        );
         assert_ne!(
             h1.finish(),
             h3.finish(),
@@ -594,7 +602,11 @@ mod tests {
 
         let mut bulk2 = FxHasher::new();
         bulk2.write(data);
-        assert_eq!(bulk_result, bulk2.finish(), "Bulk write must be deterministic");
+        assert_eq!(
+            bulk_result,
+            bulk2.finish(),
+            "Bulk write must be deterministic"
+        );
     }
 
     #[test]
@@ -622,6 +634,10 @@ mod tests {
         let mut h1 = FxHasher::new();
         h1.write_u64(12345);
         let h2 = h1.clone();
-        assert_eq!(h1.finish(), h2.finish(), "Cloned hasher must have identical state");
+        assert_eq!(
+            h1.finish(),
+            h2.finish(),
+            "Cloned hasher must have identical state"
+        );
     }
 }

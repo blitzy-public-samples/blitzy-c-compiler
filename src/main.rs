@@ -365,10 +365,7 @@ fn print_usage() {
         "  -fcf-protection    Enable CET/IBT protection (x86-64)"
     );
     let _ = writeln!(stderr, "  -I<dir>            Add include search path");
-    let _ = writeln!(
-        stderr,
-        "  -D<macro>[=value]  Define preprocessor macro"
-    );
+    let _ = writeln!(stderr, "  -D<macro>[=value]  Define preprocessor macro");
     let _ = writeln!(stderr, "  -L<dir>            Add library search path");
     let _ = writeln!(stderr, "  -l<lib>            Link against library");
     let _ = writeln!(stderr, "  --help, -h         Display this help");
@@ -377,10 +374,7 @@ fn print_usage() {
 
 /// Derive the default output file path from the first input file and output mode.
 fn derive_output_path(input: &std::path::Path, mode: OutputMode) -> PathBuf {
-    let stem = input
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("a");
+    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("a");
     match mode {
         OutputMode::Executable => PathBuf::from("a.out"),
         OutputMode::Object => PathBuf::from(format!("{}.o", stem)),
@@ -420,9 +414,10 @@ pub fn run_compilation(ctx: &CompilationContext) -> i32 {
         }
 
         // Determine the output path for this input file.
-        let output = ctx.output_path.clone().unwrap_or_else(|| {
-            derive_output_path(input_path, ctx.output_mode)
-        });
+        let output = ctx
+            .output_path
+            .clone()
+            .unwrap_or_else(|| derive_output_path(input_path, ctx.output_mode));
 
         // Read the source file as raw bytes for PUA encoding.
         let source_bytes = match std::fs::read(input_path) {
@@ -451,11 +446,7 @@ pub fn run_compilation(ctx: &CompilationContext) -> i32 {
         // Validate that the source file is not empty.
         if source.is_empty() {
             let mut stderr = std::io::stderr().lock();
-            let _ = writeln!(
-                stderr,
-                "bcc: warning: '{}' is empty",
-                input_path.display()
-            );
+            let _ = writeln!(stderr, "bcc: warning: '{}' is empty", input_path.display());
         }
 
         // The compilation pipeline stages will be invoked here as the

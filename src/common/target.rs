@@ -380,6 +380,7 @@ impl Target {
     /// | RISC-V 64  | `riscv64`, `riscv64gc` |
     ///
     /// Returns `None` if the string does not match any known target.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Target> {
         match s.to_ascii_lowercase().as_str() {
             "x86-64" | "x86_64" | "amd64" => Some(Target::X86_64),
@@ -530,9 +531,18 @@ mod tests {
 
     #[test]
     fn pointer_align_matches_width() {
-        for t in &[Target::X86_64, Target::I686, Target::AArch64, Target::RiscV64] {
-            assert_eq!(t.pointer_align(), t.pointer_width(),
-                       "pointer_align != pointer_width for {}", t);
+        for t in &[
+            Target::X86_64,
+            Target::I686,
+            Target::AArch64,
+            Target::RiscV64,
+        ] {
+            assert_eq!(
+                t.pointer_align(),
+                t.pointer_width(),
+                "pointer_align != pointer_width for {}",
+                t
+            );
         }
     }
 
@@ -554,9 +564,18 @@ mod tests {
 
     #[test]
     fn all_targets_little_endian() {
-        for t in &[Target::X86_64, Target::I686, Target::AArch64, Target::RiscV64] {
-            assert_eq!(t.endianness(), Endianness::Little,
-                       "{} should be little-endian", t);
+        for t in &[
+            Target::X86_64,
+            Target::I686,
+            Target::AArch64,
+            Target::RiscV64,
+        ] {
+            assert_eq!(
+                t.endianness(),
+                Endianness::Little,
+                "{} should be little-endian",
+                t
+            );
         }
     }
 
@@ -564,9 +583,18 @@ mod tests {
 
     #[test]
     fn stack_alignment_16_for_all() {
-        for t in &[Target::X86_64, Target::I686, Target::AArch64, Target::RiscV64] {
-            assert_eq!(t.stack_alignment(), 16,
-                       "{} stack alignment should be 16", t);
+        for t in &[
+            Target::X86_64,
+            Target::I686,
+            Target::AArch64,
+            Target::RiscV64,
+        ] {
+            assert_eq!(
+                t.stack_alignment(),
+                16,
+                "{} stack alignment should be 16",
+                t
+            );
         }
     }
 
@@ -612,29 +640,56 @@ mod tests {
 
     #[test]
     fn predefined_macros_common_stdc() {
-        for t in &[Target::X86_64, Target::I686, Target::AArch64, Target::RiscV64] {
+        for t in &[
+            Target::X86_64,
+            Target::I686,
+            Target::AArch64,
+            Target::RiscV64,
+        ] {
             let macros = t.predefined_macros();
-            assert!(macros.contains(&("__STDC__", "1")),
-                    "{}: missing __STDC__", t);
-            assert!(macros.contains(&("__STDC_VERSION__", "201112L")),
-                    "{}: missing __STDC_VERSION__", t);
-            assert!(macros.contains(&("__STDC_HOSTED__", "1")),
-                    "{}: missing __STDC_HOSTED__", t);
+            assert!(
+                macros.contains(&("__STDC__", "1")),
+                "{}: missing __STDC__",
+                t
+            );
+            assert!(
+                macros.contains(&("__STDC_VERSION__", "201112L")),
+                "{}: missing __STDC_VERSION__",
+                t
+            );
+            assert!(
+                macros.contains(&("__STDC_HOSTED__", "1")),
+                "{}: missing __STDC_HOSTED__",
+                t
+            );
         }
     }
 
     #[test]
     fn predefined_macros_common_platform() {
-        for t in &[Target::X86_64, Target::I686, Target::AArch64, Target::RiscV64] {
+        for t in &[
+            Target::X86_64,
+            Target::I686,
+            Target::AArch64,
+            Target::RiscV64,
+        ] {
             let macros = t.predefined_macros();
-            assert!(macros.contains(&("__linux__", "1")),
-                    "{}: missing __linux__", t);
-            assert!(macros.contains(&("__gnu_linux__", "1")),
-                    "{}: missing __gnu_linux__", t);
-            assert!(macros.contains(&("__ELF__", "1")),
-                    "{}: missing __ELF__", t);
-            assert!(macros.contains(&("__unix__", "1")),
-                    "{}: missing __unix__", t);
+            assert!(
+                macros.contains(&("__linux__", "1")),
+                "{}: missing __linux__",
+                t
+            );
+            assert!(
+                macros.contains(&("__gnu_linux__", "1")),
+                "{}: missing __gnu_linux__",
+                t
+            );
+            assert!(macros.contains(&("__ELF__", "1")), "{}: missing __ELF__", t);
+            assert!(
+                macros.contains(&("__unix__", "1")),
+                "{}: missing __unix__",
+                t
+            );
         }
     }
 
@@ -683,10 +738,14 @@ mod tests {
 
     #[test]
     fn predefined_macros_compiler_id() {
-        for t in &[Target::X86_64, Target::I686, Target::AArch64, Target::RiscV64] {
+        for t in &[
+            Target::X86_64,
+            Target::I686,
+            Target::AArch64,
+            Target::RiscV64,
+        ] {
             let macros = t.predefined_macros();
-            assert!(macros.contains(&("__BCC__", "1")),
-                    "{}: missing __BCC__", t);
+            assert!(macros.contains(&("__BCC__", "1")), "{}: missing __BCC__", t);
         }
     }
 
@@ -785,17 +844,30 @@ mod tests {
         // EF_RISCV_RVC (0x0001) | EF_RISCV_FLOAT_ABI_DOUBLE (0x0004)
         assert_eq!(flags, 0x0005);
         assert_ne!(flags & EF_RISCV_RVC, 0, "RVC flag not set");
-        assert_ne!(flags & EF_RISCV_FLOAT_ABI_DOUBLE, 0, "FLOAT_ABI_DOUBLE flag not set");
+        assert_ne!(
+            flags & EF_RISCV_FLOAT_ABI_DOUBLE,
+            0,
+            "FLOAT_ABI_DOUBLE flag not set"
+        );
     }
 
     // -- dynamic_linker_path ---------------------------------------------
 
     #[test]
     fn dynamic_linker_paths() {
-        assert_eq!(Target::X86_64.dynamic_linker_path(), "/lib64/ld-linux-x86-64.so.2");
+        assert_eq!(
+            Target::X86_64.dynamic_linker_path(),
+            "/lib64/ld-linux-x86-64.so.2"
+        );
         assert_eq!(Target::I686.dynamic_linker_path(), "/lib/ld-linux.so.2");
-        assert_eq!(Target::AArch64.dynamic_linker_path(), "/lib/ld-linux-aarch64.so.1");
-        assert_eq!(Target::RiscV64.dynamic_linker_path(), "/lib/ld-linux-riscv64-lp64d.so.1");
+        assert_eq!(
+            Target::AArch64.dynamic_linker_path(),
+            "/lib/ld-linux-aarch64.so.1"
+        );
+        assert_eq!(
+            Target::RiscV64.dynamic_linker_path(),
+            "/lib/ld-linux-riscv64-lp64d.so.1"
+        );
     }
 
     // -- Display implementations -----------------------------------------
@@ -825,8 +897,8 @@ mod tests {
     #[test]
     fn target_copy_clone_eq_hash() {
         let a = Target::X86_64;
-        let b = a;          // Copy
-        let c = a.clone();  // Clone
+        let b = a; // Copy
+        let c = b; // Copy again — validates both Copy and Clone (Clone is auto-derived for Copy types)
         assert_eq!(a, b);
         assert_eq!(a, c);
         assert_ne!(Target::X86_64, Target::I686);
@@ -862,11 +934,20 @@ mod tests {
 
     #[test]
     fn display_roundtrip() {
-        for t in &[Target::X86_64, Target::I686, Target::AArch64, Target::RiscV64] {
+        for t in &[
+            Target::X86_64,
+            Target::I686,
+            Target::AArch64,
+            Target::RiscV64,
+        ] {
             let s = format!("{}", t);
             let parsed = Target::from_str(&s);
-            assert_eq!(parsed, Some(*t),
-                       "from_str(Display({})) should round-trip", t);
+            assert_eq!(
+                parsed,
+                Some(*t),
+                "from_str(Display({})) should round-trip",
+                t
+            );
         }
     }
 }

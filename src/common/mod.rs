@@ -14,8 +14,13 @@
 //!   compiler-typical small string and integer keys.
 
 pub mod fx_hash;
+pub mod target;
 
 // Re-export commonly used types for ergonomic access via `crate::common::FxHashMap`
 // instead of requiring the longer `crate::common::fx_hash::FxHashMap` path.
-pub use fx_hash::{FxBuildHasher, FxHashMap, FxHashSet, FxHasher};
 pub use fx_hash::{fx_hash_map, fx_hash_map_with_capacity, fx_hash_set};
+pub use fx_hash::{FxBuildHasher, FxHashMap, FxHashSet, FxHasher};
+
+// Re-export target architecture types for ergonomic access via `crate::common::Target`
+// instead of requiring `crate::common::target::Target`.
+pub use target::{DataModel, Endianness, Target};

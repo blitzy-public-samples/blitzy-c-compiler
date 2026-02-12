@@ -38,7 +38,7 @@ use crate::common::fx_hash::FxHashMap;
 use crate::common::target::Target;
 use crate::backend::elf_writer_common::{
     SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE,
-    SHT_DYNAMIC, SHT_DYNSYM, SHT_NOBITS, SHT_NULL, SHT_PROGBITS,
+    SHT_DYNAMIC, SHT_DYNSYM, SHT_NOBITS, SHT_NULL,
     SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
 };
 
@@ -258,7 +258,7 @@ pub struct SectionMerger {
 ///
 /// This function does not panic. If `alignment` is 0, it returns 0 padding.
 #[inline]
-fn compute_padding(current_offset: u64, alignment: u64) -> u64 {
+pub fn compute_padding(current_offset: u64, alignment: u64) -> u64 {
     if alignment <= 1 {
         return 0;
     }
@@ -556,14 +556,18 @@ impl SectionMerger {
 
         // Add each section from the winning group. Clone is required because
         // we receive the sections by reference but add_input_section takes
-        // ownership. The group_id on each cloned section ensures proper
-        // tracking.
+        // ownership. We clear the group_id on the cloned sections so they
+        // pass through add_input_section() without being filtered by the
+        // COMDAT check — the group_id was just registered above, which would
+        // otherwise cause add_input_section() to discard these sections.
+        // Future duplicate sections arriving via add_input_section() with the
+        // same group_id will still be correctly filtered out because the
+        // comdat_groups map now contains this group_id.
         for section in sections {
             let mut owned = section.clone();
-            // Ensure the group_id is set so that any future duplicate sections
-            // from other objects that arrive via add_input_section() are
-            // correctly filtered out.
-            owned.group_id = Some(group_id);
+            // Clear the group_id so add_input_section does not treat this
+            // section as a duplicate COMDAT member.
+            owned.group_id = None;
             self.add_input_section(owned);
         }
     }
@@ -790,6 +794,7 @@ impl Default for SectionMerger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::elf_writer_common::SHT_PROGBITS;
 
     /// Helper to create a minimal input section for testing.
     fn make_input_section(

@@ -32,6 +32,12 @@ pub mod dwarf;
 /// target architectures. Supports ET_REL, ET_EXEC, and ET_DYN output.
 pub mod elf_writer_common;
 
+/// Shared linker infrastructure — symbol resolution, section merging,
+/// relocation processing, dynamic linking section generation, and default
+/// linker script handling. Used by all four architecture-specific linkers
+/// as common linking infrastructure for the standalone backend mode.
+pub mod linker_common;
+
 /// x86-64 (AMD64) backend — `ArchCodegen` trait implementation, instruction
 /// selection, built-in assembler, and built-in linker for the x86-64 target.
 pub mod x86_64;

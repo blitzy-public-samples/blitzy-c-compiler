@@ -21,6 +21,7 @@ pub mod source_map;
 pub mod string_interner;
 pub mod target;
 pub mod temp_files;
+pub mod type_builder;
 pub mod types;
 
 // Re-export diagnostic types for ergonomic access via `crate::common::Diagnostic`,
@@ -56,4 +57,11 @@ pub use temp_files::{TempDir, TempFile};
 pub use types::{
     align_of, integer_promote, size_of, usual_arithmetic_conversion, CType, FieldDef, MachineType,
     QualifiedType, TypeQualifiers,
+};
+
+// Re-export type builder types for ergonomic access via `crate::common::TypeBuilder`,
+// `crate::common::StructLayout`, etc.
+pub use type_builder::{
+    compute_struct_layout, compute_union_layout, composite_type, ctype_to_machine_type,
+    types_compatible, FieldLayout, StructLayout, TypeBuilder, UnionLayout,
 };

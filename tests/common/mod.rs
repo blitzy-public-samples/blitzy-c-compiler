@@ -43,6 +43,50 @@ pub struct BccOutput {
     pub stderr: String,
 }
 
+impl BccOutput {
+    /// Returns `true` if the subprocess exited successfully (exit code 0).
+    ///
+    /// Convenience wrapper around `ExitStatus::success()`.
+    pub fn success(&self) -> bool {
+        self.status.success()
+    }
+
+    /// Returns the exit code of the process, or `None` if terminated by signal.
+    ///
+    /// Convenience wrapper around `ExitStatus::code()`.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.status.code()
+    }
+
+    /// Assert that the compilation or execution succeeded (exit code 0).\
+    ///
+    /// # Panics
+    ///
+    /// Panics with a diagnostic message including stderr if the process did
+    /// not exit successfully.
+    pub fn assert_success(&self) {
+        assert!(
+            self.status.success(),
+            "Process exited with code {:?} (expected success).\nstderr:\n{}",
+            self.status.code(),
+            self.stderr
+        );
+    }
+
+    /// Assert that the compilation or execution failed (non-zero exit code).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process exited with code 0.
+    pub fn assert_failure(&self) {
+        assert!(
+            !self.status.success(),
+            "Process exited successfully (expected failure).\nstdout:\n{}",
+            self.stdout
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BCC binary location
 // ---------------------------------------------------------------------------
@@ -865,6 +909,41 @@ where
     let result = f();
     let elapsed = start.elapsed();
     (result, elapsed)
+}
+
+/// Default timeout duration for operations that should complete quickly
+/// (e.g., recursive macro expansion must terminate within 5 seconds per
+/// Section 0.1.2).
+///
+/// # Returns
+///
+/// A `Duration` of 5 seconds.
+pub fn default_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+/// Assert that a timed operation completed within the given number of seconds.
+///
+/// Uses `Duration::as_secs()` for comparison against wall-clock ceilings.
+///
+/// # Arguments
+///
+/// * `elapsed`     — Measured duration of the operation.
+/// * `max_seconds` — Maximum allowed wall-clock seconds.
+/// * `label`       — Human-readable label for error messages.
+///
+/// # Panics
+///
+/// Panics if `elapsed` exceeds `max_seconds`.
+pub fn assert_within_timeout(elapsed: Duration, max_seconds: u64, label: &str) {
+    let limit = Duration::from_secs(max_seconds);
+    assert!(
+        elapsed.as_secs() <= limit.as_secs(),
+        "{} took {} seconds, exceeding the {}-second ceiling.",
+        label,
+        elapsed.as_secs(),
+        max_seconds
+    );
 }
 
 // ---------------------------------------------------------------------------

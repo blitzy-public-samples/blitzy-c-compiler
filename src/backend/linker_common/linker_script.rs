@@ -410,8 +410,8 @@ impl LinkerScript {
                 // ---- PT_PHDR: program header table self-reference ----
                 PT_PHDR => {
                     // The linker must patch p_offset/p_filesz/p_memsz/p_vaddr
-                    // after the full layout is finalised. We emit a placeholder
-                    // entry with zeroed extents.
+                    // after the full layout is finalised. We emit an initial
+                    // entry with zeroed extents that the linker fills in.
                     headers.push(ProgramHeader {
                         p_type: PT_PHDR,
                         p_flags: rule.flags,

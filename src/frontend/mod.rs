@@ -27,6 +27,10 @@
 //! types, diagnostics, source map, string interning, target definitions)
 //! but does NOT depend on [`crate::ir`] or [`crate::backend`].
 
+/// Preprocessor — Phases 1–2: trigraph replacement, line splicing, directive
+/// processing, and macro expansion with paint-marker recursion protection.
+pub mod preprocessor;
+
 /// Lexer — Phase 3 tokenization.
 ///
 /// Converts PUA-encoded source text into a token stream. Contains the

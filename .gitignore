@@ -1,0 +1,30 @@
+# =============================================================================
+# BCC — Blitzy's C Compiler .gitignore
+# =============================================================================
+
+# Rust / Cargo build artifacts
+/target/
+
+# Object files and intermediate compilation artifacts
+*.o
+*.a
+*.so
+*.elf
+*.d
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.iml
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# BCC-specific temporary build artifacts
+*.bcc.tmp

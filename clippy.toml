@@ -1,0 +1,6 @@
+# =============================================================================
+# BCC — Blitzy's C Compiler clippy configuration
+# =============================================================================
+# Increased complexity thresholds for compiler internals which naturally
+# involve complex pattern matching and type hierarchies
+type-complexity-threshold = 500

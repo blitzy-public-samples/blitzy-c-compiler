@@ -1,7 +1,34 @@
 # =============================================================================
 # BCC — Blitzy's C Compiler rustfmt configuration
 # =============================================================================
+#
+# Enforces consistent code formatting across the entire BCC compiler codebase.
+# Used by `cargo fmt` locally and `cargo fmt --check` in CI pipeline.
+#
+# Only stable rustfmt options are used to ensure compatibility with the
+# stable Rust 1.93.0 toolchain specified in the project requirements.
+# =============================================================================
+
+# Match the Rust edition specified in Cargo.toml
 edition = "2021"
+
+# Reasonable line length for readability in a compiler codebase where
+# match arms, nested expressions, and type signatures can grow long
 max_width = 100
+
+# Standard Rust indentation — 4 spaces per indent level
 tab_spaces = 4
+
+# Use spaces for indentation, not hard tabs
+hard_tabs = false
+
+# Apply the default set of width heuristics for formatting decisions
+# (function arguments, array literals, chain expressions, etc.)
+use_small_heuristics = "Default"
+
+# Use shorthand field initialization when possible: Point { x, y } instead
+# of Point { x: x, y: y }
 use_field_init_shorthand = true
+
+# Use Unix-style line endings for consistency across the Linux-only project
+newline_style = "Unix"

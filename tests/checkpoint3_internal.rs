@@ -148,8 +148,8 @@ fn project_root() -> PathBuf {
 /// # Arguments
 ///
 /// * `extra_args` — Additional CLI arguments appended after `cargo test --release`.
-///                  For example, `["--lib"]` to restrict to library unit tests,
-///                  or `["--lib", "common::"]` to filter by module.
+///   For example, `["--lib"]` to restrict to library unit tests,
+///   or `["--lib", "common::"]` to filter by module.
 ///
 /// # Panics
 ///
@@ -306,7 +306,7 @@ fn parse_test_results(output: &str) -> TestResults {
 ///
 /// * `results`    — Parsed test results to validate.
 /// * `label`      — Human-readable label for diagnostic messages (e.g.,
-///                  "Full test suite" or "common module tests").
+///   "Full test suite" or "common module tests").
 /// * `bcc_output` — The raw subprocess output for inclusion in failure messages.
 fn assert_all_tests_pass(
     results: &TestResults,

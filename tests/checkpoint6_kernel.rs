@@ -745,7 +745,7 @@ fn build_initramfs(work_dir: &Path) -> PathBuf {
         cpio_path.display()
     );
     let cpio_out = Command::new("sh")
-        .args(&["-c", &cpio_cmd])
+        .args(["-c", &cpio_cmd])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -783,8 +783,8 @@ fn qemu_boot_kernel(
 ) -> (String, bool) {
     let start = Instant::now();
 
-    let mut child = Command::new("qemu-system-riscv64")
-        .args(&["-machine", "virt", "-nographic", "-m", "512M", "-bios", "none"])
+    let child = Command::new("qemu-system-riscv64")
+        .args(["-machine", "virt", "-nographic", "-m", "512M", "-bios", "none"])
         .arg("-kernel")
         .arg(vmlinux.as_os_str())
         .arg("-initrd")
@@ -890,9 +890,11 @@ fn find_or_build_vmlinux(kernel_src: &Path, work_dir: &Path) -> PathBuf {
     prepare_kernel_build(kernel_src, &build_dir);
     let wrapper = create_bcc_wrapper(work_dir);
 
-    let nproc = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    // Determine available parallelism via /proc/cpuinfo (MSRV-compatible).
+    let nproc = fs::read_to_string("/proc/cpuinfo")
+        .map(|s| s.matches("processor\t:").count())
+        .unwrap_or(0)
+        .max(1);
 
     let build_out = Command::new("make")
         .current_dir(kernel_src)
@@ -1025,9 +1027,12 @@ fn test_full_kernel_build() {
     let wrapper = create_bcc_wrapper(test_dir.path());
 
     // Determine parallelism level.
-    let nproc = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    // Determine available parallelism for the kernel build.
+    // Read from /proc/cpuinfo (Linux) as a MSRV-compatible approach.
+    let nproc = fs::read_to_string("/proc/cpuinfo")
+        .map(|s| s.matches("processor\t:").count())
+        .unwrap_or(0)
+        .max(1);
 
     // Time the full build for the 5× GCC ceiling check.
     let (build_result, build_duration) = common::timed_execution(|| {

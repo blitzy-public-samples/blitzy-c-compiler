@@ -543,7 +543,7 @@ pub fn objdump_full(path: &str) -> String {
 ///
 /// * `path`     — Path to the ELF file.
 /// * `expected` — Expected machine string (e.g., `"Advanced Micro Devices X86-64"`,
-///                `"Intel 80386"`, `"AArch64"`, `"RISC-V"`).
+///   `"Intel 80386"`, `"AArch64"`, `"RISC-V"`).
 ///
 /// # Panics
 ///
@@ -961,7 +961,7 @@ pub fn assert_within_timeout(elapsed: Duration, max_seconds: u64, label: &str) {
 /// # Arguments
 ///
 /// * `relative` — Relative path within the fixtures directory
-///                (e.g., `"hello.c"`, `"shared_lib/foo.c"`, `"security/retpoline.c"`).
+///   (e.g., `"hello.c"`, `"shared_lib/foo.c"`, `"security/retpoline.c"`).
 ///
 /// # Panics
 ///

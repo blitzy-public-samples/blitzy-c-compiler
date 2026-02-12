@@ -184,6 +184,11 @@ pub struct FileEntry {
 /// `DW_LNE_end_sequence` terminates a sequence.
 ///
 /// All register names and semantics match DWARF v4 Section 6.2.2.
+///
+/// Some registers (`isa`, `end_sequence`, `prologue_end`, `epilogue_begin`,
+/// `discriminator`) are maintained per the DWARF spec but may not be explicitly
+/// read in all code paths; they exist to track state machine semantics.
+#[allow(dead_code)]
 struct LineState {
     /// Current program counter address (absolute byte address).
     address: u64,

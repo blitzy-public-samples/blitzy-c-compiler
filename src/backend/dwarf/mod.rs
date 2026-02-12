@@ -10,6 +10,10 @@
 //! - [`abbrev`]: `.debug_abbrev` — abbreviation table construction defining the
 //!   schemas (tag, children flag, attribute specifications) used by DIEs in
 //!   `.debug_info`.
+//! - [`line`]: `.debug_line` — line number program builder that maps machine
+//!   code addresses to source file/line locations for source-level debugging.
+//! - [`debug_str`]: `.debug_str` — shared string table for debug information
+//!   names referenced by `.debug_info` DIEs.
 //!
 //! # DWARF v4 Scope
 //!
@@ -22,6 +26,11 @@
 /// `.debug_abbrev` section generator — abbreviation table builder that defines
 /// the structural schemas for Debug Information Entries (DIEs).
 pub mod abbrev;
+
+/// `.debug_line` section generator — line number program builder that maps
+/// machine code addresses to source file locations, enabling source-level
+/// debugging in GDB and other DWARF-aware debuggers.
+pub mod line;
 
 /// `.debug_str` section generator — string table construction for debug
 /// information names, providing `DW_FORM_strp` offset management so that

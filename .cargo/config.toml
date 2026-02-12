@@ -1,0 +1,7 @@
+[env]
+# 64 MiB worker thread stack as required by project specifications
+RUST_MIN_STACK = "67108864"
+
+[build]
+# Default target is x86-64 Linux
+# target = "x86_64-unknown-linux-gnu"

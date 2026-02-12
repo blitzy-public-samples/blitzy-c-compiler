@@ -1,0 +1,21 @@
+[package]
+name = "bcc"
+version = "0.1.0"
+edition = "2021"
+description = "Blitzy's C Compiler - a self-contained C11 compilation toolchain"
+
+[[bin]]
+name = "bcc"
+path = "src/main.rs"
+
+[lib]
+name = "bcc"
+path = "src/lib.rs"
+
+[dependencies]
+# Zero dependencies — mandated by project requirements
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -157,12 +157,19 @@ impl LongDouble {
     }
 
     /// Returns `true` if this value is subnormal (denormalized).
-    fn is_subnormal(&self) -> bool {
+    ///
+    /// A subnormal (denormalized) number has a zero exponent field but
+    /// a non-zero significand, representing values very close to zero that
+    /// sacrifice precision for extended range.
+    pub fn is_subnormal(&self) -> bool {
         self.exponent == 0 && self.significand != 0
     }
 
     /// Returns `true` if this value is finite (not infinity, not NaN).
-    fn is_finite(&self) -> bool {
+    ///
+    /// Finite values include normal numbers, subnormal numbers, and zero.
+    /// Returns `false` for infinities and NaN values.
+    pub fn is_finite(&self) -> bool {
         self.exponent < MAX_EXPONENT
     }
 }
@@ -323,10 +330,8 @@ fn add_magnitudes(sign: bool, a: &LongDouble, b: &LongDouble) -> LongDouble {
     // Widen significands to u128 with WIDE_SHIFT (63) guard bits below.
     // Each widened value occupies bits [126:63] of the u128 at most.
     let a_wide: u128 = (larger.significand as u128) << WIDE_SHIFT;
-    let (b_wide, shift_sticky) = shift_right_sticky_u128(
-        (smaller.significand as u128) << WIDE_SHIFT,
-        d,
-    );
+    let (b_wide, shift_sticky) =
+        shift_right_sticky_u128((smaller.significand as u128) << WIDE_SHIFT, d);
     // Set sticky bit in LSB if any bits were lost during alignment
     let b_wide = b_wide | (shift_sticky as u128);
 
@@ -369,10 +374,8 @@ fn sub_magnitudes(sign: bool, larger: &LongDouble, smaller: &LongDouble) -> Long
     let d = (exp_l - exp_s) as u32;
 
     let a_wide: u128 = (larger.significand as u128) << WIDE_SHIFT;
-    let (b_wide, shift_sticky) = shift_right_sticky_u128(
-        (smaller.significand as u128) << WIDE_SHIFT,
-        d,
-    );
+    let (b_wide, shift_sticky) =
+        shift_right_sticky_u128((smaller.significand as u128) << WIDE_SHIFT, d);
     // For subtraction, sticky bits from alignment mean b_wide is slightly smaller
     // than the exact shifted value. We add the sticky to b_wide so the subtraction
     // is correctly rounded (the borrow is accounted for).
@@ -721,10 +724,7 @@ impl LongDouble {
 
     /// Absolute value: clear the sign bit.
     pub fn abs(a: &LongDouble) -> LongDouble {
-        LongDouble {
-            sign: false,
-            ..*a
-        }
+        LongDouble { sign: false, ..*a }
     }
 }
 
@@ -831,8 +831,8 @@ impl LongDouble {
             let lz = f64_frac.leading_zeros() - 12; // leading zeros among the 52-bit fraction
             let normalized_frac = f64_frac << (lz + 1); // shift to make MSB implicit
             let sig = normalized_frac << 11; // widen from 52 to 63 bits (bit 63 is integer bit)
-            // Adjusted true exponent: −1022 − lz
-            // Biased 80-bit exponent: (−1022 − lz) + 16383 = 15361 − lz
+                                             // Adjusted true exponent: −1022 − lz
+                                             // Biased 80-bit exponent: (−1022 − lz) + 16383 = 15361 − lz
             let biased = 15361i32 - lz as i32;
             if biased <= 0 {
                 // Extremely small subnormal: becomes subnormal in 80-bit too
@@ -853,9 +853,9 @@ impl LongDouble {
         // Normal f64
         // f64 true exponent: f64_exp − 1023
         // 80-bit biased exponent: (f64_exp − 1023) + 16383 = f64_exp + 15360
-        let biased_exp = f64_exp as u16 + 15360;
+        let biased_exp = f64_exp + 15360;
         // f64 significand: 1.fraction → 53 bits. 80-bit: explicit integer bit + shift
-        let sig = (INTEGER_BIT | (f64_frac << 11)) as u64;
+        let sig = INTEGER_BIT | (f64_frac << 11);
 
         LongDouble {
             sign,
@@ -977,9 +977,7 @@ impl LongDouble {
             };
         }
 
-        let bits = ((self.sign as u64) << 63)
-            | ((f64_biased_exp as u64) << 52)
-            | frac;
+        let bits = ((self.sign as u64) << 63) | ((f64_biased_exp as u64) << 52) | frac;
         f64::from_bits(bits)
     }
 
@@ -1204,7 +1202,7 @@ impl<'a> Div for &'a LongDouble {
     }
 }
 
-impl<'a> Neg for &'a LongDouble {
+impl Neg for &LongDouble {
     type Output = LongDouble;
 
     fn neg(self) -> LongDouble {
@@ -1248,12 +1246,9 @@ impl fmt::Display for LongDouble {
         // Approximate decimal display via f64 conversion.
         // For exact display, a full decimal conversion algorithm would be needed,
         // but for compiler diagnostics this approximation is sufficient.
+        // The sign is already encoded in the f64 value returned by to_f64().
         let approx = self.to_f64();
-        if self.sign {
-            write!(f, "{}", approx)
-        } else {
-            write!(f, "{}", approx)
-        }
+        write!(f, "{}", approx)
     }
 }
 
@@ -1435,10 +1430,7 @@ mod tests {
         for &val in &values {
             let bytes = val.to_bytes();
             let restored = LongDouble::from_bytes(bytes);
-            assert_eq!(
-                val.sign, restored.sign,
-                "sign mismatch in bytes roundtrip"
-            );
+            assert_eq!(val.sign, restored.sign, "sign mismatch in bytes roundtrip");
             assert_eq!(
                 val.exponent, restored.exponent,
                 "exponent mismatch in bytes roundtrip"

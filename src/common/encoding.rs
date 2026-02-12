@@ -391,10 +391,10 @@ fn validate_utf8_sequence(bytes: &[u8], expected_len: usize) -> Option<u32> {
     // Each sequence length has a minimum code point value that justifies that length.
     // If the decoded value is below the minimum, it could have been encoded in fewer bytes.
     let min_code_point = match expected_len {
-        1 => 0x0000,   // ASCII: any value 0x00–0x7F is valid
-        2 => 0x0080,   // 2-byte: must encode U+0080 or higher
-        3 => 0x0800,   // 3-byte: must encode U+0800 or higher
-        4 => 0x10000,  // 4-byte: must encode U+10000 or higher
+        1 => 0x0000,  // ASCII: any value 0x00–0x7F is valid
+        2 => 0x0080,  // 2-byte: must encode U+0080 or higher
+        3 => 0x0800,  // 3-byte: must encode U+0800 or higher
+        4 => 0x10000, // 4-byte: must encode U+10000 or higher
         _ => return None,
     };
     if code_point < min_code_point {
@@ -1009,10 +1009,7 @@ mod tests {
 
     #[test]
     fn test_validate_utf8_rejects_beyond_max() {
-        assert_eq!(
-            validate_utf8_sequence(&[0xF4, 0x90, 0x80, 0x80], 4),
-            None
-        ); // U+110000
+        assert_eq!(validate_utf8_sequence(&[0xF4, 0x90, 0x80, 0x80], 4), None); // U+110000
     }
 
     #[test]
@@ -1034,8 +1031,8 @@ mod tests {
 
         // Original content with various non-UTF-8 bytes interspersed with ASCII
         let original: Vec<u8> = vec![
-            b'H', b'e', b'l', b'l', b'o', 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0,
-            0xFE, 0xFF, b'\n',
+            b'H', b'e', b'l', b'l', b'o', 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0, 0xF0, 0xFE,
+            0xFF, b'\n',
         ];
 
         // Write the raw bytes directly
@@ -1046,7 +1043,10 @@ mod tests {
 
         // Decode and verify byte-exact match
         let decoded = decode_pua_string(&encoded);
-        assert_eq!(decoded, original, "File round-trip with binary content failed");
+        assert_eq!(
+            decoded, original,
+            "File round-trip with binary content failed"
+        );
 
         // Also test write_decoded_file
         let out_path = dir.join("bcc_test_encoding_binary_roundtrip_out.bin");
@@ -1082,10 +1082,7 @@ mod tests {
 
     #[test]
     fn test_file_write_nonexistent_dir() {
-        let result = write_decoded_file(
-            Path::new("/nonexistent/directory/output.c"),
-            "content",
-        );
+        let result = write_decoded_file(Path::new("/nonexistent/directory/output.c"), "content");
         assert!(result.is_err());
     }
 
@@ -1121,7 +1118,10 @@ mod tests {
 
         let encoded = encode_bytes_to_pua_string(&source_bytes);
         let decoded = decode_pua_string(&encoded);
-        assert_eq!(decoded, source_bytes, "Kernel binary string literal round-trip failed");
+        assert_eq!(
+            decoded, source_bytes,
+            "Kernel binary string literal round-trip failed"
+        );
 
         // Verify the 0x80 and 0xFF bytes are at the expected positions
         let prefix = b"char data[] = \"";

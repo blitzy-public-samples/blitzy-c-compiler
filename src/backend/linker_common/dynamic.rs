@@ -172,19 +172,18 @@ pub struct DynamicSymbolTable {
 impl DynamicSymbolTable {
     /// Creates a new dynamic symbol table with the mandatory null entry.
     pub fn new() -> Self {
-        let mut strtab = Vec::new();
-        strtab.push(0u8); // Leading NUL byte
+        // Leading NUL byte for the string table
+        let strtab = vec![0u8];
 
-        let mut syms = Vec::new();
         // First entry is always the null symbol
-        syms.push(DynamicSymbolEntry {
+        let syms = vec![DynamicSymbolEntry {
             name: String::new(),
             value: 0,
             size: 0,
             info: 0,
             other: 0,
             shndx: 0,
-        });
+        }];
 
         Self {
             symbols: syms,

@@ -20,6 +20,13 @@
 //! exclude them from identifier and whitespace categories to preserve
 //! byte-exact round-tripping fidelity.
 
+/// Token type definitions — the most foundational type in the entire frontend.
+///
+/// Defines [`TokenKind`], [`Token`], [`Span`] (re-exported from diagnostics),
+/// and auxiliary enums for literal suffixes and prefixes. Every subsequent
+/// frontend module (preprocessor, parser, sema) imports from this module.
+pub mod token;
+
 /// Character-level scanner for PUA-aware UTF-8 source reading.
 ///
 /// Provides the foundational character-reading layer: peek/advance with

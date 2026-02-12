@@ -207,7 +207,7 @@ impl SourceMap {
             n => n - 1,
         };
 
-        let line_start = offsets[line_index] as u32;
+        let line_start = offsets[line_index];
         // Column is 1-indexed: byte_offset at the start of a line is column 1
         let column = byte_offset - line_start + 1;
         // Line is 1-indexed for display

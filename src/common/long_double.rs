@@ -1298,7 +1298,7 @@ mod tests {
 
     #[test]
     fn test_classification_normal() {
-        let val = LongDouble::from_f64(3.14);
+        let val = LongDouble::from_f64(3.125);
         assert!(!val.is_nan());
         assert!(!val.is_infinity());
         assert!(!val.is_zero());
@@ -1395,7 +1395,7 @@ mod tests {
             -1.0,
             0.5,
             -0.5,
-            3.14159265358979,
+            std::f64::consts::PI,
             1e100,
             1e-100,
             f64::MIN_POSITIVE,
@@ -1424,7 +1424,7 @@ mod tests {
             LongDouble::INFINITY,
             LongDouble::NEG_INFINITY,
             LongDouble::NAN,
-            LongDouble::from_f64(3.14),
+            LongDouble::from_f64(3.125),
             LongDouble::from_i64(-42),
         ];
         for &val in &values {
@@ -1663,6 +1663,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::op_ref)]
     fn test_ref_operators() {
         let a = LongDouble::from_i64(5);
         let b = LongDouble::from_i64(3);

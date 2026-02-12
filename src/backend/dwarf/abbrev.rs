@@ -293,6 +293,12 @@ fn uleb128_size(mut value: u64) -> usize {
 // DebugAbbrevBuilder Implementation
 // ===========================================================================
 
+impl Default for DebugAbbrevBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DebugAbbrevBuilder {
     /// Create a new, empty abbreviation table builder.
     ///
@@ -327,12 +333,7 @@ impl DebugAbbrevBuilder {
     /// # Returns
     ///
     /// The unique abbreviation code assigned to this entry.
-    pub fn add_entry(
-        &mut self,
-        tag: u16,
-        has_children: bool,
-        attributes: Vec<(u16, u16)>,
-    ) -> u32 {
+    pub fn add_entry(&mut self, tag: u16, has_children: bool, attributes: Vec<(u16, u16)>) -> u32 {
         let code = self.next_code;
         self.entries.push(AbbrevEntry {
             code,
@@ -499,10 +500,7 @@ impl DebugAbbrevBuilder {
         self.add_entry(
             DW_TAG_POINTER_TYPE,
             false, // no children
-            vec![
-                (DW_AT_BYTE_SIZE, DW_FORM_DATA1),
-                (DW_AT_TYPE, DW_FORM_REF4),
-            ],
+            vec![(DW_AT_BYTE_SIZE, DW_FORM_DATA1), (DW_AT_TYPE, DW_FORM_REF4)],
         )
     }
 
@@ -709,11 +707,7 @@ mod tests {
     #[test]
     fn test_get_entry_by_code() {
         let mut builder = DebugAbbrevBuilder::new();
-        builder.add_entry(
-            DW_TAG_COMPILE_UNIT,
-            true,
-            vec![(DW_AT_NAME, DW_FORM_STRP)],
-        );
+        builder.add_entry(DW_TAG_COMPILE_UNIT, true, vec![(DW_AT_NAME, DW_FORM_STRP)]);
         builder.add_entry(DW_TAG_VARIABLE, false, vec![]);
 
         let entry1 = builder.get_entry(1).unwrap();
@@ -763,12 +757,7 @@ mod tests {
         assert_eq!(entry.tag, DW_TAG_SUBPROGRAM);
         assert!(entry.has_children);
         // Should contain DW_AT_TYPE
-        assert!(
-            entry
-                .attributes
-                .iter()
-                .any(|&(at, _)| at == DW_AT_TYPE)
-        );
+        assert!(entry.attributes.iter().any(|&(at, _)| at == DW_AT_TYPE));
         assert_eq!(entry.attributes.len(), 7);
     }
 
@@ -781,12 +770,7 @@ mod tests {
         assert_eq!(entry.tag, DW_TAG_SUBPROGRAM);
         assert!(entry.has_children);
         // Should NOT contain DW_AT_TYPE
-        assert!(
-            !entry
-                .attributes
-                .iter()
-                .any(|&(at, _)| at == DW_AT_TYPE)
-        );
+        assert!(!entry.attributes.iter().any(|&(at, _)| at == DW_AT_TYPE));
         assert_eq!(entry.attributes.len(), 6);
     }
 
@@ -964,8 +948,8 @@ mod tests {
     fn test_finish_format_single_entry() {
         let mut builder = DebugAbbrevBuilder::new();
         builder.add_entry(
-            DW_TAG_BASE_TYPE,       // tag = 0x24
-            false,                  // no children
+            DW_TAG_BASE_TYPE,                 // tag = 0x24
+            false,                            // no children
             vec![(DW_AT_NAME, DW_FORM_STRP)], // one attribute pair
         );
 
@@ -1039,7 +1023,6 @@ mod tests {
 
     #[test]
     fn test_finish_with_multi_byte_uleb128_tag() {
-        let mut builder = DebugAbbrevBuilder::new();
         // Use a custom tag value > 127 to test multi-byte ULEB128 encoding of tags.
         // DW_TAG_volatile_type = 0x35 fits in one byte, so use a hypothetical large tag.
         // Actually, let's test with a real scenario: after 127+ entries, the code

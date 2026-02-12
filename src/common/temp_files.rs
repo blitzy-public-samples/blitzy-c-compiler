@@ -77,7 +77,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn unique_name(prefix: &str, suffix: &str) -> String {
     let pid = process::id();
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{}{}_{}{}",  prefix, pid, counter, suffix)
+    format!("{}{}_{}{}", prefix, pid, counter, suffix)
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +401,10 @@ mod tests {
         let data = b"hello, BCC!";
         tmp.write_all(data).expect("write_all failed");
         let read_back = tmp.read_all().expect("read_all failed");
-        assert_eq!(read_back, data, "read_all must return exactly what was written");
+        assert_eq!(
+            read_back, data,
+            "read_all must return exactly what was written"
+        );
     }
 
     #[test]
@@ -450,7 +453,10 @@ mod tests {
         }
         // Both the directory and its contents should be gone.
         assert!(!dir_path.exists(), "temp dir should be removed after drop");
-        assert!(!file_path.exists(), "files inside temp dir should be removed after drop");
+        assert!(
+            !file_path.exists(),
+            "files inside temp dir should be removed after drop"
+        );
     }
 
     #[test]

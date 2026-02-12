@@ -33,3 +33,7 @@
 /// other module in the compiler. Provides fast hashing, encoding, type system,
 /// diagnostics, source map, string interning, and target architecture definitions.
 pub mod common;
+
+/// Backend module — code generation, assemblers, linkers, and DWARF debug
+/// information generation for all four target architectures.
+pub mod backend;

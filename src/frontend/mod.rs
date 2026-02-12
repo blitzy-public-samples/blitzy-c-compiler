@@ -38,6 +38,14 @@ pub mod preprocessor;
 /// literal parsing, and string literal parsing.
 pub mod lexer;
 
+/// Parser — Phase 4: recursive-descent C11 parser with comprehensive GCC
+/// extension support.
+///
+/// Converts a token stream into an Abstract Syntax Tree (AST). Contains the
+/// AST node definitions, declaration/expression/statement/type parsing,
+/// GCC extension handling, `__attribute__` parsing, and inline assembly parsing.
+pub mod parser;
+
 /// Semantic Analyzer — Phase 5 semantic analysis.
 ///
 /// Type checking, scope management, symbol table construction, constant

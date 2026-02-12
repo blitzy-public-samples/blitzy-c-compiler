@@ -23,4 +23,5 @@
 /// Provides [`SymbolTable`], [`SymbolEntry`], [`SymbolId`], [`Linkage`],
 /// [`StorageClass`], and [`SymbolAttributes`] types for tracking all
 /// declared identifiers within a translation unit.
+pub mod scope;
 pub mod symbol_table;

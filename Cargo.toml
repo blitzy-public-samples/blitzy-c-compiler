@@ -1,19 +1,86 @@
+# =============================================================================
+# BCC — Blitzy's C Compiler
+# =============================================================================
+# A complete, self-contained, zero-external-dependency C11 compilation toolchain
+# implemented in Rust (2021 Edition). Cross-compiles C source code into native
+# Linux ELF executables and shared objects for x86-64, i686, AArch64, and
+# RISC-V 64 target architectures.
+#
+# This manifest enforces the zero-dependency mandate: the [dependencies],
+# [dev-dependencies], and [build-dependencies] sections are intentionally empty.
+# All functionality — hashing, encoding, ELF writing, DWARF emission,
+# assemblers, linkers, and software math — is implemented internally using
+# only the Rust standard library.
+# =============================================================================
+
 [package]
 name = "bcc"
 version = "0.1.0"
 edition = "2021"
-description = "Blitzy's C Compiler - a self-contained C11 compilation toolchain"
+description = "Blitzy's C Compiler - a complete, self-contained C11 compilation toolchain"
+rust-version = "1.56"
+
+# =============================================================================
+# Binary target — the 'bcc' compiler executable
+# =============================================================================
+# Produces the CLI driver binary that accepts GCC-compatible flags:
+#   ./bcc [flags] <input.c> [-o output]
+#   --target={x86-64|i686|aarch64|riscv64}
+#   -c / -S / -E / -g / -O0 / -fPIC / -shared / -mretpoline / -fcf-protection
+#   -I<dir> / -D<macro> / -L<dir> / -l<lib>
+# =============================================================================
 
 [[bin]]
 name = "bcc"
 path = "src/main.rs"
 
+# =============================================================================
+# Library target — exposes the compiler pipeline as a reusable library crate
+# =============================================================================
+# Allows integration tests and potential future tooling to use BCC's internals
+# via `use bcc::*` patterns.
+# =============================================================================
+
 [lib]
 name = "bcc"
 path = "src/lib.rs"
 
+# =============================================================================
+# Dependencies — ZERO EXTERNAL CRATES ALLOWED
+# =============================================================================
+# This is a non-negotiable architectural constraint (Section 0.7.1).
+# Every capability is hand-implemented in Rust using only the standard library:
+#
+#   Instead of `fxhash`/`ahash`    → src/common/fx_hash.rs
+#   Instead of `encoding_rs`       → src/common/encoding.rs
+#   Instead of `num`/`rug`         → src/common/long_double.rs
+#   Instead of `tempfile`          → src/common/temp_files.rs
+#   Instead of `object`/`elf`      → src/backend/elf_writer_common.rs
+#   Instead of `gimli`             → src/backend/dwarf/
+#   Instead of `clap`/`structopt`  → src/main.rs (hand-rolled CLI parser)
+#   Instead of `codespan-reporting`→ src/common/diagnostics.rs
+# =============================================================================
+
 [dependencies]
 # Zero dependencies — mandated by project requirements
+
+[dev-dependencies]
+# Zero dev-dependencies — mandated by project requirements
+
+[build-dependencies]
+# Zero build-dependencies — mandated by project requirements
+
+# =============================================================================
+# Release profile — optimized for maximum compiler binary performance
+# =============================================================================
+# These settings ensure the BCC binary itself runs as fast as possible,
+# which is critical for meeting the 5x GCC wall-clock ceiling on Linux
+# kernel builds (Section 0.7.8).
+#
+#   opt-level = 3    — Full optimization of the compiler binary
+#   lto = "thin"     — Thin link-time optimization for cross-module inlining
+#   codegen-units = 1— Single codegen unit for maximum optimization opportunity
+# =============================================================================
 
 [profile.release]
 opt-level = 3

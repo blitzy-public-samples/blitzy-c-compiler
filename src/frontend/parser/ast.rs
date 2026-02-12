@@ -75,7 +75,7 @@ use crate::common::string_interner::Symbol;
 /// # Default
 ///
 /// All qualifiers are `false` by default, representing an unqualified type.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct TypeQualifiers {
     /// `const` qualifier — object may not be modified after initialization.
     pub is_const: bool,
@@ -85,17 +85,6 @@ pub struct TypeQualifiers {
     pub is_restrict: bool,
     /// `_Atomic` qualifier — atomic access semantics (C11 §6.7.2.4).
     pub is_atomic: bool,
-}
-
-impl Default for TypeQualifiers {
-    fn default() -> Self {
-        TypeQualifiers {
-            is_const: false,
-            is_volatile: false,
-            is_restrict: false,
-            is_atomic: false,
-        }
-    }
 }
 
 impl TypeQualifiers {
@@ -136,21 +125,12 @@ impl TypeQualifiers {
 /// declarations/definitions. `inline` hints the compiler to inline the
 /// function body. `_Noreturn` indicates the function never returns to
 /// its caller (e.g., `exit()`, `abort()`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FunctionSpecifiers {
     /// `inline` or `__inline__` — hint for inlining.
     pub is_inline: bool,
     /// `_Noreturn` or `__attribute__((noreturn))` — function never returns.
     pub is_noreturn: bool,
-}
-
-impl Default for FunctionSpecifiers {
-    fn default() -> Self {
-        FunctionSpecifiers {
-            is_inline: false,
-            is_noreturn: false,
-        }
-    }
 }
 
 // ===========================================================================

@@ -184,6 +184,12 @@ pub struct IncludeHandler {
     included_files: FxHashSet<PathBuf>,
 }
 
+impl Default for IncludeHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IncludeHandler {
     // -------------------------------------------------------------------
     // Construction & configuration

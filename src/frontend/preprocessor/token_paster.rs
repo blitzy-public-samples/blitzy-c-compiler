@@ -495,11 +495,11 @@ fn try_lex_decimal_or_octal(text: &str) -> Option<TokenKind> {
         return None;
     }
     // Octal: starts with '0' and all digits are 0-7
-    if digits.starts_with('0') && digits.len() > 1 {
-        if digits.bytes().all(|b| b >= b'0' && b <= b'7') {
-            let value = u128::from_str_radix(digits, 8).ok()?;
-            return Some(TokenKind::IntegerLiteral { value, suffix });
-        }
+    if digits.starts_with('0') && digits.len() > 1
+        && digits.bytes().all(|b| (b'0'..=b'7').contains(&b))
+    {
+        let value = u128::from_str_radix(digits, 8).ok()?;
+        return Some(TokenKind::IntegerLiteral { value, suffix });
     }
     // Decimal
     if digits.bytes().all(|b| b.is_ascii_digit()) {

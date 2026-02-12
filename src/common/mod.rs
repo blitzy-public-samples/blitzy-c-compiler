@@ -20,6 +20,7 @@ pub mod source_map;
 pub mod string_interner;
 pub mod target;
 pub mod temp_files;
+pub mod types;
 
 // Re-export commonly used types for ergonomic access via `crate::common::FxHashMap`
 // instead of requiring the longer `crate::common::fx_hash::FxHashMap` path.
@@ -44,3 +45,10 @@ pub use target::{DataModel, Endianness, Target};
 // Re-export temporary file types for ergonomic access via `crate::common::TempFile`
 // and `crate::common::TempDir` instead of requiring the longer paths.
 pub use temp_files::{TempDir, TempFile};
+
+// Re-export type system types for ergonomic access via `crate::common::CType`,
+// `crate::common::MachineType`, etc.
+pub use types::{
+    align_of, integer_promote, size_of, usual_arithmetic_conversion, CType, FieldDef,
+    MachineType, QualifiedType, TypeQualifiers,
+};

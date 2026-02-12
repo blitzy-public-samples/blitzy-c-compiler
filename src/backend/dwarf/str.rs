@@ -41,7 +41,7 @@
 //! # Usage Example
 //!
 //! ```rust
-//! use bcc::backend::dwarf::str::DebugStrTable;
+//! use bcc::backend::dwarf::debug_str::DebugStrTable;
 //!
 //! let mut table = DebugStrTable::new();
 //!
@@ -120,6 +120,7 @@ impl DebugStrTable {
     /// # Examples
     ///
     /// ```rust
+    /// # use bcc::backend::dwarf::debug_str::DebugStrTable;
     /// let table = DebugStrTable::new();
     /// assert_eq!(table.section_size(), 1);   // Just the initial null byte.
     /// assert!(table.is_empty());             // No "real" strings yet.
@@ -170,6 +171,7 @@ impl DebugStrTable {
     /// # Examples
     ///
     /// ```rust
+    /// # use bcc::backend::dwarf::debug_str::DebugStrTable;
     /// let mut table = DebugStrTable::new();
     /// let off1 = table.add_string("main");
     /// let off2 = table.add_string("main"); // Deduplication — same offset.
@@ -186,8 +188,10 @@ impl DebugStrTable {
 
         // Assert that we haven't exceeded the DW_FORM_strp 4-byte offset limit.
         // The cast above is safe as long as data.len() fits in u32.
+        // The condition: total_after_append = data.len() + s.len() + 1 (null byte)
+        // must not exceed u32::MAX. Equivalent: data.len() + s.len() < u32::MAX.
         assert!(
-            (self.data.len() as u64) + (s.len() as u64) + 1 <= u32::MAX as u64,
+            (self.data.len() as u64) + (s.len() as u64) < u32::MAX as u64,
             "DWARF .debug_str section exceeds u32::MAX ({} bytes); \
              DW_FORM_strp offsets cannot represent positions beyond 4 GiB",
             self.data.len() + s.len() + 1,
@@ -216,6 +220,7 @@ impl DebugStrTable {
     /// # Examples
     ///
     /// ```rust
+    /// # use bcc::backend::dwarf::debug_str::DebugStrTable;
     /// let mut table = DebugStrTable::new();
     /// assert_eq!(table.get_offset("main"), None);
     /// table.add_string("main");
@@ -237,6 +242,7 @@ impl DebugStrTable {
     /// # Examples
     ///
     /// ```rust
+    /// # use bcc::backend::dwarf::debug_str::DebugStrTable;
     /// let mut table = DebugStrTable::new();
     /// assert!(table.contains(""));       // Empty string is always present.
     /// assert!(!table.contains("main"));
@@ -261,6 +267,7 @@ impl DebugStrTable {
     /// # Examples
     ///
     /// ```rust
+    /// # use bcc::backend::dwarf::debug_str::DebugStrTable;
     /// let mut table = DebugStrTable::new();
     /// table.add_string("abc");
     /// // data = [0x00, b'a', b'b', b'c', 0x00]
@@ -279,6 +286,7 @@ impl DebugStrTable {
     /// # Examples
     ///
     /// ```rust
+    /// # use bcc::backend::dwarf::debug_str::DebugStrTable;
     /// let mut table = DebugStrTable::new();
     /// assert_eq!(table.section_size(), 1); // Initial null byte only.
     /// table.add_string("hi");
@@ -305,6 +313,7 @@ impl DebugStrTable {
     /// # Examples
     ///
     /// ```rust
+    /// # use bcc::backend::dwarf::debug_str::DebugStrTable;
     /// let mut table = DebugStrTable::new();
     /// assert!(table.is_empty());
     /// table.add_string("main");

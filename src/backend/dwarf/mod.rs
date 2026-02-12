@@ -22,3 +22,10 @@
 /// `.debug_abbrev` section generator — abbreviation table builder that defines
 /// the structural schemas for Debug Information Entries (DIEs).
 pub mod abbrev;
+
+/// `.debug_str` section generator — string table construction for debug
+/// information names, providing `DW_FORM_strp` offset management so that
+/// string-valued attributes in `.debug_info` DIEs reference this shared
+/// string pool rather than embedding strings inline.
+#[path = "str.rs"]
+pub mod debug_str;

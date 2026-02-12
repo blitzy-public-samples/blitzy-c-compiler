@@ -692,7 +692,9 @@ mod tests {
     #[test]
     fn test_clone_copy() {
         let original = X86_64RelocationType::R_X86_64_PLT32;
-        let cloned = original.clone();
+        // Use an explicit Copy (assignment) instead of .clone() on a Copy type
+        // to satisfy clippy::clone_on_copy.
+        let cloned = original;
         let copied = original;
         assert_eq!(original, cloned);
         assert_eq!(original, copied);

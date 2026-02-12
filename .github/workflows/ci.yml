@@ -1,0 +1,106 @@
+# =============================================================================
+# BCC (Blitzy's C Compiler) — Continuous Integration Pipeline
+# =============================================================================
+#
+# This workflow runs on every push to main/develop and on every pull request
+# targeting those branches. It verifies that the BCC codebase:
+#   1. Compiles successfully in release mode
+#   2. Passes all unit and integration tests
+#   3. Satisfies clippy lint checks with warnings treated as errors
+#   4. Conforms to rustfmt formatting rules
+#
+# BCC is a zero-dependency Rust project (no external crates). The only
+# toolchain requirement is Rust stable (1.93.0+) with rustfmt and clippy.
+#
+# The RUST_MIN_STACK environment variable is set to 64 MiB (67108864 bytes)
+# to match the worker thread stack size required for deeply nested kernel
+# macro expansions and recursive parser operations.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+# Global environment variables applied to all jobs and steps
+env:
+  CARGO_TERM_COLOR: always
+  # 64 MiB worker thread stack (64 * 1024 * 1024 = 67108864 bytes)
+  # Required by BCC for deeply nested macro expansion and parser recursion
+  RUST_MIN_STACK: "67108864"
+
+jobs:
+  build-and-test:
+    name: Build, Test, Lint & Format
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout the repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Step 2: Install Rust stable toolchain with rustfmt and clippy
+      # -----------------------------------------------------------------------
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # -----------------------------------------------------------------------
+      # Step 3: Cache Cargo registry, index, and build artifacts
+      # The cache key is derived from Cargo.lock so it invalidates whenever
+      # dependencies change (though BCC has zero external dependencies, the
+      # lock file still tracks the workspace and compiler version metadata).
+      # -----------------------------------------------------------------------
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # -----------------------------------------------------------------------
+      # Step 4: Build — compile the BCC binary with release optimizations
+      # This verifies the entire codebase compiles without errors.
+      # -----------------------------------------------------------------------
+      - name: Build (release)
+        run: cargo build --release
+
+      # -----------------------------------------------------------------------
+      # Step 5: Test — run all unit and integration tests with release profile
+      # Tests include checkpoint validation suites and internal unit tests.
+      # -----------------------------------------------------------------------
+      - name: Test (release)
+        run: cargo test --release
+
+      # -----------------------------------------------------------------------
+      # Step 6: Lint — run clippy with warnings-as-errors for strict quality
+      # All clippy warnings are promoted to errors to enforce code quality
+      # standards across the entire codebase.
+      # -----------------------------------------------------------------------
+      - name: Clippy lint check
+        run: cargo clippy -- -D warnings
+
+      # -----------------------------------------------------------------------
+      # Step 7: Format — verify all source code follows rustfmt rules
+      # This check fails if any file is not properly formatted, enforcing
+      # consistent code style without modifying files.
+      # -----------------------------------------------------------------------
+      - name: Format check
+        run: cargo fmt --check

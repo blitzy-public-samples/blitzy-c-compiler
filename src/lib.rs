@@ -39,6 +39,13 @@ pub mod common;
 /// or `backend`.
 pub mod frontend;
 
+/// Intermediate representation (IR) module — Phases 6, 7, and 9 of the
+/// compilation pipeline: AST-to-IR lowering with alloca-first insertion,
+/// SSA construction via alloca promotion (mem2reg), and phi elimination.
+/// Depends on `common` and `frontend` (for AST types during lowering).
+/// Consumed by `passes` (optimization) and `backend` (code generation).
+pub mod ir;
+
 /// Backend module — code generation, assemblers, linkers, and DWARF debug
 /// information generation for all four target architectures.
 pub mod backend;

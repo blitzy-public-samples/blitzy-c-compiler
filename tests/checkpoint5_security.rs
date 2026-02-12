@@ -26,7 +26,6 @@
 mod common;
 
 use std::path::Path;
-use std::process::Command;
 
 // ---------------------------------------------------------------------------
 // Test 1: Retpoline Generation (-mretpoline)
@@ -717,8 +716,7 @@ fn extract_function_disasm(full_disasm: &str, func_name: &str) -> Option<String>
     result.push('\n');
 
     // Collect instruction lines until the next function label or end.
-    for i in (start_idx + 1)..lines.len() {
-        let line = lines[i];
+    for line in lines.iter().skip(start_idx + 1) {
         let trimmed = line.trim();
 
         // Stop at the next function label. Function labels in objdump format:

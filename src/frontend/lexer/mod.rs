@@ -34,6 +34,15 @@ pub mod token;
 /// slice extraction, and character classification that respects PUA opacity.
 pub mod scanner;
 
+/// Numeric literal lexing — decimal, hex, octal, binary integers and
+/// decimal/hex floating-point literals.
+///
+/// Handles parsing of all C11 numeric literal forms with integer suffixes
+/// (u/U, l/L, ll/LL and combinations), float suffixes (f/F, l/L),
+/// hex float binary exponents (p/P), digit separator support (`_` as a
+/// GCC extension), and comprehensive error recovery with clear diagnostics.
+pub mod number_literal;
+
 /// String and character literal lexing.
 ///
 /// Handles parsing of C11 string and character literals with full escape

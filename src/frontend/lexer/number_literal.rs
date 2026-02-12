@@ -29,7 +29,7 @@
 //! `str::parse::<f64>()` from the Rust standard library. Hex float
 //! values are computed with a manual significand × 2^exponent algorithm.
 
-use super::scanner::{Scanner, ScannerMark};
+use super::scanner::Scanner;
 use super::token::{FloatSuffix, IntegerSuffix, Span, Token, TokenKind};
 use crate::common::diagnostics::DiagnosticEngine;
 
@@ -136,7 +136,7 @@ fn lex_float_starting_with_dot(
     scanner.advance(); // consume '.'
 
     // Collect fractional digits (at least one, guaranteed by caller).
-    let frac_digits = scanner.advance_while(|ch| Scanner::is_digit(ch));
+    let frac_digits = scanner.advance_while(Scanner::is_digit);
     if frac_digits.is_empty() {
         // Defensive: should not happen given calling convention.
         let span = Span::new(file_id, start, scanner.byte_offset());
@@ -171,13 +171,13 @@ fn lex_hex_literal(
     file_id: u32,
 ) -> Token {
     // Collect hex digits for the integer part (may be empty for 0x.5p1).
-    let int_digits = scanner.advance_while(|ch| Scanner::is_hex_digit(ch));
+    let int_digits = scanner.advance_while(Scanner::is_hex_digit);
 
     match scanner.peek() {
         // Dot — hex float with fractional part.
         Some('.') => {
             scanner.advance(); // consume '.'
-            let frac_digits = scanner.advance_while(|ch| Scanner::is_hex_digit(ch));
+            let frac_digits = scanner.advance_while(Scanner::is_hex_digit);
 
             // At least one hex digit required across integer + fractional parts.
             if int_digits.is_empty() && frac_digits.is_empty() {
@@ -336,7 +336,7 @@ fn lex_after_leading_zero(
     // Consume all decimal digits following the leading zero.
     // We accept 0-9 here; validation for octal (0-7 only) happens later
     // if this turns out not to be a float.
-    let extra_digits = scanner.advance_while(|ch| Scanner::is_digit(ch));
+    let extra_digits = scanner.advance_while(Scanner::is_digit);
 
     match scanner.peek() {
         // Dot — decimal float (e.g. 0123.45, 0895.0)
@@ -408,7 +408,7 @@ fn lex_decimal_literal(
     file_id: u32,
 ) -> Token {
     // Consume the full sequence of decimal digits.
-    let digits = scanner.advance_while(|ch| Scanner::is_digit(ch));
+    let digits = scanner.advance_while(Scanner::is_digit);
 
     match scanner.peek() {
         // Dot — decimal float.
@@ -458,7 +458,7 @@ fn continue_decimal_float_after_dot(
     file_id: u32,
 ) -> Token {
     // Collect optional fractional digits.
-    let _frac = scanner.advance_while(|ch| Scanner::is_digit(ch));
+    let _frac = scanner.advance_while(Scanner::is_digit);
 
     // Optional exponent.
     if matches!(scanner.peek(), Some('e') | Some('E')) {
@@ -516,7 +516,7 @@ fn consume_decimal_exponent(
     }
 
     // Require at least one digit.
-    let exp_digits = scanner.advance_while(|ch| Scanner::is_digit(ch));
+    let exp_digits = scanner.advance_while(Scanner::is_digit);
     if exp_digits.is_empty() {
         let span = Span::new(file_id, start, scanner.byte_offset());
         diag.error(span, "exponent has no digits");
@@ -546,7 +546,7 @@ fn consume_binary_exponent(
     };
 
     // Require at least one decimal digit for the exponent value.
-    let exp_digits = scanner.advance_while(|ch| Scanner::is_digit(ch));
+    let exp_digits = scanner.advance_while(Scanner::is_digit);
     if exp_digits.is_empty() {
         let span = Span::new(file_id, start, scanner.byte_offset());
         diag.error(span, "exponent has no digits in hexadecimal floating constant");

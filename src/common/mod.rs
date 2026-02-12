@@ -17,6 +17,7 @@ pub mod encoding;
 pub mod fx_hash;
 pub mod long_double;
 pub mod target;
+pub mod temp_files;
 
 // Re-export commonly used types for ergonomic access via `crate::common::FxHashMap`
 // instead of requiring the longer `crate::common::fx_hash::FxHashMap` path.
@@ -29,3 +30,7 @@ pub use long_double::LongDouble;
 // Re-export target architecture types for ergonomic access via `crate::common::Target`
 // instead of requiring `crate::common::target::Target`.
 pub use target::{DataModel, Endianness, Target};
+
+// Re-export temporary file types for ergonomic access via `crate::common::TempFile`
+// and `crate::common::TempDir` instead of requiring the longer paths.
+pub use temp_files::{TempDir, TempFile};

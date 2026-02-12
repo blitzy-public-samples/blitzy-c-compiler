@@ -21,7 +21,7 @@
 # Matches the rust-version field in Cargo.toml. Clippy uses this to avoid
 # suggesting features or idioms unavailable before this version.
 # =============================================================================
-msrv = "1.56"
+msrv = "1.70"
 
 # =============================================================================
 # Cognitive Complexity Threshold

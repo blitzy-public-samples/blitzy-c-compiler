@@ -526,7 +526,7 @@ fn try_lex_hex_float(after_prefix: &str) -> Option<TokenKind> {
         return None;
     }
     // Split on 'p'/'P' for the binary exponent (required for hex floats)
-    let p_pos = body.find(|c: char| c == 'p' || c == 'P')?;
+    let p_pos = body.find(['p', 'P'])?;
     let mantissa_str = &body[..p_pos];
     let exp_str = &body[p_pos + 1..];
 

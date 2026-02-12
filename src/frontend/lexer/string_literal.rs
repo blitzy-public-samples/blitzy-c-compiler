@@ -187,7 +187,7 @@ fn process_escape(
             // narrow string context.
             // ---------------------------------------------------------------
             'x' => {
-                let has_digits = scanner.peek().map_or(false, Scanner::is_hex_digit);
+                let has_digits = scanner.peek().is_some_and(Scanner::is_hex_digit);
                 if !has_digits {
                     let span = Span::new(file_id, backslash_offset, scanner.byte_offset());
                     diag.warning(span, "\\x used with no following hex digits");

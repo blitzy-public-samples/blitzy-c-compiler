@@ -18,7 +18,7 @@ name = "bcc"
 version = "0.1.0"
 edition = "2021"
 description = "Blitzy's C Compiler - a complete, self-contained C11 compilation toolchain"
-rust-version = "1.56"
+rust-version = "1.70"
 
 # =============================================================================
 # Binary target — the 'bcc' compiler executable

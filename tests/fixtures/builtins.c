@@ -439,6 +439,7 @@ static void test_builtin_abs(void) {
 /* ------------------------------------------------------------------ */
 
 int main(int argc, char **argv) {
+    (void)argv; /* suppress unused-parameter warning */
     printf("=== BCC GCC Builtins Test Suite ===\n\n");
 
     /* 1. Compile-time builtins */

@@ -181,16 +181,14 @@ fn test_shared_lib_elf_sections() {
     assert!(
         has_rela_dyn,
         "Expected .rela.dyn or .rel.dyn section in '{}'.\nSection headers:\n{}",
-        libfoo_str,
-        sections
+        libfoo_str, sections
     );
 
     let has_rela_plt = sections.contains(".rela.plt") || sections.contains(".rel.plt");
     assert!(
         has_rela_plt,
         "Expected .rela.plt or .rel.plt section in '{}'.\nSection headers:\n{}",
-        libfoo_str,
-        sections
+        libfoo_str, sections
     );
 
     // .got.plt may be merged into .got on some implementations
@@ -198,8 +196,7 @@ fn test_shared_lib_elf_sections() {
     assert!(
         has_got_plt,
         "Expected .got.plt or .got section in '{}'.\nSection headers:\n{}",
-        libfoo_str,
-        sections
+        libfoo_str, sections
     );
 
     // -----------------------------------------------------------------------
@@ -620,11 +617,11 @@ fn test_no_debug_without_flag() {
 ///
 /// # Arguments
 ///
-/// * `target`           — Target architecture string (`"x86-64"`, `"i686"`,
-///                        `"aarch64"`, `"riscv64"`)
+/// * `target` — Target architecture string (`"x86-64"`, `"i686"`,
+///   `"aarch64"`, `"riscv64"`)
 /// * `expected_machine` — Expected `e_machine` string from `readelf -h`
-///                        (e.g., `"Advanced Micro Devices X86-64"`)
-/// * `expected_class`   — Expected ELF class (`"ELF64"` or `"ELF32"`)
+///   (e.g., `"Advanced Micro Devices X86-64"`)
+/// * `expected_class` — Expected ELF class (`"ELF64"` or `"ELF32"`)
 fn verify_shared_lib_for_target(target: &str, expected_machine: &str, expected_class: &str) {
     let test_name = format!("shared_lib_{}", target.replace('-', "_"));
     let dir = common::TestDir::new(&test_name);
@@ -682,8 +679,7 @@ fn verify_shared_lib_for_target(target: &str, expected_machine: &str, expected_c
         has_relocations,
         "Expected relocation sections (.rela.dyn/.rel.dyn/.rela.plt/.rel.plt) \
          in shared library for target '{}'.\nSections:\n{}",
-        target,
-        sections
+        target, sections
     );
 
     // -----------------------------------------------------------------------
@@ -711,7 +707,13 @@ fn verify_shared_lib_for_target(target: &str, expected_machine: &str, expected_c
     // -----------------------------------------------------------------------
     let dyn_syms = common::readelf_dyn_symbols(libfoo_str);
 
-    let expected_symbols = ["add", "multiply", "get_library_name", "get_shared_value", "compute"];
+    let expected_symbols = [
+        "add",
+        "multiply",
+        "get_library_name",
+        "get_shared_value",
+        "compute",
+    ];
     for sym in &expected_symbols {
         assert!(
             dyn_syms.contains(sym),

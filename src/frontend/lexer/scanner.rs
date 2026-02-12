@@ -737,7 +737,7 @@ mod tests {
     #[test]
     fn test_advance_while_digits() {
         let mut scanner = Scanner::new("123abc", 0);
-        let digits = scanner.advance_while(|ch| Scanner::is_digit(ch));
+        let digits = scanner.advance_while(Scanner::is_digit);
         assert_eq!(digits, "123");
         assert_eq!(scanner.peek(), Some('a'));
     }
@@ -745,7 +745,7 @@ mod tests {
     #[test]
     fn test_advance_while_no_match() {
         let mut scanner = Scanner::new("abc", 0);
-        let result = scanner.advance_while(|ch| Scanner::is_digit(ch));
+        let result = scanner.advance_while(Scanner::is_digit);
         assert_eq!(result, "");
         assert_eq!(scanner.peek(), Some('a'));
     }
@@ -753,7 +753,7 @@ mod tests {
     #[test]
     fn test_advance_while_consumes_all() {
         let mut scanner = Scanner::new("12345", 0);
-        let result = scanner.advance_while(|ch| Scanner::is_digit(ch));
+        let result = scanner.advance_while(Scanner::is_digit);
         assert_eq!(result, "12345");
         assert!(scanner.is_at_end());
     }
@@ -1174,7 +1174,7 @@ mod tests {
         assert!(Scanner::is_identifier_start(scanner.peek().unwrap()));
         scanner.advance();
         // Consume identifier continuation
-        scanner.advance_while(|ch| Scanner::is_identifier_continue(ch));
+        scanner.advance_while(Scanner::is_identifier_continue);
         let ident = scanner.slice_from(start);
         assert_eq!(ident, "my_var123");
         // Next char should be space
@@ -1191,7 +1191,7 @@ mod tests {
         // Consume 'x'
         scanner.advance_if('x');
         // Consume hex digits
-        scanner.advance_while(|ch| Scanner::is_hex_digit(ch));
+        scanner.advance_while(Scanner::is_hex_digit);
         let num = scanner.slice_from(start);
         assert_eq!(num, "0xFF");
     }

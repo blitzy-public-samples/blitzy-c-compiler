@@ -34,6 +34,11 @@
 /// diagnostics, source map, string interning, and target architecture definitions.
 pub mod common;
 
+/// Frontend module — Phases 1–5 of the compilation pipeline: preprocessor,
+/// lexer, parser, and semantic analyzer. Depends on `common` but not on `ir`
+/// or `backend`.
+pub mod frontend;
+
 /// Backend module — code generation, assemblers, linkers, and DWARF debug
 /// information generation for all four target architectures.
 pub mod backend;

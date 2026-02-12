@@ -192,10 +192,7 @@ pub fn compile_to_binary(
     let target_flag = format!("--target={}", target);
 
     let mut cmd = Command::new(&bcc);
-    cmd.arg(source)
-        .arg(&target_flag)
-        .arg("-o")
-        .arg(output);
+    cmd.arg(source).arg(&target_flag).arg("-o").arg(output);
     cmd.args(extra_args);
 
     let result = cmd.output().unwrap_or_else(|e| {
@@ -374,12 +371,7 @@ pub fn run_binary_with_qemu(path: &str, target: &str) -> BccOutput {
             let output = Command::new("qemu-aarch64")
                 .arg(path)
                 .output()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to execute '{}' via qemu-aarch64: {}",
-                        path, e
-                    )
-                });
+                .unwrap_or_else(|e| panic!("Failed to execute '{}' via qemu-aarch64: {}", path, e));
             BccOutput {
                 status: output.status,
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -390,12 +382,7 @@ pub fn run_binary_with_qemu(path: &str, target: &str) -> BccOutput {
             let output = Command::new("qemu-riscv64")
                 .arg(path)
                 .output()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to execute '{}' via qemu-riscv64: {}",
-                        path, e
-                    )
-                });
+                .unwrap_or_else(|e| panic!("Failed to execute '{}' via qemu-riscv64: {}", path, e));
             BccOutput {
                 status: output.status,
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -406,12 +393,7 @@ pub fn run_binary_with_qemu(path: &str, target: &str) -> BccOutput {
             let output = Command::new("qemu-i386")
                 .arg(path)
                 .output()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to execute '{}' via qemu-i386: {}",
-                        path, e
-                    )
-                });
+                .unwrap_or_else(|e| panic!("Failed to execute '{}' via qemu-i386: {}", path, e));
             BccOutput {
                 status: output.status,
                 stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -451,9 +433,7 @@ fn run_tool(program: &str, args: &[&str]) -> String {
     let output = Command::new(program)
         .args(args)
         .output()
-        .unwrap_or_else(|e| {
-            panic!("Failed to execute '{}': {}", program, e)
-        });
+        .unwrap_or_else(|e| panic!("Failed to execute '{}': {}", program, e));
 
     // Return stdout even if the exit code is non-zero; some readelf invocations
     // return warnings on stderr while still producing useful stdout output.
@@ -848,11 +828,7 @@ impl TestDir {
         dir.push(unique_name);
 
         fs::create_dir_all(&dir).unwrap_or_else(|e| {
-            panic!(
-                "Failed to create test directory '{}': {}",
-                dir.display(),
-                e
-            )
+            panic!("Failed to create test directory '{}': {}", dir.display(), e)
         });
 
         TestDir { path: dir }

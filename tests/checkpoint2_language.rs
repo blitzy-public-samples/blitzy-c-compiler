@@ -96,7 +96,11 @@ fn compile_and_run_fixture(fixture_name: &str, test_name: &str, target: &str) ->
 
 /// Compile a C fixture to a relocatable object file for the given target,
 /// assert success, and return the path plus temporary directory.
-fn compile_fixture_to_object(fixture_name: &str, test_name: &str, target: &str) -> (String, TestDir) {
+fn compile_fixture_to_object(
+    fixture_name: &str,
+    test_name: &str,
+    target: &str,
+) -> (String, TestDir) {
     let source = fixture_path(fixture_name);
     let source_str = source.to_str().expect("fixture path is valid UTF-8");
 
@@ -174,11 +178,7 @@ fn test_pua_roundtrip() {
             if let Some(hex_start) = line.find("  ") {
                 let after_addr = &line[hex_start..];
                 // Take characters up to the next double-space or ASCII column
-                let hex_part = after_addr
-                    .split("  ")
-                    .next()
-                    .unwrap_or("")
-                    .replace(' ', "");
+                let hex_part = after_addr.split("  ").next().unwrap_or("").replace(' ', "");
                 Some(hex_part)
             } else {
                 None
@@ -247,9 +247,8 @@ fn test_recursive_macro() {
     let binary_str = binary.to_str().expect("binary path is valid UTF-8");
 
     // Compile with wall-clock timing. Must complete within 5 seconds.
-    let (compile_result, elapsed) = timed_execution(|| {
-        compile_to_binary(source_str, binary_str, TARGET_X86_64, &[])
-    });
+    let (compile_result, elapsed) =
+        timed_execution(|| compile_to_binary(source_str, binary_str, TARGET_X86_64, &[]));
 
     // Assert compilation terminated within the 5-second ceiling.
     let timeout = Duration::from_secs(5);
@@ -520,10 +519,7 @@ fn test_static_assert() {
     .expect("failed to write invalid _Static_assert fixture");
 
     // Use compile() directly (compilation-only check, no binary needed).
-    let invalid_result = compile(
-        invalid_source_str,
-        &["--target=x86-64", "-c"],
-    );
+    let invalid_result = compile(invalid_source_str, &["--target=x86-64", "-c"]);
 
     // The compiler must reject the invalid assertion.
     invalid_result.assert_failure();
@@ -586,9 +582,8 @@ fn test_recursive_macro_multi_arch() {
         let binary_str = binary.to_str().expect("binary path is valid UTF-8");
 
         // Compile with timing check (5-second ceiling).
-        let (compile_result, elapsed) = timed_execution(|| {
-            compile_to_binary(source_str, binary_str, target, &[])
-        });
+        let (compile_result, elapsed) =
+            timed_execution(|| compile_to_binary(source_str, binary_str, target, &[]));
 
         let timeout = Duration::from_secs(5);
         assert!(

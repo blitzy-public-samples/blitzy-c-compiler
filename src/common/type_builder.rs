@@ -970,20 +970,20 @@ fn composite_type_inner(a: &CType, b: &CType) -> CType {
         }
 
         // Pointers: composite of pointee types.
-        (CType::Pointer(inner_a), CType::Pointer(inner_b)) => CType::Pointer(Box::new(
-            composite_type_inner(
+        (CType::Pointer(inner_a), CType::Pointer(inner_b)) => {
+            CType::Pointer(Box::new(composite_type_inner(
                 strip_qualifiers_and_typedefs(inner_a),
                 strip_qualifiers_and_typedefs(inner_b),
-            ),
-        )),
+            )))
+        }
 
         // Complex: composite of base types.
-        (CType::Complex(base_a), CType::Complex(base_b)) => CType::Complex(Box::new(
-            composite_type_inner(
+        (CType::Complex(base_a), CType::Complex(base_b)) => {
+            CType::Complex(Box::new(composite_type_inner(
                 strip_qualifiers_and_typedefs(base_a),
                 strip_qualifiers_and_typedefs(base_b),
-            ),
-        )),
+            )))
+        }
 
         // Structs: prefer the complete (non-forward-declared) version.
         (
@@ -1031,12 +1031,13 @@ fn composite_type_inner(a: &CType, b: &CType) -> CType {
         ) => {
             // If `a`'s underlying is Int (default) and `b` has a different
             // underlying, prefer `b`'s underlying.
-            let composite_underlying =
-                if matches!(ua.as_ref(), CType::Int { signed: true }) && !matches!(ub.as_ref(), CType::Int { signed: true }) {
-                    ub.as_ref().clone()
-                } else {
-                    ua.as_ref().clone()
-                };
+            let composite_underlying = if matches!(ua.as_ref(), CType::Int { signed: true })
+                && !matches!(ub.as_ref(), CType::Int { signed: true })
+            {
+                ub.as_ref().clone()
+            } else {
+                ua.as_ref().clone()
+            };
             CType::Enum {
                 name: na.clone(),
                 underlying: Box::new(composite_underlying),
@@ -1130,8 +1131,8 @@ pub fn ctype_to_machine_type(ty: &CType, target: &Target) -> MachineType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::types::{CType, FieldDef, TypeQualifiers};
     use crate::common::target::Target;
+    use crate::common::types::{CType, FieldDef, TypeQualifiers};
 
     // -----------------------------------------------------------------------
     // TypeBuilder tests
@@ -1702,10 +1703,7 @@ mod tests {
 
     #[test]
     fn machine_type_pointer() {
-        let mt = ctype_to_machine_type(
-            &CType::Pointer(Box::new(CType::Void)),
-            &Target::X86_64,
-        );
+        let mt = ctype_to_machine_type(&CType::Pointer(Box::new(CType::Void)), &Target::X86_64);
         assert!(matches!(mt, MachineType::Ptr));
     }
 

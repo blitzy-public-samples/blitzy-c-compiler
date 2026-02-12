@@ -636,8 +636,7 @@ impl SymbolResolver {
 
             // Merge visibility: most restrictive visibility wins.
             // Hidden < Protected < Default (in terms of restrictiveness).
-            let merged_visibility =
-                merge_visibility(existing.visibility, new_entry.visibility);
+            let merged_visibility = merge_visibility(existing.visibility, new_entry.visibility);
 
             match (existing.binding, new_entry.binding) {
                 // Both strong → multiple definition error.
@@ -789,8 +788,7 @@ impl SymbolResolver {
             for local in obj_locals {
                 let idx = symbols.len();
                 // Local symbols use a mangled key to avoid name collisions.
-                let mangled_key =
-                    format!("__local_{}_{}", local.defining_object, local.name);
+                let mangled_key = format!("__local_{}_{}", local.defining_object, local.name);
                 symbol_map.insert(mangled_key, idx);
                 symbols.push(local.clone());
             }
@@ -798,8 +796,7 @@ impl SymbolResolver {
 
         // Phase 2: Add all global/weak symbols using iter() for traversal.
         // Collect and sort by name for deterministic output.
-        let mut global_entries: Vec<(&String, &SymbolEntry)> =
-            self.global_symbols.iter().collect();
+        let mut global_entries: Vec<(&String, &SymbolEntry)> = self.global_symbols.iter().collect();
         global_entries.sort_by_key(|(name, _)| (*name).clone());
 
         for (name, entry) in global_entries {
@@ -941,24 +938,15 @@ impl SymbolResolver {
         // Report critical multiple-definition errors through the diagnostic engine
         // with architecture context.
         for err_msg in &self.errors {
-            diag.error(
-                Span::DUMMY,
-                format!("{} linker: {}", arch, err_msg),
-            );
+            diag.error(Span::DUMMY, format!("{} linker: {}", arch, err_msg));
         }
 
         // Report supplementary diagnostics (warnings and notes).
         for note in &self.supplementary_diagnostics {
             if note.is_warning {
-                diag.warning(
-                    Span::DUMMY,
-                    format!("{} linker: {}", arch, note.message),
-                );
+                diag.warning(Span::DUMMY, format!("{} linker: {}", arch, note.message));
             } else {
-                diag.note(
-                    Span::DUMMY,
-                    format!("{} linker: {}", arch, note.message),
-                );
+                diag.note(Span::DUMMY, format!("{} linker: {}", arch, note.message));
             }
         }
 
@@ -1001,7 +989,11 @@ fn merge_visibility(a: SymbolVisibility, b: SymbolVisibility) -> SymbolVisibilit
             SymbolVisibility::Hidden => 2,
         }
     };
-    if score(a) >= score(b) { a } else { b }
+    if score(a) >= score(b) {
+        a
+    } else {
+        b
+    }
 }
 
 // ===========================================================================
@@ -1087,12 +1079,7 @@ mod tests {
     }
 
     /// Creates a defined Global symbol with a specific type.
-    fn global_sym_typed(
-        name: &str,
-        value: u64,
-        section: u16,
-        sym_type: SymbolType,
-    ) -> InputSymbol {
+    fn global_sym_typed(name: &str, value: u64, section: u16, sym_type: SymbolType) -> InputSymbol {
         InputSymbol {
             name: name.to_string(),
             value,
@@ -1115,10 +1102,7 @@ mod tests {
         resolver.register_object(1, "lib.o");
 
         // main.o: defines main, references printf
-        resolver.collect_symbols(
-            0,
-            &[global_sym("main", 0x1000, 1), undef_sym("printf")],
-        );
+        resolver.collect_symbols(0, &[global_sym("main", 0x1000, 1), undef_sym("printf")]);
 
         // lib.o: defines printf
         resolver.collect_symbols(1, &[global_sym("printf", 0x2000, 1)]);
@@ -1372,10 +1356,7 @@ mod tests {
         assert!(undefs.contains(&"alpha".to_string()));
         assert!(undefs.contains(&"beta".to_string()));
         // Deduplicated: alpha appears only once.
-        assert_eq!(
-            undefs.iter().filter(|n| n.as_str() == "alpha").count(),
-            1
-        );
+        assert_eq!(undefs.iter().filter(|n| n.as_str() == "alpha").count(), 1);
     }
 
     #[test]
@@ -1384,10 +1365,7 @@ mod tests {
         resolver.register_object(0, "main.o");
         resolver.register_object(1, "lib.o");
 
-        resolver.collect_symbols(
-            0,
-            &[undef_sym("found"), undef_sym("missing")],
-        );
+        resolver.collect_symbols(0, &[undef_sym("found"), undef_sym("missing")]);
         // lib.o defines "found" but not "missing".
         resolver.collect_symbols(1, &[global_sym("found", 0x2000, 1)]);
 
@@ -1455,7 +1433,12 @@ mod tests {
         // a.o defines foo as Default, b.o defines foo as Hidden (weak).
         resolver.collect_symbols(
             0,
-            &[global_sym_with_vis("foo", 0x100, 1, SymbolVisibility::Default)],
+            &[global_sym_with_vis(
+                "foo",
+                0x100,
+                1,
+                SymbolVisibility::Default,
+            )],
         );
         resolver.collect_symbols(
             1,
@@ -1625,10 +1608,7 @@ mod tests {
         resolver.register_object(1, "b.o");
 
         // a.o defines foo as FUNC, b.o defines foo as OBJECT (weak).
-        resolver.collect_symbols(
-            0,
-            &[global_sym_typed("foo", 0x100, 1, SymbolType::Func)],
-        );
+        resolver.collect_symbols(0, &[global_sym_typed("foo", 0x100, 1, SymbolType::Func)]);
         resolver.collect_symbols(
             1,
             &[InputSymbol {
@@ -1672,10 +1652,7 @@ mod tests {
         );
 
         // lib_a.o: defines init (weak), references helper
-        resolver.collect_symbols(
-            1,
-            &[weak_sym("init", 0x2000, 1), undef_sym("helper")],
-        );
+        resolver.collect_symbols(1, &[weak_sym("init", 0x2000, 1), undef_sym("helper")]);
 
         // lib_b.o: defines init (strong), cleanup, helper
         resolver.collect_symbols(

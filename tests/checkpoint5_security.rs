@@ -72,12 +72,8 @@ fn test_retpoline_generation() {
     // Compile with -mretpoline targeting x86-64, producing a relocatable
     // object file (-c flag). This exercises the retpoline thunk generation
     // path in src/backend/x86_64/security.rs.
-    let result: common::BccOutput = common::compile_to_object(
-        fixture_str,
-        output_path,
-        "x86-64",
-        &["-mretpoline"],
-    );
+    let result: common::BccOutput =
+        common::compile_to_object(fixture_str, output_path, "x86-64", &["-mretpoline"]);
     result.assert_success();
 
     // Verify the output object file was produced on disk.
@@ -199,12 +195,8 @@ fn test_cet_ibt_generation() {
     // Compile with -fcf-protection targeting x86-64, producing a relocatable
     // object file. This exercises the CET/IBT endbr64 insertion path in
     // src/backend/x86_64/security.rs.
-    let result: common::BccOutput = common::compile_to_object(
-        fixture_str,
-        output_path,
-        "x86-64",
-        &["-fcf-protection"],
-    );
+    let result: common::BccOutput =
+        common::compile_to_object(fixture_str, output_path, "x86-64", &["-fcf-protection"]);
     result.assert_success();
 
     // Verify the output object file was produced on disk.
@@ -259,12 +251,7 @@ fn test_cet_ibt_generation() {
     // We scan the disassembly for each function label and check that the
     // first instruction line following the label contains "endbr64".
     // -----------------------------------------------------------------------
-    let functions_to_check = [
-        "handler_a",
-        "handler_b",
-        "handler_c",
-        "main",
-    ];
+    let functions_to_check = ["handler_a", "handler_b", "handler_c", "main"];
 
     let lines: Vec<&str> = disasm.lines().collect();
     for func_name in &functions_to_check {
@@ -364,12 +351,8 @@ fn test_stack_probe_generation() {
 
     // Compile targeting x86-64. Stack probing is automatic for frames exceeding
     // 4096 bytes — no special CLI flag is needed beyond the target architecture.
-    let result: common::BccOutput = common::compile_to_object(
-        fixture_str,
-        output_path,
-        "x86-64",
-        &[],
-    );
+    let result: common::BccOutput =
+        common::compile_to_object(fixture_str, output_path, "x86-64", &[]);
     result.assert_success();
 
     // Verify the output object file was produced on disk.
@@ -410,9 +393,8 @@ fn test_stack_probe_generation() {
     // Check 1: The page-size probe constant 0x1000 (4096 decimal) must appear
     // in the disassembly. This is the fundamental indicator of page-granularity
     // stack probing.
-    let has_page_probe_constant = disasm.contains("$0x1000")
-        || disasm.contains("0x1000")
-        || disasm.contains("$4096");
+    let has_page_probe_constant =
+        disasm.contains("$0x1000") || disasm.contains("0x1000") || disasm.contains("$4096");
 
     assert!(
         has_page_probe_constant,
@@ -449,11 +431,20 @@ fn test_stack_probe_generation() {
     // Check 4: Verify a conditional branch exists that forms the loop back-edge.
     let has_conditional_branch = disasm.lines().any(|line| {
         let t = line.trim();
-        t.contains("jne") || t.contains("jnz") || t.contains("jb")
-            || t.contains("ja") || t.contains("jge") || t.contains("jle")
-            || t.contains("loop") || t.contains("jg") || t.contains("jl")
-            || t.contains("jbe") || t.contains("jae") || t.contains("je")
-            || t.contains("jnb") || t.contains("jns")
+        t.contains("jne")
+            || t.contains("jnz")
+            || t.contains("jb")
+            || t.contains("ja")
+            || t.contains("jge")
+            || t.contains("jle")
+            || t.contains("loop")
+            || t.contains("jg")
+            || t.contains("jl")
+            || t.contains("jbe")
+            || t.contains("jae")
+            || t.contains("je")
+            || t.contains("jnb")
+            || t.contains("jns")
     });
 
     // The probe pattern is confirmed when:
@@ -470,9 +461,21 @@ fn test_stack_probe_generation() {
          Per Section 0.1.2: disassembly MUST show a probe loop before the \
          stack pointer adjustment for frames exceeding 4096 bytes.\n\
          Disassembly (first 4000 chars):\n{}",
-        if has_page_stride_sub { "FOUND" } else { "MISSING" },
-        if has_probe_instructions { "FOUND" } else { "MISSING" },
-        if has_conditional_branch { "FOUND" } else { "MISSING" },
+        if has_page_stride_sub {
+            "FOUND"
+        } else {
+            "MISSING"
+        },
+        if has_probe_instructions {
+            "FOUND"
+        } else {
+            "MISSING"
+        },
+        if has_conditional_branch {
+            "FOUND"
+        } else {
+            "MISSING"
+        },
         &disasm[..disasm.len().min(4000)]
     );
 
@@ -513,8 +516,7 @@ fn test_stack_probe_generation() {
                 "Function '{}' (stack frame > 4096 bytes) does not contain a probe loop.\n\
                  Stack probing is required for frames exceeding 4096 bytes.\n\
                  Function disassembly:\n{}",
-                large_func,
-                body
+                large_func, body
             );
         }
     }
@@ -524,7 +526,9 @@ fn test_stack_probe_generation() {
     let exact_page_disasm = extract_function_disasm(&disasm, "large_frame_exact_page");
     if let Some(ref body) = exact_page_disasm {
         let has_page_stride = body.contains("$0x1000")
-            && body.lines().any(|l| l.trim().contains("sub") && l.contains("$0x1000"));
+            && body
+                .lines()
+                .any(|l| l.trim().contains("sub") && l.contains("$0x1000"));
         // The exact-page function should NOT contain the page-stride sub that
         // forms the probe loop. It may still adjust the stack, but not with
         // the iterative probe mechanism.
@@ -709,7 +713,9 @@ fn extract_function_disasm(full_disasm: &str, func_name: &str) -> Option<String>
     // Find the line containing the function label.
     // Use an exact match for the label to avoid partial-name collisions
     // (e.g., "f" should not match "foo" or "large_frame_4097").
-    let start_idx = lines.iter().position(|line| line.contains(&label_pattern))?;
+    let start_idx = lines
+        .iter()
+        .position(|line| line.contains(&label_pattern))?;
 
     let mut result = String::with_capacity(1024);
     result.push_str(lines[start_idx]);
@@ -776,11 +782,20 @@ fn contains_probe_pattern(func_disasm: &str) -> bool {
     // back-edge. The probe loop iterates until all pages have been touched.
     let has_loop_branch = func_disasm.lines().any(|line| {
         let t = line.trim();
-        t.contains("jne ") || t.contains("jnz ") || t.contains("jb ")
-            || t.contains("ja ") || t.contains("jge ") || t.contains("jle ")
-            || t.contains("jg ") || t.contains("jl ") || t.contains("loop ")
-            || t.contains("jbe ") || t.contains("jae ") || t.contains("je ")
-            || t.contains("jns ") || t.contains("jnb ")
+        t.contains("jne ")
+            || t.contains("jnz ")
+            || t.contains("jb ")
+            || t.contains("ja ")
+            || t.contains("jge ")
+            || t.contains("jle ")
+            || t.contains("jg ")
+            || t.contains("jl ")
+            || t.contains("loop ")
+            || t.contains("jbe ")
+            || t.contains("jae ")
+            || t.contains("je ")
+            || t.contains("jns ")
+            || t.contains("jnb ")
     });
 
     // A valid probe pattern requires the page-stride constant AND at least

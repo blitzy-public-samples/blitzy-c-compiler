@@ -459,7 +459,10 @@ mod tests {
 
     #[test]
     fn test_output_type_display() {
-        assert_eq!(format!("{}", OutputType::Executable), "executable (ET_EXEC)");
+        assert_eq!(
+            format!("{}", OutputType::Executable),
+            "executable (ET_EXEC)"
+        );
         assert_eq!(
             format!("{}", OutputType::SharedObject),
             "shared object (ET_DYN)"

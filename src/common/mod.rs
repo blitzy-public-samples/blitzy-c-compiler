@@ -62,6 +62,6 @@ pub use types::{
 // Re-export type builder types for ergonomic access via `crate::common::TypeBuilder`,
 // `crate::common::StructLayout`, etc.
 pub use type_builder::{
-    compute_struct_layout, compute_union_layout, composite_type, ctype_to_machine_type,
+    composite_type, compute_struct_layout, compute_union_layout, ctype_to_machine_type,
     types_compatible, FieldLayout, StructLayout, TypeBuilder, UnionLayout,
 };

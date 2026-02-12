@@ -238,11 +238,7 @@ impl DynamicSymbolTable {
     pub fn to_bytes_le(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.symbols.len() * 24);
         for sym in &self.symbols {
-            let name_offset = self
-                .name_offsets
-                .get(&sym.name)
-                .copied()
-                .unwrap_or(0);
+            let name_offset = self.name_offsets.get(&sym.name).copied().unwrap_or(0);
             buf.extend_from_slice(&name_offset.to_le_bytes()); // st_name (4 bytes)
             buf.push(sym.info); // st_info (1 byte)
             buf.push(sym.other); // st_other (1 byte)
@@ -312,7 +308,10 @@ impl GotBuilder {
     /// If the symbol already has a GOT entry, returns the existing index.
     pub fn add_entry(&mut self, symbol_name: &str) -> usize {
         let next_idx = self.reserved_count + self.entries.len();
-        *self.entries.entry(symbol_name.to_string()).or_insert(next_idx)
+        *self
+            .entries
+            .entry(symbol_name.to_string())
+            .or_insert(next_idx)
     }
 
     /// Returns the GOT slot index for a symbol, if it has an entry.
@@ -380,7 +379,10 @@ impl PltBuilder {
     /// Adds a symbol to the PLT, returning its slot index.
     pub fn add_entry(&mut self, symbol_name: &str) -> usize {
         let next_idx = self.entries.len();
-        *self.entries.entry(symbol_name.to_string()).or_insert(next_idx)
+        *self
+            .entries
+            .entry(symbol_name.to_string())
+            .or_insert(next_idx)
     }
 
     /// Returns the PLT slot index for a symbol, if it has an entry.
@@ -682,7 +684,10 @@ mod tests {
         let entry = DynamicEntry::new(DT_NEEDED, 42);
         let bytes = entry.to_bytes_le();
         assert_eq!(bytes.len(), 16);
-        assert_eq!(u64::from_le_bytes(bytes[0..8].try_into().unwrap()), DT_NEEDED);
+        assert_eq!(
+            u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+            DT_NEEDED
+        );
         assert_eq!(u64::from_le_bytes(bytes[8..16].try_into().unwrap()), 42);
     }
 
@@ -696,10 +701,7 @@ mod tests {
         };
         let bytes = reloc.to_bytes_le();
         assert_eq!(bytes.len(), 24);
-        assert_eq!(
-            u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
-            0x1000
-        );
+        assert_eq!(u64::from_le_bytes(bytes[0..8].try_into().unwrap()), 0x1000);
     }
 
     #[test]

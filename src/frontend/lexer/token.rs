@@ -218,7 +218,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // C11 Standard Keywords (ISO/IEC 9899:2011 §6.4.1)
     // -----------------------------------------------------------------------
-
     /// `auto` — storage class specifier.
     Auto,
     /// `break` — loop/switch exit statement.
@@ -291,7 +290,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // C11-Specific Keywords (§6.4.1, underscore-uppercase forms)
     // -----------------------------------------------------------------------
-
     /// `_Alignas` — alignment specifier.
     Alignas,
     /// `_Alignof` — alignment query operator.
@@ -316,7 +314,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // GCC Extension Keywords
     // -----------------------------------------------------------------------
-
     /// `__attribute__` / `__attribute` — GCC attribute syntax.
     Attribute,
     /// `typeof` / `__typeof__` / `__typeof` — GCC typeof operator.
@@ -342,7 +339,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // GCC Builtins — va_list and Variadic Argument Support
     // -----------------------------------------------------------------------
-
     /// `__builtin_va_list` — variadic argument list type.
     BuiltinVaList,
     /// `__builtin_va_start` — initialise variadic argument traversal.
@@ -357,7 +353,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // GCC Builtins — Type Introspection and Compile-Time Evaluation
     // -----------------------------------------------------------------------
-
     /// `__builtin_offsetof` — byte offset of a struct member.
     BuiltinOffsetof,
     /// `__builtin_types_compatible_p` — compile-time type compatibility check.
@@ -370,7 +365,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // GCC Builtins — Branch Prediction and Control Flow
     // -----------------------------------------------------------------------
-
     /// `__builtin_expect` — branch prediction hint.
     BuiltinExpect,
     /// `__builtin_unreachable` — mark code path as unreachable.
@@ -381,7 +375,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // GCC Builtins — Bit Manipulation
     // -----------------------------------------------------------------------
-
     /// `__builtin_clz` — count leading zeros (undefined for zero input).
     BuiltinClz,
     /// `__builtin_ctz` — count trailing zeros (undefined for zero input).
@@ -392,7 +385,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // GCC Builtins — Byte Swap
     // -----------------------------------------------------------------------
-
     /// `__builtin_bswap16` — 16-bit byte swap.
     BuiltinBswap16,
     /// `__builtin_bswap32` — 32-bit byte swap.
@@ -403,7 +395,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // GCC Builtins — Miscellaneous
     // -----------------------------------------------------------------------
-
     /// `__builtin_ffs` — find first set bit (1-indexed, 0 if input is zero).
     BuiltinFfs,
     /// `__builtin_frame_address` — return address of stack frame.
@@ -416,7 +407,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // GCC Builtins — Checked Arithmetic (Overflow Detection)
     // -----------------------------------------------------------------------
-
     /// `__builtin_add_overflow` — addition with overflow detection.
     BuiltinAddOverflow,
     /// `__builtin_sub_overflow` — subtraction with overflow detection.
@@ -427,7 +417,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // Identifiers and Literals
     // -----------------------------------------------------------------------
-
     /// An identifier — interned via `Symbol` for zero-cost comparison.
     ///
     /// The `Symbol` handle is an index into the global `Interner`. Identifiers
@@ -487,7 +476,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // Single-Character Operators and Punctuators
     // -----------------------------------------------------------------------
-
     /// `+` — addition / unary plus.
     Plus,
     /// `-` — subtraction / unary minus / arrow (when followed by `>`).
@@ -540,7 +528,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // Multi-Character Operators and Punctuators
     // -----------------------------------------------------------------------
-
     /// `==` — equality comparison.
     EqualEqual,
     /// `!=` — inequality comparison.
@@ -593,7 +580,6 @@ pub enum TokenKind {
     // -----------------------------------------------------------------------
     // Special Tokens
     // -----------------------------------------------------------------------
-
     /// End of file — signals the lexer has consumed all input.
     Eof,
     /// Error recovery token — produced when the lexer encounters an

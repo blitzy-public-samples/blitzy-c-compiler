@@ -85,7 +85,9 @@ pub mod linker_script;
 // ---------------------------------------------------------------------------
 
 // From section_merger — core section merging types
-pub use section_merger::{InputRelocation, InputSection, MergedInput, OutputSection, SectionMerger};
+pub use section_merger::{
+    InputRelocation, InputSection, MergedInput, OutputSection, SectionMerger,
+};
 
 // From symbol_resolver — symbol resolution types
 pub use symbol_resolver::{

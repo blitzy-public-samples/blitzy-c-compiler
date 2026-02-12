@@ -544,9 +544,7 @@ pub fn resolve_linkage(
         // C11 §6.2.2p4: "If the declaration of an identifier for a function
         // has no storage-class specifier, its linkage is determined exactly
         // as if it were declared with the storage-class specifier extern."
-        (StorageClass::Extern, true) => {
-            prior_linkage.unwrap_or(Linkage::External)
-        }
+        (StorageClass::Extern, true) => prior_linkage.unwrap_or(Linkage::External),
 
         // Block scope, extern → inherit prior linkage if any, else external.
         // C11 §6.2.2p4: "If ... with the storage-class specifier extern
@@ -554,17 +552,14 @@ pub fn resolve_linkage(
         // visible, ... the linkage of the identifier at the later
         // declaration is the same as the linkage specified at the prior
         // declaration."
-        (StorageClass::Extern, false) => {
-            prior_linkage.unwrap_or(Linkage::External)
-        }
+        (StorageClass::Extern, false) => prior_linkage.unwrap_or(Linkage::External),
 
         // Block scope, static → no linkage (static local variable).
         // The variable has static storage duration but no linkage.
         (StorageClass::Static, false) => Linkage::None,
 
         // Block scope, no storage class / auto / register → no linkage.
-        (StorageClass::Auto, false)
-        | (StorageClass::Register, false) => Linkage::None,
+        (StorageClass::Auto, false) | (StorageClass::Register, false) => Linkage::None,
 
         // Typedef → no linkage (type aliases are not objects/functions).
         (StorageClass::Typedef, _) => Linkage::None,
@@ -573,9 +568,7 @@ pub fn resolve_linkage(
         // no-storage-class) unless combined with static (which is a
         // separate storage class in our model; the parser handles the
         // combination and sets StorageClass::Static + ThreadLocal).
-        (StorageClass::ThreadLocal, true) => {
-            prior_linkage.unwrap_or(Linkage::External)
-        }
+        (StorageClass::ThreadLocal, true) => prior_linkage.unwrap_or(Linkage::External),
 
         // ThreadLocal at block scope → no linkage.
         (StorageClass::ThreadLocal, false) => Linkage::None,
@@ -626,16 +619,17 @@ fn check_redeclaration_compatibility(
     // Pointer type: check pointee compatibility.
     if let (CType::Pointer(pointee_a), CType::Pointer(pointee_b)) = (existing, new) {
         let merged_pointee = check_redeclaration_compatibility(
-            pointee_a, pointee_b, diagnostics, existing_span, new_span,
+            pointee_a,
+            pointee_b,
+            diagnostics,
+            existing_span,
+            new_span,
         )?;
         return Ok(CType::Pointer(Box::new(merged_pointee)));
     }
 
     // Types are incompatible.
-    diagnostics.error(
-        new_span,
-        "conflicting types for redeclaration",
-    );
+    diagnostics.error(new_span, "conflicting types for redeclaration");
     Err(())
 }
 
@@ -671,14 +665,28 @@ fn types_structurally_equal(a: &CType, b: &CType) -> bool {
 
         // Array — compare element type and size.
         (
-            CType::Array { element: elem_a, size: size_a },
-            CType::Array { element: elem_b, size: size_b },
+            CType::Array {
+                element: elem_a,
+                size: size_a,
+            },
+            CType::Array {
+                element: elem_b,
+                size: size_b,
+            },
         ) => size_a == size_b && types_structurally_equal(elem_a, elem_b),
 
         // Function — compare return type, params, and variadic flag.
         (
-            CType::Function { return_type: ret_a, params: params_a, variadic: var_a },
-            CType::Function { return_type: ret_b, params: params_b, variadic: var_b },
+            CType::Function {
+                return_type: ret_a,
+                params: params_a,
+                variadic: var_a,
+            },
+            CType::Function {
+                return_type: ret_b,
+                params: params_b,
+                variadic: var_b,
+            },
         ) => {
             if var_a != var_b {
                 return false;
@@ -696,22 +704,15 @@ fn types_structurally_equal(a: &CType, b: &CType) -> bool {
         }
 
         // Struct — tag name identity suffices for redeclaration.
-        (
-            CType::Struct { name: name_a, .. },
-            CType::Struct { name: name_b, .. },
-        ) => name_a == name_b,
+        (CType::Struct { name: name_a, .. }, CType::Struct { name: name_b, .. }) => {
+            name_a == name_b
+        }
 
         // Union — tag name identity suffices.
-        (
-            CType::Union { name: name_a, .. },
-            CType::Union { name: name_b, .. },
-        ) => name_a == name_b,
+        (CType::Union { name: name_a, .. }, CType::Union { name: name_b, .. }) => name_a == name_b,
 
         // Enum — tag name identity suffices.
-        (
-            CType::Enum { name: name_a, .. },
-            CType::Enum { name: name_b, .. },
-        ) => name_a == name_b,
+        (CType::Enum { name: name_a, .. }, CType::Enum { name: name_b, .. }) => name_a == name_b,
 
         // Atomic — compare inner type.
         (CType::Atomic(inner_a), CType::Atomic(inner_b)) => {
@@ -719,10 +720,9 @@ fn types_structurally_equal(a: &CType, b: &CType) -> bool {
         }
 
         // Typedef — same name suffices for redeclaration.
-        (
-            CType::Typedef { name: name_a, .. },
-            CType::Typedef { name: name_b, .. },
-        ) => name_a == name_b,
+        (CType::Typedef { name: name_a, .. }, CType::Typedef { name: name_b, .. }) => {
+            name_a == name_b
+        }
 
         _ => false,
     }
@@ -741,14 +741,21 @@ fn merge_function_types(
     new_span: Span,
 ) -> Result<CType, ()> {
     if let (
-        CType::Function { return_type: ret_a, params: params_a, variadic: var_a },
-        CType::Function { return_type: ret_b, params: params_b, variadic: var_b },
+        CType::Function {
+            return_type: ret_a,
+            params: params_a,
+            variadic: var_a,
+        },
+        CType::Function {
+            return_type: ret_b,
+            params: params_b,
+            variadic: var_b,
+        },
     ) = (existing, new)
     {
         // Return types must be compatible.
-        let merged_ret = check_redeclaration_compatibility(
-            ret_a, ret_b, diagnostics, existing_span, new_span,
-        )?;
+        let merged_ret =
+            check_redeclaration_compatibility(ret_a, ret_b, diagnostics, existing_span, new_span)?;
 
         // If one has no parameters (unprototyped), use the other's parameters.
         let (merged_params, merged_variadic) = if params_a.is_empty() && !params_b.is_empty() {
@@ -760,15 +767,16 @@ fn merge_function_types(
             let mut merged = Vec::with_capacity(params_a.len());
             for (pa, pb) in params_a.iter().zip(params_b.iter()) {
                 merged.push(check_redeclaration_compatibility(
-                    pa, pb, diagnostics, existing_span, new_span,
+                    pa,
+                    pb,
+                    diagnostics,
+                    existing_span,
+                    new_span,
                 )?);
             }
             (merged, *var_a)
         } else {
-            diagnostics.error(
-                new_span,
-                "conflicting function types in redeclaration",
-            );
+            diagnostics.error(new_span, "conflicting function types in redeclaration");
             return Err(());
         };
 
@@ -795,12 +803,22 @@ fn merge_array_types(
     new_span: Span,
 ) -> Result<CType, ()> {
     if let (
-        CType::Array { element: elem_a, size: size_a },
-        CType::Array { element: elem_b, size: size_b },
+        CType::Array {
+            element: elem_a,
+            size: size_a,
+        },
+        CType::Array {
+            element: elem_b,
+            size: size_b,
+        },
     ) = (existing, new)
     {
         let merged_elem = check_redeclaration_compatibility(
-            elem_a, elem_b, diagnostics, existing_span, new_span,
+            elem_a,
+            elem_b,
+            diagnostics,
+            existing_span,
+            new_span,
         )?;
 
         // Merge sizes: known overrides unknown; both known must match.
@@ -810,10 +828,7 @@ fn merge_array_types(
             (None, Some(sb)) => Some(*sb),
             (None, None) => None,
             _ => {
-                diagnostics.error(
-                    new_span,
-                    "conflicting array sizes in redeclaration",
-                );
+                diagnostics.error(new_span, "conflicting array sizes in redeclaration");
                 return Err(());
             }
         };
@@ -988,7 +1003,11 @@ impl SymbolTable {
             }
             // Both are typedefs — check type compatibility.
             let _merged = check_redeclaration_compatibility(
-                &existing_ty, new_ty, diagnostics, existing_span, new_span,
+                &existing_ty,
+                new_ty,
+                diagnostics,
+                existing_span,
+                new_span,
             )?;
             // Typedefs don't need further merging; the type is identical.
             // Merge attributes from the new declaration.
@@ -1023,17 +1042,18 @@ impl SymbolTable {
         // Check type compatibility and compute composite type.
         // ------------------------------------------------------------------
         let composite_ty = check_redeclaration_compatibility(
-            &existing_ty, new_ty, diagnostics, existing_span, new_span,
+            &existing_ty,
+            new_ty,
+            diagnostics,
+            existing_span,
+            new_span,
         )?;
 
         // ------------------------------------------------------------------
         // Rule: multiple definitions
         // ------------------------------------------------------------------
         if existing_is_def && new_is_def {
-            diagnostics.error(
-                new_span,
-                "redefinition of symbol",
-            );
+            diagnostics.error(new_span, "redefinition of symbol");
             return Err(());
         }
 
@@ -1046,10 +1066,7 @@ impl SymbolTable {
         // declarations but must be complete at the definition.
         // ------------------------------------------------------------------
         if new_is_def && !composite_ty.is_complete() && !composite_ty.is_function() {
-            diagnostics.error(
-                new_span,
-                "definition of variable with incomplete type",
-            );
+            diagnostics.error(new_span, "definition of variable with incomplete type");
             return Err(());
         }
 

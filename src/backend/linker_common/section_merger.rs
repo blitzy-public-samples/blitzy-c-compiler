@@ -34,13 +34,12 @@
 //! This module uses only the Rust standard library and internal BCC modules,
 //! adhering to the project's strict zero-dependency mandate.
 
+use crate::backend::elf_writer_common::{
+    SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_DYNAMIC, SHT_DYNSYM, SHT_NOBITS, SHT_NULL, SHT_RELA,
+    SHT_STRTAB, SHT_SYMTAB,
+};
 use crate::common::fx_hash::FxHashMap;
 use crate::common::target::Target;
-use crate::backend::elf_writer_common::{
-    SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE,
-    SHT_DYNAMIC, SHT_DYNSYM, SHT_NOBITS, SHT_NULL,
-    SHT_RELA, SHT_STRTAB, SHT_SYMTAB,
-};
 
 // ===========================================================================
 // InputRelocation — relocation entry from an input object file
@@ -953,13 +952,7 @@ mod tests {
             &[0x90; 8],
             4,
         );
-        let data = make_input_section(
-            ".data",
-            SHT_PROGBITS,
-            SHF_ALLOC | SHF_WRITE,
-            &[0xFF; 16],
-            4,
-        );
+        let data = make_input_section(".data", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, &[0xFF; 16], 4);
 
         merger.add_input_section(text);
         merger.add_input_section(data);
@@ -1085,7 +1078,10 @@ mod tests {
             .iter()
             .map(|s| s.name.as_str())
             .collect();
-        assert_eq!(names, vec![".text", ".rodata", ".data", ".bss", ".debug_info"]);
+        assert_eq!(
+            names,
+            vec![".text", ".rodata", ".data", ".bss", ".debug_info"]
+        );
     }
 
     #[test]
@@ -1150,13 +1146,7 @@ mod tests {
             &[0; 1024],
             16,
         ));
-        merger.add_input_section(make_input_section(
-            ".symtab",
-            SHT_SYMTAB,
-            0,
-            &[0; 48],
-            8,
-        ));
+        merger.add_input_section(make_input_section(".symtab", SHT_SYMTAB, 0, &[0; 48], 8));
 
         merger.compute_section_order();
         merger.assign_file_offsets(0x1000);
@@ -1183,11 +1173,8 @@ mod tests {
         let mut merger = SectionMerger::new();
 
         merger.add_input_section(make_input_section(
-            ".symtab",
-            SHT_SYMTAB,
-            0, // No SHF_ALLOC
-            &[0; 48],
-            8,
+            ".symtab", SHT_SYMTAB, 0, // No SHF_ALLOC
+            &[0; 48], 8,
         ));
 
         merger.assign_addresses(0x400000);
@@ -1255,23 +1242,11 @@ mod tests {
         let mut merger = SectionMerger::new();
 
         // First section: only SHF_ALLOC
-        let s1 = make_input_section(
-            ".data",
-            SHT_PROGBITS,
-            SHF_ALLOC,
-            &[0; 4],
-            4,
-        );
+        let s1 = make_input_section(".data", SHT_PROGBITS, SHF_ALLOC, &[0; 4], 4);
         merger.add_input_section(s1);
 
         // Second section: SHF_ALLOC | SHF_WRITE
-        let s2 = make_input_section(
-            ".data",
-            SHT_PROGBITS,
-            SHF_ALLOC | SHF_WRITE,
-            &[0; 4],
-            4,
-        );
+        let s2 = make_input_section(".data", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, &[0; 4], 4);
         merger.add_input_section(s2);
 
         // Merged flags should be the union

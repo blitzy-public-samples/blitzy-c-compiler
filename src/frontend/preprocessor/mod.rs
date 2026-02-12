@@ -32,3 +32,9 @@
 /// protection. Tracks which macros have "painted" each token to suppress
 /// re-expansion of self-referential macro definitions.
 pub mod paint_marker;
+
+/// Token pasting (`##`) and stringification (`#`) operator implementation.
+/// Handles concatenation of preprocessing tokens via `##` and conversion of
+/// macro arguments to string literals via `#`, with proper whitespace and
+/// token-boundary handling per C11 §6.10.3.
+pub mod token_paster;

@@ -1,30 +1,144 @@
 # =============================================================================
 # BCC — Blitzy's C Compiler .gitignore
 # =============================================================================
+# Git ignore configuration for the BCC project. Keeps the repository clean of
+# generated binaries, build intermediates, and editor/OS artifacts.
+# =============================================================================
 
+# =============================================================================
 # Rust / Cargo build artifacts
+# =============================================================================
+
+# Cargo build output directory (debug and release builds, incremental state)
 /target/
 
-# Object files and intermediate compilation artifacts
+# NOTE: Cargo.lock is intentionally NOT ignored.
+# For binary crates (which BCC is), Cargo.lock MUST be committed to ensure
+# reproducible builds. Do not add Cargo.lock to this file.
+
+# =============================================================================
+# Intermediate compiler artifacts produced by BCC
+# =============================================================================
+
+# Object files — intermediate relocatable output from BCC compilation (-c flag)
 *.o
-*.a
+
+# Shared object files — dynamic libraries produced by BCC (-shared flag)
 *.so
+
+# ELF executable outputs — final linked binaries produced by BCC
 *.elf
+
+# Static archive libraries
+*.a
+
+# Dependency files generated during compilation
 *.d
 
-# Temporary files
-*.tmp
-*.swp
-*~
+# =============================================================================
+# Temporary build artifacts from multi-file compilation
+# =============================================================================
 
-# Editor and IDE files
+# BCC-specific temporary files created during multi-file compilation pipeline
+# (RAII-managed via src/common/temp_files.rs, cleaned up on normal exit)
+*.bcc_tmp
+*.bcc.tmp
+/tmp_bcc_*/
+
+# Preprocessor intermediate output
+*.i
+*.ii
+
+# Assembly intermediate output (unless explicitly requested via -S)
+*.s
+
+# =============================================================================
+# Editor and IDE configuration files
+# =============================================================================
+
+# Vim
+*.swp
+*.swo
+*~
+.*.swp
+
+# Visual Studio Code
 .vscode/
+
+# JetBrains IDEs (CLion, IntelliJ IDEA, RustRover)
 .idea/
 *.iml
 
-# OS-specific files
-.DS_Store
-Thumbs.db
+# Emacs
+\#*\#
+.#*
 
-# BCC-specific temporary build artifacts
-*.bcc.tmp
+# Sublime Text
+*.sublime-workspace
+*.sublime-project
+
+# =============================================================================
+# OS-specific files
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+.directory
+
+# =============================================================================
+# Profiling, debugging, and core dumps
+# =============================================================================
+
+# Core dump files
+core
+core.*
+vgcore.*
+
+# Profiling data
+perf.data
+perf.data.old
+*.gcda
+*.gcno
+*.gcov
+
+# =============================================================================
+# Test artifacts
+# =============================================================================
+
+# Compiled test fixture outputs (the .c source fixtures ARE tracked)
+tests/fixtures/**/*.o
+tests/fixtures/**/*.elf
+tests/fixtures/**/*.so
+
+# QEMU and kernel build temporaries (Checkpoint 6 validation)
+*.initramfs
+*.cpio
+
+# =============================================================================
+# Miscellaneous
+# =============================================================================
+
+# Backup files
+*.bak
+*.orig
+*.rej
+
+# Log files from build or test runs
+*.log
+
+# Python virtual environments (if used for test scripting)
+venv/
+.venv/
+__pycache__/
+
+# Figma asset downloads (if any)
+figma-assets/

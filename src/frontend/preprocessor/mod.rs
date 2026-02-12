@@ -38,3 +38,9 @@ pub mod paint_marker;
 /// macro arguments to string literals via `#`, with proper whitespace and
 /// token-boundary handling per C11 §6.10.3.
 pub mod token_paster;
+
+/// `#include` file resolution — system path and user path search distinction,
+/// include guard optimization (`#ifndef`/`#define`/`#endif` detection), circular
+/// include detection with diagnostic chain reporting, `#pragma once` support,
+/// and PUA-aware file loading via [`crate::common::encoding::read_source_file`].
+pub mod include_handler;

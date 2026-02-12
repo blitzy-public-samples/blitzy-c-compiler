@@ -90,6 +90,30 @@ impl Symbol {
     /// and symbol table entries where no name is present.
     pub const EMPTY: Symbol = Symbol(0);
 
+    /// Creates a new `Symbol` from a raw `u32` index.
+    ///
+    /// This is the primary constructor for `Symbol` values created outside the
+    /// `Interner`. It is typically used when reconstructing symbols from
+    /// serialised data, test fixtures, or when a raw index is known.
+    ///
+    /// # Safety (Logical)
+    ///
+    /// The caller is responsible for ensuring the index is valid within the
+    /// relevant `Interner`. Using an out-of-range index will cause a panic
+    /// when resolved via [`Interner::resolve`].
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bcc::common::string_interner::Symbol;
+    /// let sym = Symbol::new(42);
+    /// assert_eq!(sym.as_u32(), 42);
+    /// ```
+    #[inline]
+    pub fn new(index: u32) -> Self {
+        Symbol(index)
+    }
+
     /// Returns the raw `u32` index of this symbol within the interner's arena.
     ///
     /// This is primarily useful for serialisation, compact encoding in bitfields,

@@ -1,6 +1,218 @@
 # =============================================================================
 # BCC — Blitzy's C Compiler clippy configuration
 # =============================================================================
-# Increased complexity thresholds for compiler internals which naturally
-# involve complex pattern matching and type hierarchies
+# This configuration file tunes Clippy lint thresholds to accommodate the
+# unique characteristics of a compiler codebase:
+#
+#   - Deeply recursive data structures (AST nodes, IR instructions, type
+#     representations) that naturally produce complex types
+#   - Large enum variants for AST, IR, and token representations
+#   - Complex control flow in expression parsing, instruction selection,
+#     and code generation functions
+#   - Functions with many parameters for compiler pipeline stages that
+#     thread context, target info, options, and diagnostic state
+#
+# Used by `cargo clippy` locally and by the CI pipeline (.github/workflows/ci.yml).
+# =============================================================================
+
+# =============================================================================
+# Minimum Supported Rust Version
+# =============================================================================
+# Matches the rust-version field in Cargo.toml. Clippy uses this to avoid
+# suggesting features or idioms unavailable before this version.
+# =============================================================================
+msrv = "1.56"
+
+# =============================================================================
+# Cognitive Complexity Threshold
+# =============================================================================
+# Default: 25
+# Raised to 50 for compiler functions that inherently require complex control
+# flow. Examples of legitimately complex functions include:
+#   - Expression parsing (operator precedence climbing with GCC extensions)
+#   - Instruction selection (pattern matching over IR operations × operand types)
+#   - ABI parameter classification (struct field traversal with alignment rules)
+#   - Macro expansion (paint-marker tracking with recursive expansion)
+#   - Type checker (usual arithmetic conversions with integer promotion rules)
+#   - Inline assembly constraint validation
+# =============================================================================
+cognitive-complexity-threshold = 50
+
+# =============================================================================
+# Type Complexity Threshold
+# =============================================================================
+# Default: 250
+# Raised to 500 to accommodate deeply nested generic types that naturally
+# arise in compiler internals:
+#   - FxHashMap<Symbol, Vec<(CType, StorageClass, Linkage)>> in symbol tables
+#   - Nested Result/Option chains in IR lowering and code generation
+#   - Generic trait objects for the ArchCodegen abstraction layer
+#   - Complex iterator chains over basic blocks and instruction sequences
+# =============================================================================
 type-complexity-threshold = 500
+
+# =============================================================================
+# Too Many Arguments Threshold
+# =============================================================================
+# Default: 7
+# Raised to 12 for compiler API functions that legitimately require many
+# parameters to thread compilation state through pipeline stages:
+#   - Code generation: context, function, block, target, options, diagnostics,
+#     register state, relocation table, section, symbol table, dwarf context
+#   - IR lowering: AST node, builder, scope, symbol table, target, diagnostics,
+#     current function, type context, label map
+#   - Linker: input objects, output path, entry point, search paths, libraries,
+#     target, options, symbol visibility, dynamic flags
+# =============================================================================
+too-many-arguments-threshold = 12
+
+# =============================================================================
+# Enum Variant Size Threshold
+# =============================================================================
+# Default: 200 bytes
+# Raised to 512 bytes because compiler enums naturally contain large variants:
+#   - AST Expression/Statement/Declaration nodes carry source spans, type
+#     annotations, attribute lists, and child node vectors
+#   - IR Instruction variants carry operand lists, type info, and metadata
+#   - TokenKind variants for string/numeric literals include inline storage
+#   - CType variants for structs/unions hold field lists and layout info
+# Boxing every large variant would add indirection overhead in the compiler's
+# hottest paths (parsing, type checking, code generation).
+# =============================================================================
+enum-variant-size-threshold = 512
+
+# =============================================================================
+# Too Many Lines Threshold
+# =============================================================================
+# Default: 100
+# Raised to 200 for complex compiler functions where splitting into smaller
+# functions would reduce clarity rather than improve it:
+#   - Switch/match over all AST node types during lowering
+#   - Instruction encoding tables in architecture-specific assemblers
+#   - ELF section header and program header construction
+#   - DWARF abbreviation table building
+# =============================================================================
+too-many-lines-threshold = 200
+
+# =============================================================================
+# Large Error Threshold
+# =============================================================================
+# Default: 128 bytes
+# Raised to 256 bytes for the diagnostic engine's error types, which carry
+# source spans, formatted messages, and optional fix suggestions. The
+# Diagnostic struct legitimately needs this space to provide high-quality
+# multi-error reporting with source context.
+# =============================================================================
+large-error-threshold = 256
+
+# =============================================================================
+# Pass By Value Size Limit
+# =============================================================================
+# Default: 256 bytes
+# Raised to 512 bytes. Some compiler data structures (e.g., small AST nodes,
+# type descriptors, relocation entries) are stack-allocated value types that
+# benefit from pass-by-value semantics for cache locality in tight loops
+# during compilation.
+# =============================================================================
+pass-by-value-size-limit = 512
+
+# =============================================================================
+# Single Character Binding Names Threshold
+# =============================================================================
+# Default: 4
+# Raised to 6 for compiler code that conventionally uses short names in
+# mathematical and algorithmic contexts:
+#   - Register allocator: `r`, `s`, `n`, `k`, `v`, `u` for graph nodes
+#   - Dominator tree: `b`, `d`, `w`, `p` for block/dominator/worklist/parent
+#   - Encoding: `b` for byte, `c` for char, `n` for count, `w` for width
+#   - ELF writing: `e` for entry, `s` for section, `p` for program header
+# =============================================================================
+single-char-binding-names-threshold = 6
+
+# =============================================================================
+# Documentation Valid Identifiers
+# =============================================================================
+# Identifiers that appear in documentation comments and should not trigger
+# the `doc_markdown` lint. These are compiler-domain terms, architecture
+# names, and specification references that are not crate names.
+# =============================================================================
+doc-valid-idents = [
+    "AArch64",
+    "AAPCS64",
+    "ABI",
+    "AST",
+    "AVX",
+    "BCC",
+    "CET",
+    "COMDAT",
+    "DIE",
+    "DIEs",
+    "DWARF",
+    "ELF",
+    "FPU",
+    "FxHash",
+    "FxHashMap",
+    "FxHashSet",
+    "GCC",
+    "GOT",
+    "GPR",
+    "GPRs",
+    "HFA",
+    "HVA",
+    "IBT",
+    "ILP32",
+    "ISA",
+    "LP64",
+    "LP64D",
+    "ModR",
+    "NZCV",
+    "PLT",
+    "PUA",
+    "REX",
+    "RISC",
+    "RV64IMAFDC",
+    "SIB",
+    "SIMD",
+    "SSA",
+    "SSE",
+    "UTF",
+    "VEX",
+    "i686",
+    "x86",
+]
+
+# =============================================================================
+# Allowed Short Identifiers
+# =============================================================================
+# Short identifiers (below the min-chars lint threshold) that are conventional
+# in compiler implementations and should not be flagged.
+# =============================================================================
+allowed-idents-below-min-chars = [
+    "_",
+    "i",
+    "j",
+    "k",
+    "n",
+    "r",
+    "s",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "m",
+    "p",
+    "t",
+    "v",
+    "w",
+    "x",
+    "op",
+    "id",
+    "ty",
+    "bb",
+    "pc",
+    "sp",
+    "fp",
+    "lr",
+    "ip",
+]

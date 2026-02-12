@@ -28,7 +28,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use crate::common::fx_hash::{FxHashMap, FxHashSet, fx_hash_map, fx_hash_set};
+//! use bcc::common::fx_hash::{FxHashMap, FxHashSet, fx_hash_map, fx_hash_set};
 //!
 //! let mut symbols: FxHashMap<&str, u32> = fx_hash_map();
 //! symbols.insert("main", 0);
@@ -230,7 +230,7 @@ impl Hasher for FxHasher {
 ///
 /// ```rust
 /// use std::collections::HashMap;
-/// use crate::common::fx_hash::FxBuildHasher;
+/// use bcc::common::fx_hash::FxBuildHasher;
 ///
 /// let map: HashMap<String, u32, FxBuildHasher> = HashMap::with_hasher(FxBuildHasher);
 /// ```
@@ -285,6 +285,7 @@ pub type FxHashSet<T> = HashSet<T, FxBuildHasher>;
 /// # Example
 ///
 /// ```rust
+/// use bcc::common::fx_hash::{FxHashMap, fx_hash_map};
 /// let mut map: FxHashMap<&str, u32> = fx_hash_map();
 /// map.insert("x", 42);
 /// ```
@@ -301,6 +302,7 @@ pub fn fx_hash_map<K, V>() -> FxHashMap<K, V> {
 /// # Example
 ///
 /// ```rust
+/// use bcc::common::fx_hash::{FxHashSet, fx_hash_set};
 /// let mut set: FxHashSet<&str> = fx_hash_set();
 /// set.insert("keyword");
 /// ```
@@ -319,8 +321,9 @@ pub fn fx_hash_set<T>() -> FxHashSet<T> {
 /// # Example
 ///
 /// ```rust
+/// use bcc::common::fx_hash::{FxHashMap, fx_hash_map_with_capacity};
 /// // Pre-allocate for ~1024 symbols to avoid resizing during parsing
-/// let mut symbols: FxHashMap<String, SymbolId> = fx_hash_map_with_capacity(1024);
+/// let mut symbols: FxHashMap<String, u32> = fx_hash_map_with_capacity(1024);
 /// ```
 #[inline]
 pub fn fx_hash_map_with_capacity<K, V>(capacity: usize) -> FxHashMap<K, V> {
@@ -335,6 +338,7 @@ pub fn fx_hash_map_with_capacity<K, V>(capacity: usize) -> FxHashMap<K, V> {
 /// # Example
 ///
 /// ```rust
+/// use bcc::common::fx_hash::{FxHashSet, fx_hash_set_with_capacity};
 /// let mut visited: FxHashSet<usize> = fx_hash_set_with_capacity(256);
 /// ```
 #[inline]

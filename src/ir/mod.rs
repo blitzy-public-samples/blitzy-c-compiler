@@ -48,6 +48,12 @@ pub mod types;
 /// and [`FCmpPredicate`] supporting enums.
 pub mod instructions;
 
+/// Basic block representation — [`BasicBlock`] is the fundamental unit of
+/// control flow in the IR. Each block contains an ordered instruction list,
+/// CFG predecessor/successor edges, and lazily-populated dominator tree fields
+/// used during SSA construction (Phase 7, mem2reg).
+pub mod basic_block;
+
 // ── Convenience re-exports ──────────────────────────────────────────────────
 // Re-export the most commonly used types so that other modules can write
 // `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.
@@ -58,3 +64,6 @@ pub use types::IrType;
 pub use instructions::{
     BasicBlockId, BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId,
 };
+
+// Re-export basic block types for convenient access.
+pub use basic_block::BasicBlock;

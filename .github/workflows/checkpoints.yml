@@ -1,0 +1,349 @@
+# =============================================================================
+# BCC (Blitzy's C Compiler) — Sequential Checkpoint Validation Pipeline
+# =============================================================================
+#
+# This workflow implements the 7-stage sequential checkpoint validation protocol
+# for the BCC compiler. Checkpoints 1-6 are strictly sequential hard gates —
+# failure at any gate halts all subsequent checkpoints. Checkpoint 7 (stretch
+# targets) is optional and marked continue-on-error.
+#
+# Dependency chain:
+#   checkpoint-1 → checkpoint-2 → checkpoint-3 → checkpoint-4 → checkpoint-5
+#     → checkpoint-6 → checkpoint-7
+#
+# Backend validation order within tests (enforced in test code, not here):
+#   x86-64 → i686 → AArch64 → RISC-V 64
+#
+# Each checkpoint job runs its corresponding integration test file from
+# tests/checkpoint{N}_*.rs using `cargo test --release`.
+# =============================================================================
+
+name: Checkpoint Validation
+
+on:
+  # Manual trigger for on-demand validation runs
+  workflow_dispatch: {}
+  # Automatic validation on pushes to main branch
+  push:
+    branches: [main]
+
+# Global environment variables applied to all jobs
+env:
+  # 64 MiB worker thread stack (64 * 1024 * 1024 = 67108864 bytes)
+  # Required for deeply nested kernel macro expansions and recursive parsing
+  RUST_MIN_STACK: '67108864'
+  # Enable colored terminal output in CI logs
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ===========================================================================
+  # Checkpoint 1: Hello World (Hard Gate)
+  # ===========================================================================
+  # Validates that BCC can compile and execute Hello World programs for all
+  # four target architectures: x86-64, i686, AArch64, and RISC-V 64.
+  # This is the first gate — no 'needs' clause.
+  # QEMU user-mode is installed for cross-architecture binary execution
+  # (AArch64 and RISC-V 64 binaries on the x86-64 CI runner).
+  # ===========================================================================
+  checkpoint-1-hello-world:
+    name: "Checkpoint 1: Hello World (Hard Gate)"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install QEMU user-mode for cross-architecture execution
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user qemu-user-static
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-checkpoint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoint-
+
+      - name: Build BCC in release mode
+        run: cargo build --release
+
+      - name: "Run Checkpoint 1: Hello World for all architectures"
+        run: cargo test --release --test checkpoint1_hello_world -- --nocapture
+
+  # ===========================================================================
+  # Checkpoint 2: Language and Preprocessor Correctness (Hard Gate)
+  # ===========================================================================
+  # Validates C11 language features, GCC extensions, preprocessor correctness
+  # including PUA round-trip encoding, recursive macro termination, statement
+  # expressions, typeof, designated initializers, and more.
+  # ===========================================================================
+  checkpoint-2-language:
+    name: "Checkpoint 2: Language Correctness (Hard Gate)"
+    needs: [checkpoint-1-hello-world]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-checkpoint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoint-
+
+      - name: Build BCC in release mode
+        run: cargo build --release
+
+      - name: "Run Checkpoint 2: Language and preprocessor correctness"
+        run: cargo test --release --test checkpoint2_language -- --nocapture
+
+  # ===========================================================================
+  # Checkpoint 3: Full Internal Test Suite (Hard Gate)
+  # ===========================================================================
+  # Runs the complete internal unit and integration test suite. All tests must
+  # pass at 100% before proceeding. This checkpoint is re-run after any feature
+  # addition during the kernel build phase to confirm no regressions.
+  # ===========================================================================
+  checkpoint-3-internal:
+    name: "Checkpoint 3: Internal Test Suite (Hard Gate)"
+    needs: [checkpoint-2-language]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-checkpoint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoint-
+
+      - name: Build BCC in release mode
+        run: cargo build --release
+
+      - name: "Run Checkpoint 3: Full internal test suite (100% pass required)"
+        run: cargo test --release --test checkpoint3_internal -- --nocapture
+
+  # ===========================================================================
+  # Checkpoint 4: Shared Library and DWARF Validation (Hard Gate)
+  # ===========================================================================
+  # Validates shared library (.so) ELF structure including GOT/PLT, .dynamic,
+  # .dynsym, .rela.dyn, .rela.plt, .gnu.hash sections, and DWARF v4 debug
+  # information (.debug_info, .debug_abbrev, .debug_line, .debug_str).
+  # Requires binutils (readelf, objdump) for ELF inspection and GDB for
+  # DWARF source file/line resolution verification.
+  # ===========================================================================
+  checkpoint-4-shared-lib:
+    name: "Checkpoint 4: Shared Library & DWARF (Hard Gate)"
+    needs: [checkpoint-3-internal]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install binutils and GDB for ELF/DWARF validation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils gdb
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-checkpoint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoint-
+
+      - name: Build BCC in release mode
+        run: cargo build --release
+
+      - name: "Run Checkpoint 4: Shared library ELF structure + DWARF validation"
+        run: cargo test --release --test checkpoint4_shared_lib -- --nocapture
+
+  # ===========================================================================
+  # Checkpoint 5: Security Mitigations (Hard Gate)
+  # ===========================================================================
+  # Validates x86-64 security hardening features:
+  #   - Retpoline generation (-mretpoline): indirect calls via __x86_indirect_thunk_*
+  #   - Intel CET/IBT (-fcf-protection): endbr64 at function entries
+  #   - Stack guard page probing: probe loop for frames > 4096 bytes
+  # Requires binutils (objdump) for disassembly inspection to verify correct
+  # machine code patterns.
+  # ===========================================================================
+  checkpoint-5-security:
+    name: "Checkpoint 5: Security Mitigations x86-64 (Hard Gate)"
+    needs: [checkpoint-4-shared-lib]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install binutils for disassembly verification
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-checkpoint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoint-
+
+      - name: Build BCC in release mode
+        run: cargo build --release
+
+      - name: "Run Checkpoint 5: Security mitigations on x86-64"
+        run: cargo test --release --test checkpoint5_security -- --nocapture
+
+  # ===========================================================================
+  # Checkpoint 6: Linux Kernel Build and QEMU Boot (Hard Gate)
+  # ===========================================================================
+  # The ultimate validation target — compile Linux kernel 6.9 (RISC-V config)
+  # using BCC and boot it to userspace in QEMU. This exercises the full C
+  # language surface, GCC extensions, preprocessor edge cases, inline assembly,
+  # and linker correctness simultaneously.
+  #
+  # Extended timeout: 120 minutes for full kernel build + QEMU boot sequence.
+  # Wall-clock ceiling: must not exceed 5x GCC-equivalent build time.
+  #
+  # Requires: QEMU system emulation (qemu-system-riscv64) for boot,
+  # QEMU user-mode for cross-arch binary testing, binutils for ELF inspection,
+  # and make for kernel build system orchestration.
+  # ===========================================================================
+  checkpoint-6-kernel:
+    name: "Checkpoint 6: Linux Kernel Build & Boot (Hard Gate)"
+    needs: [checkpoint-5-security]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system tools for kernel build and QEMU boot
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-system-misc \
+            qemu-user \
+            qemu-user-static \
+            binutils \
+            make
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-checkpoint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoint-
+
+      - name: Build BCC in release mode
+        run: cargo build --release
+
+      - name: "Run Checkpoint 6: Linux kernel 6.9 RISC-V build and QEMU boot"
+        run: cargo test --release --test checkpoint6_kernel -- --nocapture
+
+  # ===========================================================================
+  # Checkpoint 7: Stretch Targets (Optional)
+  # ===========================================================================
+  # Optional milestone — compile and validate stretch targets:
+  # SQLite, Redis, PostgreSQL, and FFmpeg.
+  # Each build must not exceed 5x equivalent GCC build time.
+  #
+  # This checkpoint is marked continue-on-error: true so it does NOT block
+  # the overall pipeline on failure. It only runs after Checkpoint 6 passes.
+  # ===========================================================================
+  checkpoint-7-stretch:
+    name: "Checkpoint 7: Stretch Targets (Optional)"
+    needs: [checkpoint-6-kernel]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system tools for stretch target validation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-user \
+            qemu-user-static \
+            binutils
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-checkpoint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoint-
+
+      - name: Build BCC in release mode
+        run: cargo build --release
+
+      - name: "Run Checkpoint 7: Stretch targets (SQLite, Redis, PostgreSQL, FFmpeg)"
+        run: cargo test --release --test checkpoint7_stretch -- --nocapture

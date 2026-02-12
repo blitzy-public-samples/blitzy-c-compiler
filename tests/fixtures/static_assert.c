@@ -202,6 +202,12 @@ int main(void) {
     union data_cell dc;
     dc.i = 0x41424344;
 
+    /* Access union member to suppress unused-but-set warning */
+    if (dc.bytes[0] == 0 && dc.bytes[1] == 0 && dc.bytes[2] == 0 && dc.bytes[3] == 0) {
+        printf("FAIL: union data_cell zeroed unexpectedly\n");
+        return 1;
+    }
+
     /* Verify the struct fields are accessible and correct */
     if (v.x != 10 || v.y != 20) {
         printf("FAIL: validated struct fields incorrect\n");

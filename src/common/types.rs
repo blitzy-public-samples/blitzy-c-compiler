@@ -414,8 +414,14 @@ impl CType {
             // A named struct/union with zero fields is treated as a forward
             // declaration (incomplete).  Anonymous aggregates with zero fields
             // are considered complete (degenerate but valid GCC extension).
-            CType::Struct { name: Some(_), fields } if fields.is_empty() => false,
-            CType::Union { name: Some(_), fields } if fields.is_empty() => false,
+            CType::Struct {
+                name: Some(_),
+                fields,
+            } if fields.is_empty() => false,
+            CType::Union {
+                name: Some(_),
+                fields,
+            } if fields.is_empty() => false,
             CType::Typedef { underlying, .. } => underlying.is_complete(),
             CType::Atomic(inner) => inner.is_complete(),
             _ => true,
@@ -786,8 +792,7 @@ fn compute_union_layout(fields: &[FieldDef], target: &Target) -> (usize, usize) 
     for field in fields {
         let field_size = if let Some(bw) = field.bit_width {
             // Bit-field in a union: size is that of the declared type.
-            size_of(&field.ty, target)
-                .max(((bw as usize) + 7) / 8)
+            size_of(&field.ty, target).max(((bw as usize) + 7) / 8)
         } else {
             size_of(&field.ty, target)
         };
@@ -929,11 +934,7 @@ pub fn usual_arithmetic_conversion(a: &CType, b: &CType) -> CType {
 
     // Both same signedness → convert to the higher rank.
     if signed_a == signed_b {
-        return if rank_a >= rank_b {
-            pa
-        } else {
-            pb
-        };
+        return if rank_a >= rank_b { pa } else { pb };
     }
 
     // Mixed signedness.  Identify which is unsigned and which is signed.
@@ -1118,10 +1119,7 @@ mod tests {
         assert_eq!(size_of(&CType::Float, &t), 4);
         assert_eq!(size_of(&CType::Double, &t), 8);
         assert_eq!(size_of(&CType::LongDouble, &t), 16);
-        assert_eq!(
-            size_of(&CType::Pointer(Box::new(CType::Void)), &t),
-            8
-        );
+        assert_eq!(size_of(&CType::Pointer(Box::new(CType::Void)), &t), 8);
     }
 
     #[test]
@@ -1129,23 +1127,14 @@ mod tests {
         let t = i686();
         assert_eq!(size_of(&CType::Long { signed: true }, &t), 4);
         assert_eq!(size_of(&CType::LongDouble, &t), 12);
-        assert_eq!(
-            size_of(&CType::Pointer(Box::new(CType::Void)), &t),
-            4
-        );
+        assert_eq!(size_of(&CType::Pointer(Box::new(CType::Void)), &t), 4);
     }
 
     #[test]
     fn size_of_complex() {
         let t = x86_64();
-        assert_eq!(
-            size_of(&CType::Complex(Box::new(CType::Float)), &t),
-            8
-        );
-        assert_eq!(
-            size_of(&CType::Complex(Box::new(CType::Double)), &t),
-            16
-        );
+        assert_eq!(size_of(&CType::Complex(Box::new(CType::Float)), &t), 8);
+        assert_eq!(size_of(&CType::Complex(Box::new(CType::Double)), &t), 16);
     }
 
     #[test]
@@ -1211,10 +1200,7 @@ mod tests {
             align_of(&CType::Pointer(Box::new(CType::Void)), &x86_64()),
             8
         );
-        assert_eq!(
-            align_of(&CType::Pointer(Box::new(CType::Void)), &i686()),
-            4
-        );
+        assert_eq!(align_of(&CType::Pointer(Box::new(CType::Void)), &i686()), 4);
     }
 
     #[test]
@@ -1248,10 +1234,7 @@ mod tests {
 
     #[test]
     fn promote_narrow_types() {
-        assert_eq!(
-            integer_promote(&CType::Bool),
-            CType::Int { signed: true }
-        );
+        assert_eq!(integer_promote(&CType::Bool), CType::Int { signed: true });
         assert_eq!(
             integer_promote(&CType::Char { signed: true }),
             CType::Int { signed: true }
@@ -1304,10 +1287,7 @@ mod tests {
     #[test]
     fn uac_same_type() {
         assert_eq!(
-            usual_arithmetic_conversion(
-                &CType::Int { signed: true },
-                &CType::Int { signed: true },
-            ),
+            usual_arithmetic_conversion(&CType::Int { signed: true }, &CType::Int { signed: true },),
             CType::Int { signed: true },
         );
     }
@@ -1343,10 +1323,7 @@ mod tests {
         assert_eq!(format!("{}", CType::Void), "void");
         assert_eq!(format!("{}", CType::Bool), "_Bool");
         assert_eq!(format!("{}", CType::Int { signed: true }), "int");
-        assert_eq!(
-            format!("{}", CType::Int { signed: false }),
-            "unsigned int"
-        );
+        assert_eq!(format!("{}", CType::Int { signed: false }), "unsigned int");
         assert_eq!(format!("{}", CType::LongDouble), "long double");
     }
 
@@ -1450,11 +1427,26 @@ mod tests {
 
     #[test]
     fn integer_rank_ordering() {
-        assert!(CType::Bool.integer_rank().unwrap() < CType::Char { signed: true }.integer_rank().unwrap());
-        assert!(CType::Char { signed: true }.integer_rank().unwrap() < CType::Short { signed: true }.integer_rank().unwrap());
-        assert!(CType::Short { signed: true }.integer_rank().unwrap() < CType::Int { signed: true }.integer_rank().unwrap());
-        assert!(CType::Int { signed: true }.integer_rank().unwrap() < CType::Long { signed: true }.integer_rank().unwrap());
-        assert!(CType::Long { signed: true }.integer_rank().unwrap() < CType::LongLong { signed: true }.integer_rank().unwrap());
+        assert!(
+            CType::Bool.integer_rank().unwrap()
+                < CType::Char { signed: true }.integer_rank().unwrap()
+        );
+        assert!(
+            CType::Char { signed: true }.integer_rank().unwrap()
+                < CType::Short { signed: true }.integer_rank().unwrap()
+        );
+        assert!(
+            CType::Short { signed: true }.integer_rank().unwrap()
+                < CType::Int { signed: true }.integer_rank().unwrap()
+        );
+        assert!(
+            CType::Int { signed: true }.integer_rank().unwrap()
+                < CType::Long { signed: true }.integer_rank().unwrap()
+        );
+        assert!(
+            CType::Long { signed: true }.integer_rank().unwrap()
+                < CType::LongLong { signed: true }.integer_rank().unwrap()
+        );
     }
 
     #[test]

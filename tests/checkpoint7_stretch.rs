@@ -17,13 +17,13 @@
 //! **Environment variables for source directories:**
 //!
 //! - `SQLITE_SRC_DIR`     — Path to the SQLite amalgamation source directory
-//!                          (must contain `sqlite3.c` and `sqlite3.h`).
+//!   (must contain `sqlite3.c` and `sqlite3.h`).
 //! - `REDIS_SRC_DIR`      — Path to the Redis source tree root
-//!                          (must contain a top-level `Makefile`).
+//!   (must contain a top-level `Makefile`).
 //! - `POSTGRESQL_SRC_DIR` — Path to the PostgreSQL source tree root
-//!                          (must contain a `configure` script).
+//!   (must contain a `configure` script).
 //! - `FFMPEG_SRC_DIR`     — Path to the FFmpeg source tree root
-//!                          (must contain a `configure` script).
+//!   (must contain a `configure` script).
 //!
 //! **Environment variables for GCC benchmark times (optional):**
 //!
@@ -264,7 +264,7 @@ fn assert_binary_produced(path: &Path, project: &str) {
 /// * `dir` — Directory in which to run `make clean`.
 fn make_clean_best_effort(dir: &Path) {
     let _ = Command::new("make")
-        .args(&["clean", "-s"])
+        .args(["clean", "-s"])
         .current_dir(dir)
         .status();
 }
@@ -394,13 +394,7 @@ int main(void) {{
             harness_c.to_str().unwrap(),
             sqlite_test_bin.to_str().unwrap(),
             "x86-64",
-            &[
-                &include_flag,
-                &link_obj_flag,
-                "-lpthread",
-                "-ldl",
-                "-lm",
-            ],
+            &[&include_flag, &link_obj_flag, "-lpthread", "-ldl", "-lm"],
         );
         result.assert_success();
     });
@@ -410,7 +404,10 @@ int main(void) {{
     // --- Verify output binary ---
     assert_binary_produced(sqlite_test_bin.as_path(), "SQLite");
     common::assert_elf_type(sqlite_test_bin.to_str().unwrap(), "EXEC");
-    common::assert_elf_machine(sqlite_test_bin.to_str().unwrap(), "Advanced Micro Devices X86-64");
+    common::assert_elf_machine(
+        sqlite_test_bin.to_str().unwrap(),
+        "Advanced Micro Devices X86-64",
+    );
 
     // --- Functionality smoke test ---
     // Execute the compiled SQLite test binary directly.
@@ -510,9 +507,7 @@ fn test_redis_build() {
             .current_dir(&src_dir)
             .env("MALLOC", "libc") // Redis defaults to jemalloc; use libc for simplicity.
             .output()
-            .unwrap_or_else(|e| {
-                panic!("Failed to invoke make for Redis build: {}", e)
-            })
+            .unwrap_or_else(|e| panic!("Failed to invoke make for Redis build: {}", e))
     });
 
     assert!(
@@ -527,22 +522,19 @@ fn test_redis_build() {
     let redis_server = src_dir.join("src").join("redis-server");
     assert_binary_produced(redis_server.as_path(), "Redis");
     common::assert_elf_type(redis_server.to_str().unwrap(), "EXEC");
-    common::assert_elf_machine(redis_server.to_str().unwrap(), "Advanced Micro Devices X86-64");
+    common::assert_elf_machine(
+        redis_server.to_str().unwrap(),
+        "Advanced Micro Devices X86-64",
+    );
 
     // --- Functionality smoke test: redis-server --version ---
     let version_output = Command::new(redis_server.to_str().unwrap())
         .arg("--version")
         .output()
-        .unwrap_or_else(|e| {
-            panic!(
-                "Failed to execute redis-server for version check: {}",
-                e
-            )
-        });
+        .unwrap_or_else(|e| panic!("Failed to execute redis-server for version check: {}", e));
     let version_stdout = String::from_utf8_lossy(&version_output.stdout);
     assert!(
-        version_stdout.to_lowercase().contains("redis")
-            || version_stdout.contains("v="),
+        version_stdout.to_lowercase().contains("redis") || version_stdout.contains("v="),
         "redis-server --version did not produce expected output.\nstdout: '{}'",
         version_stdout.trim()
     );
@@ -619,12 +611,7 @@ fn test_postgresql_build() {
             .current_dir(build_dir.path())
             .env("CC", bcc_str)
             .output()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to invoke PostgreSQL configure script: {}",
-                    e
-                )
-            });
+            .unwrap_or_else(|e| panic!("Failed to invoke PostgreSQL configure script: {}", e));
 
         assert!(
             configure_output.status.success(),
@@ -642,9 +629,7 @@ fn test_postgresql_build() {
             .arg(num_cpus_str())
             .current_dir(build_dir.path())
             .output()
-            .unwrap_or_else(|e| {
-                panic!("Failed to invoke make for PostgreSQL build: {}", e)
-            });
+            .unwrap_or_else(|e| panic!("Failed to invoke make for PostgreSQL build: {}", e));
 
         assert!(
             make_output.status.success(),
@@ -734,21 +719,16 @@ fn test_ffmpeg_build() {
         // FFmpeg uses --cc= for specifying the C compiler.
         let configure_output = Command::new(configure_script.to_str().unwrap())
             .arg(format!("--cc={}", bcc_str))
-            .arg("--disable-x86asm")   // Avoid nasm/yasm dependency.
-            .arg("--disable-doc")      // Skip documentation generation.
-            .arg("--disable-network")  // Reduce build scope.
+            .arg("--disable-x86asm") // Avoid nasm/yasm dependency.
+            .arg("--disable-doc") // Skip documentation generation.
+            .arg("--disable-network") // Reduce build scope.
             .arg("--disable-programs") // Build libraries only first, then add ffmpeg.
-            .arg("--enable-ffmpeg")    // Ensure ffmpeg binary is built.
+            .arg("--enable-ffmpeg") // Ensure ffmpeg binary is built.
             .arg(format!("--prefix={}", build_dir.path().display()))
             .current_dir(build_dir.path())
             .env("CC", bcc_str)
             .output()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to invoke FFmpeg configure script: {}",
-                    e
-                )
-            });
+            .unwrap_or_else(|e| panic!("Failed to invoke FFmpeg configure script: {}", e));
 
         assert!(
             configure_output.status.success(),
@@ -766,9 +746,7 @@ fn test_ffmpeg_build() {
             .arg(num_cpus_str())
             .current_dir(build_dir.path())
             .output()
-            .unwrap_or_else(|e| {
-                panic!("Failed to invoke make for FFmpeg build: {}", e)
-            });
+            .unwrap_or_else(|e| panic!("Failed to invoke make for FFmpeg build: {}", e));
 
         assert!(
             make_output.status.success(),
@@ -796,13 +774,10 @@ fn test_ffmpeg_build() {
     let version_output = Command::new(ffmpeg_path.to_str().unwrap())
         .arg("-version")
         .output()
-        .unwrap_or_else(|e| {
-            panic!("Failed to execute ffmpeg for version check: {}", e)
-        });
+        .unwrap_or_else(|e| panic!("Failed to execute ffmpeg for version check: {}", e));
     let version_stdout = String::from_utf8_lossy(&version_output.stdout);
     assert!(
-        version_stdout.to_lowercase().contains("ffmpeg")
-            || version_stdout.contains("version"),
+        version_stdout.to_lowercase().contains("ffmpeg") || version_stdout.contains("version"),
         "ffmpeg -version did not produce expected output.\nstdout: '{}'",
         version_stdout.trim()
     );

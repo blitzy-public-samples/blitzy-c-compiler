@@ -54,6 +54,6 @@ pub use temp_files::{TempDir, TempFile};
 // Re-export type system types for ergonomic access via `crate::common::CType`,
 // `crate::common::MachineType`, etc.
 pub use types::{
-    align_of, integer_promote, size_of, usual_arithmetic_conversion, CType, FieldDef,
-    MachineType, QualifiedType, TypeQualifiers,
+    align_of, integer_promote, size_of, usual_arithmetic_conversion, CType, FieldDef, MachineType,
+    QualifiedType, TypeQualifiers,
 };

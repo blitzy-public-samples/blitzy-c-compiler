@@ -166,10 +166,7 @@ fn bcc_cc_path() -> String {
 fn create_bcc_wrapper(work_dir: &Path) -> PathBuf {
     let wrapper_path = work_dir.join("bcc-riscv64");
     let bcc_abs = bcc_cc_path();
-    let script = format!(
-        "#!/bin/sh\nexec \"{}\" --target=riscv64 \"$@\"\n",
-        bcc_abs
-    );
+    let script = format!("#!/bin/sh\nexec \"{}\" --target=riscv64 \"$@\"\n", bcc_abs);
     fs::write(&wrapper_path, &script).unwrap_or_else(|e| {
         panic!(
             "Failed to write BCC wrapper at '{}': {}",
@@ -450,7 +447,11 @@ fn format_failure_report(target: &str, output: &common::BccOutput) -> String {
          {}\n\
          ------- stdout (first 2048 bytes) -------\n\
          {}",
-        target, category, output.exit_code(), stderr_snippet, stdout_snippet,
+        target,
+        category,
+        output.exit_code(),
+        stderr_snippet,
+        stdout_snippet,
     )
 }
 
@@ -479,9 +480,7 @@ fn compile_kernel_object_via_make(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .unwrap_or_else(|e| {
-            panic!("Failed to execute 'make {}': {}", target_obj, e)
-        });
+        .unwrap_or_else(|e| panic!("Failed to execute 'make {}': {}", target_obj, e));
 
     common::BccOutput {
         status: result.status,
@@ -501,9 +500,8 @@ fn validate_kernel_object(obj_path: &str) {
     );
 
     // Verify non-zero file size.
-    let meta = fs::metadata(obj_path).unwrap_or_else(|e| {
-        panic!("Cannot stat '{}': {}", obj_path, e)
-    });
+    let meta =
+        fs::metadata(obj_path).unwrap_or_else(|e| panic!("Cannot stat '{}': {}", obj_path, e));
     assert!(
         meta.len() > 0,
         "Kernel object '{}' is empty (0 bytes).",
@@ -535,9 +533,8 @@ fn validate_kernel_object(obj_path: &str) {
 /// object file with BCC, classify any failure, and validate the result.
 fn run_subgate_test(target_obj: &str) {
     let kernel_src = require_kernel_source();
-    let test_dir = common::TestDir::new(
-        &format!("kernel_subgate_{}", target_obj.replace('/', "_")),
-    );
+    let test_dir =
+        common::TestDir::new(&format!("kernel_subgate_{}", target_obj.replace('/', "_")));
     let build_dir = test_dir.file_path("build");
 
     // Prepare kernel build (defconfig + auto-generated headers).
@@ -547,12 +544,7 @@ fn run_subgate_test(target_obj: &str) {
     let wrapper = create_bcc_wrapper(test_dir.path());
 
     // Compile the target object.
-    let result = compile_kernel_object_via_make(
-        &kernel_src,
-        &build_dir,
-        &wrapper,
-        target_obj,
-    );
+    let result = compile_kernel_object_via_make(&kernel_src, &build_dir, &wrapper, target_obj);
 
     // On failure: classify per Section 0.7.6 and panic with diagnostics.
     if !result.success() {
@@ -669,9 +661,8 @@ void _start(void)
 fn build_initramfs(work_dir: &Path) -> PathBuf {
     // Step 1: Write init.c.
     let init_c = work_dir.join("init.c");
-    fs::write(&init_c, INIT_SOURCE).unwrap_or_else(|e| {
-        panic!("Failed to write '{}': {}", init_c.display(), e)
-    });
+    fs::write(&init_c, INIT_SOURCE)
+        .unwrap_or_else(|e| panic!("Failed to write '{}': {}", init_c.display(), e));
 
     // Step 2: Compile init.c → init.o using the shared test utility.
     let init_o = work_dir.join("init.o");
@@ -711,30 +702,22 @@ fn build_initramfs(work_dir: &Path) -> PathBuf {
 
     // Step 4: Create initramfs directory tree.
     let initramfs_dir = work_dir.join("initramfs");
-    fs::create_dir_all(&initramfs_dir).unwrap_or_else(|e| {
-        panic!("Failed to create initramfs directory: {}", e)
-    });
+    fs::create_dir_all(&initramfs_dir)
+        .unwrap_or_else(|e| panic!("Failed to create initramfs directory: {}", e));
 
     // Copy the init binary into the initramfs root.
     let initramfs_init = initramfs_dir.join("init");
-    let init_bytes = fs::read(&init_bin).unwrap_or_else(|e| {
-        panic!("Failed to read init binary: {}", e)
-    });
-    fs::write(&initramfs_init, &init_bytes).unwrap_or_else(|e| {
-        panic!("Failed to write initramfs/init: {}", e)
-    });
+    let init_bytes =
+        fs::read(&init_bin).unwrap_or_else(|e| panic!("Failed to read init binary: {}", e));
+    fs::write(&initramfs_init, &init_bytes)
+        .unwrap_or_else(|e| panic!("Failed to write initramfs/init: {}", e));
 
     // Make /init executable.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            &initramfs_init,
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap_or_else(|e| {
-            panic!("Failed to set /init permissions: {}", e)
-        });
+        std::fs::set_permissions(&initramfs_init, std::fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|e| panic!("Failed to set /init permissions: {}", e));
     }
 
     // Step 5: Create cpio archive.
@@ -776,15 +759,19 @@ fn build_initramfs(work_dir: &Path) -> PathBuf {
 /// within `timeout_secs`, the QEMU process is killed.
 ///
 /// Returns `(serial_output, timed_out)`.
-fn qemu_boot_kernel(
-    vmlinux: &Path,
-    initramfs_cpio: &Path,
-    timeout_secs: u64,
-) -> (String, bool) {
+fn qemu_boot_kernel(vmlinux: &Path, initramfs_cpio: &Path, timeout_secs: u64) -> (String, bool) {
     let start = Instant::now();
 
     let child = Command::new("qemu-system-riscv64")
-        .args(["-machine", "virt", "-nographic", "-m", "512M", "-bios", "none"])
+        .args([
+            "-machine",
+            "virt",
+            "-nographic",
+            "-m",
+            "512M",
+            "-bios",
+            "none",
+        ])
         .arg("-kernel")
         .arg(vmlinux.as_os_str())
         .arg("-initrd")
@@ -818,9 +805,9 @@ fn qemu_boot_kernel(
     });
 
     // Wait for QEMU to exit (normally or killed by watchdog).
-    let output = child.wait_with_output().unwrap_or_else(|e| {
-        panic!("Failed to wait on qemu-system-riscv64: {}", e)
-    });
+    let output = child
+        .wait_with_output()
+        .unwrap_or_else(|e| panic!("Failed to wait on qemu-system-riscv64: {}", e));
 
     let elapsed = start.elapsed();
     let timed_out = elapsed.as_secs() >= timeout_secs;
@@ -877,9 +864,7 @@ fn find_or_build_vmlinux(kernel_src: &Path, work_dir: &Path) -> PathBuf {
     }
 
     // Candidate 3: Build the kernel ourselves.
-    eprintln!(
-        "No pre-built vmlinux found.  Building kernel for QEMU boot test …"
-    );
+    eprintln!("No pre-built vmlinux found.  Building kernel for QEMU boot test …");
 
     let build_dir = work_dir.join("kernel_build");
     // Clean any stale build artifacts from a prior run.
@@ -907,9 +892,7 @@ fn find_or_build_vmlinux(kernel_src: &Path, work_dir: &Path) -> PathBuf {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .unwrap_or_else(|e| {
-            panic!("Failed to build kernel for QEMU boot test: {}", e)
-        });
+        .unwrap_or_else(|e| panic!("Failed to build kernel for QEMU boot test: {}", e));
 
     assert!(
         build_out.status.success(),
@@ -1047,9 +1030,7 @@ fn test_full_kernel_build() {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .unwrap_or_else(|e| {
-                panic!("Failed to execute 'make' for full kernel build: {}", e)
-            });
+            .unwrap_or_else(|e| panic!("Failed to execute 'make' for full kernel build: {}", e));
 
         common::BccOutput {
             status: out.status,
@@ -1077,9 +1058,8 @@ fn test_full_kernel_build() {
         vmlinux_path.display()
     );
 
-    let vmlinux_meta = fs::metadata(&vmlinux_path).unwrap_or_else(|e| {
-        panic!("Cannot stat vmlinux: {}", e)
-    });
+    let vmlinux_meta =
+        fs::metadata(&vmlinux_path).unwrap_or_else(|e| panic!("Cannot stat vmlinux: {}", e));
     assert!(
         vmlinux_meta.len() > 0,
         "vmlinux at '{}' is empty.",
@@ -1164,9 +1144,8 @@ fn test_kernel_qemu_boot() {
 
     // Build the minimal initramfs with /init.
     let initramfs_work = test_dir.file_path("initramfs_work");
-    fs::create_dir_all(&initramfs_work).unwrap_or_else(|e| {
-        panic!("Failed to create initramfs work directory: {}", e)
-    });
+    fs::create_dir_all(&initramfs_work)
+        .unwrap_or_else(|e| panic!("Failed to create initramfs work directory: {}", e));
     let initramfs_cpio = build_initramfs(&initramfs_work);
 
     // Boot the kernel.

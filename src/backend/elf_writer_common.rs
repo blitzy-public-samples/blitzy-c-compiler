@@ -809,13 +809,29 @@ impl ElfWriter {
         shstrtab.add_string(".shstrtab");
 
         // ---- Step 3: Build .symtab section data ---------------------------
-        let sym_entry_size = if is_64bit { ELF64_SYM_SIZE } else { ELF32_SYM_SIZE };
+        let sym_entry_size = if is_64bit {
+            ELF64_SYM_SIZE
+        } else {
+            ELF32_SYM_SIZE
+        };
         let symtab_data = self.serialize_symbols(&sorted_symbols, &strtab, is_64bit);
 
         // ---- Step 4: Compute layout offsets -------------------------------
-        let ehdr_size = if is_64bit { ELF64_EHDR_SIZE } else { ELF32_EHDR_SIZE };
-        let phdr_entry_size = if is_64bit { ELF64_PHDR_SIZE } else { ELF32_PHDR_SIZE };
-        let shdr_entry_size = if is_64bit { ELF64_SHDR_SIZE } else { ELF32_SHDR_SIZE };
+        let ehdr_size = if is_64bit {
+            ELF64_EHDR_SIZE
+        } else {
+            ELF32_EHDR_SIZE
+        };
+        let phdr_entry_size = if is_64bit {
+            ELF64_PHDR_SIZE
+        } else {
+            ELF32_PHDR_SIZE
+        };
+        let shdr_entry_size = if is_64bit {
+            ELF64_SHDR_SIZE
+        } else {
+            ELF32_SHDR_SIZE
+        };
 
         // Program header table immediately follows the ELF header.
         let phdr_offset = if self.program_headers.is_empty() {
@@ -917,11 +933,7 @@ impl ElfWriter {
         pad_to(&mut output, shdr_offset);
 
         // Section 0: null entry (SHN_UNDEF)
-        self.write_section_header(
-            &mut output,
-            is_64bit,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        );
+        self.write_section_header(&mut output, is_64bit, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
         // User sections
         for (i, section) in self.sections.iter().enumerate() {
@@ -958,8 +970,8 @@ impl ElfWriter {
             0, // no address
             symtab_offset as u64,
             symtab_data.len() as u64,
-            strtab_section_idx as u32, // sh_link → .strtab section index
-            first_global_index as u32, // sh_info → index of first non-local symbol
+            strtab_section_idx as u32,    // sh_link → .strtab section index
+            first_global_index as u32,    // sh_info → index of first non-local symbol
             if is_64bit { 8 } else { 4 }, // alignment
             sym_entry_size as u64,
         );
@@ -1059,7 +1071,11 @@ impl ElfWriter {
         strtab: &StringTable,
         is_64bit: bool,
     ) -> Vec<u8> {
-        let entry_size = if is_64bit { ELF64_SYM_SIZE } else { ELF32_SYM_SIZE };
+        let entry_size = if is_64bit {
+            ELF64_SYM_SIZE
+        } else {
+            ELF32_SYM_SIZE
+        };
         let mut data = Vec::with_capacity(symbols.len() * entry_size);
 
         for sym in symbols {
@@ -1201,12 +1217,7 @@ impl ElfWriter {
     }
 
     /// Writes a single program header entry to the output buffer.
-    fn write_program_header(
-        &self,
-        output: &mut Vec<u8>,
-        phdr: &ProgramHeader,
-        is_64bit: bool,
-    ) {
+    fn write_program_header(&self, output: &mut Vec<u8>, phdr: &ProgramHeader, is_64bit: bool) {
         if is_64bit {
             // Elf64_Phdr layout:
             //   p_type   (4 bytes)
@@ -1267,28 +1278,28 @@ impl ElfWriter {
     ) {
         if is_64bit {
             // Elf64_Shdr layout (64 bytes total):
-            output.extend_from_slice(&sh_name.to_le_bytes());     // 4 bytes
-            output.extend_from_slice(&sh_type.to_le_bytes());     // 4 bytes
-            output.extend_from_slice(&sh_flags.to_le_bytes());    // 8 bytes
-            output.extend_from_slice(&sh_addr.to_le_bytes());     // 8 bytes
-            output.extend_from_slice(&sh_offset.to_le_bytes());   // 8 bytes
-            output.extend_from_slice(&sh_size.to_le_bytes());     // 8 bytes
-            output.extend_from_slice(&sh_link.to_le_bytes());     // 4 bytes
-            output.extend_from_slice(&sh_info.to_le_bytes());     // 4 bytes
+            output.extend_from_slice(&sh_name.to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&sh_type.to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&sh_flags.to_le_bytes()); // 8 bytes
+            output.extend_from_slice(&sh_addr.to_le_bytes()); // 8 bytes
+            output.extend_from_slice(&sh_offset.to_le_bytes()); // 8 bytes
+            output.extend_from_slice(&sh_size.to_le_bytes()); // 8 bytes
+            output.extend_from_slice(&sh_link.to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&sh_info.to_le_bytes()); // 4 bytes
             output.extend_from_slice(&sh_addralign.to_le_bytes()); // 8 bytes
-            output.extend_from_slice(&sh_entsize.to_le_bytes());  // 8 bytes
+            output.extend_from_slice(&sh_entsize.to_le_bytes()); // 8 bytes
         } else {
             // Elf32_Shdr layout (40 bytes total):
-            output.extend_from_slice(&sh_name.to_le_bytes());                // 4 bytes
-            output.extend_from_slice(&sh_type.to_le_bytes());                // 4 bytes
-            output.extend_from_slice(&(sh_flags as u32).to_le_bytes());      // 4 bytes
-            output.extend_from_slice(&(sh_addr as u32).to_le_bytes());       // 4 bytes
-            output.extend_from_slice(&(sh_offset as u32).to_le_bytes());     // 4 bytes
-            output.extend_from_slice(&(sh_size as u32).to_le_bytes());       // 4 bytes
-            output.extend_from_slice(&sh_link.to_le_bytes());                // 4 bytes
-            output.extend_from_slice(&sh_info.to_le_bytes());                // 4 bytes
-            output.extend_from_slice(&(sh_addralign as u32).to_le_bytes());  // 4 bytes
-            output.extend_from_slice(&(sh_entsize as u32).to_le_bytes());    // 4 bytes
+            output.extend_from_slice(&sh_name.to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&sh_type.to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&(sh_flags as u32).to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&(sh_addr as u32).to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&(sh_offset as u32).to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&(sh_size as u32).to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&sh_link.to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&sh_info.to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&(sh_addralign as u32).to_le_bytes()); // 4 bytes
+            output.extend_from_slice(&(sh_entsize as u32).to_le_bytes()); // 4 bytes
         }
     }
 }
@@ -1548,8 +1559,8 @@ mod tests {
 
         // e_entry at offset 24 (8 bytes for ELF64)
         let e_entry = u64::from_le_bytes([
-            output[24], output[25], output[26], output[27],
-            output[28], output[29], output[30], output[31],
+            output[24], output[25], output[26], output[27], output[28], output[29], output[30],
+            output[31],
         ]);
         assert_eq!(e_entry, 0x401000);
     }
@@ -1642,8 +1653,8 @@ mod tests {
         // So .symtab section header is at index 1.
         // The section header table starts at e_shoff.
         let e_shoff = u64::from_le_bytes([
-            output[40], output[41], output[42], output[43],
-            output[44], output[45], output[46], output[47],
+            output[40], output[41], output[42], output[43], output[44], output[45], output[46],
+            output[47],
         ]) as usize;
 
         // Skip null section header (64 bytes for ELF64), read .symtab header.
@@ -1692,8 +1703,8 @@ mod tests {
 
         // e_phoff at offset 32 (8 bytes for ELF64) should be 0
         let e_phoff = u64::from_le_bytes([
-            output[32], output[33], output[34], output[35],
-            output[36], output[37], output[38], output[39],
+            output[32], output[33], output[34], output[35], output[36], output[37], output[38],
+            output[39],
         ]);
         assert_eq!(e_phoff, 0);
 
@@ -1718,8 +1729,8 @@ mod tests {
 
         // e_phoff should point immediately after the header (offset 64 for ELF64)
         let e_phoff = u64::from_le_bytes([
-            output[32], output[33], output[34], output[35],
-            output[36], output[37], output[38], output[39],
+            output[32], output[33], output[34], output[35], output[36], output[37], output[38],
+            output[39],
         ]);
         assert_eq!(e_phoff, ELF64_EHDR_SIZE as u64);
 
@@ -1772,9 +1783,7 @@ mod tests {
         let output = writer.write();
 
         // e_flags at offset 48 (4 bytes for ELF64)
-        let e_flags = u32::from_le_bytes([
-            output[48], output[49], output[50], output[51],
-        ]);
+        let e_flags = u32::from_le_bytes([output[48], output[49], output[50], output[51]]);
         // RISC-V should have RVC (0x1) | FLOAT_ABI_DOUBLE (0x4) = 0x5
         assert_eq!(e_flags, 0x5);
     }
@@ -1804,10 +1813,10 @@ mod tests {
 
         // sorted[0] = null symbol, sorted[1] = local_var, sorted[2] = global_func
         assert_eq!(sorted.len(), 3);
-        assert_eq!(sorted[0].name, "");           // null symbol
-        assert_eq!(sorted[1].name, "local_var");   // local first
+        assert_eq!(sorted[0].name, ""); // null symbol
+        assert_eq!(sorted[1].name, "local_var"); // local first
         assert_eq!(sorted[2].name, "global_func"); // global after
-        assert_eq!(first_global, 2);               // first global at index 2
+        assert_eq!(first_global, 2); // first global at index 2
     }
 
     // -----------------------------------------------------------------------

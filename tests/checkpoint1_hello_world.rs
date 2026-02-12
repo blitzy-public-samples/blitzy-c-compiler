@@ -88,7 +88,7 @@ const ELF_TYPE_REL: &str = "REL";
 /// # Arguments
 ///
 /// * `target`           — Target architecture string (`"x86-64"`, `"i686"`,
-///                        `"aarch64"`, `"riscv64"`).
+///   `"aarch64"`, `"riscv64"`).
 /// * `binary_name`      — Output binary filename (e.g., `"hello_x86_64"`).
 /// * `expected_machine` — Expected ELF `Machine:` field substring.
 /// * `expected_class`   — Expected ELF `Class:` field value (`"ELF64"` or `"ELF32"`).
@@ -101,7 +101,9 @@ fn run_hello_world_test(
     // --- Setup: create a temporary directory for test artifacts ---
     let test_dir = common::TestDir::new(&format!("checkpoint1_{}", target));
     let output_path = test_dir.file_path(binary_name);
-    let output_str = output_path.to_str().expect("output path must be valid UTF-8");
+    let output_str = output_path
+        .to_str()
+        .expect("output path must be valid UTF-8");
 
     // --- Resolve the hello.c fixture path ---
     let source = common::fixture_path("hello.c");
@@ -256,7 +258,9 @@ fn test_compile_only_c_flag() {
     // Setup: create a temporary directory for the object file.
     let test_dir = common::TestDir::new("checkpoint1_compile_only");
     let output_path = test_dir.file_path("hello.o");
-    let output_str = output_path.to_str().expect("output path must be valid UTF-8");
+    let output_str = output_path
+        .to_str()
+        .expect("output path must be valid UTF-8");
 
     // Resolve the hello.c fixture path.
     let source = common::fixture_path("hello.c");

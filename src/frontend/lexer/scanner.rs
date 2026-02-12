@@ -1021,7 +1021,7 @@ mod tests {
         assert!(Scanner::is_identifier_start('\u{0100}'));
         // CJK character should be valid identifier start
         assert!(Scanner::is_identifier_start('\u{4E00}')); // 一
-        // Combining mark (U+0300) should NOT be valid identifier start (Annex D.2)
+                                                           // Combining mark (U+0300) should NOT be valid identifier start (Annex D.2)
         assert!(!Scanner::is_identifier_start('\u{0300}'));
     }
 

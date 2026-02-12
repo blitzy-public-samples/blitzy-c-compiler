@@ -122,7 +122,11 @@ impl Span {
     /// * `end` — Exclusive end byte offset.
     #[inline]
     pub fn new(file_id: u32, start: u32, end: u32) -> Self {
-        Span { file_id, start, end }
+        Span {
+            file_id,
+            start,
+            end,
+        }
     }
 
     /// Merges two spans into a single span covering both ranges.
@@ -448,7 +452,11 @@ impl DiagnosticEngine {
 
         // Print summary line if there were errors or warnings
         if self.error_count > 0 || self.warning_count > 0 {
-            let _ = write!(writer, "{}", Self::summary_line(self.error_count, self.warning_count));
+            let _ = write!(
+                writer,
+                "{}",
+                Self::summary_line(self.error_count, self.warning_count)
+            );
         }
 
         // Flush to ensure all output is written
@@ -459,18 +467,10 @@ impl DiagnosticEngine {
     ///
     /// Handles the primary diagnostic message, source line display with
     /// caret/tilde underline, attached notes, and fix suggestions.
-    fn format_diagnostic<W: Write>(
-        writer: &mut W,
-        diag: &Diagnostic,
-        source_map: &SourceMap,
-    ) {
+    fn format_diagnostic<W: Write>(writer: &mut W, diag: &Diagnostic, source_map: &SourceMap) {
         // --- Primary diagnostic header ---
         let location = Self::resolve_location(source_map, &diag.span);
-        let _ = writeln!(
-            writer,
-            "{}: {}: {}",
-            location, diag.severity, diag.message
-        );
+        let _ = writeln!(writer, "{}: {}: {}", location, diag.severity, diag.message);
 
         // --- Source line with caret/tilde underline ---
         if !diag.span.is_dummy() {
@@ -529,11 +529,7 @@ impl DiagnosticEngine {
     ///     int x = unknwon_func();
     ///             ^~~~~~~~~~~~~~
     /// ```
-    fn print_source_line<W: Write>(
-        writer: &mut W,
-        source_map: &SourceMap,
-        span: &Span,
-    ) {
+    fn print_source_line<W: Write>(writer: &mut W, source_map: &SourceMap, span: &Span) {
         let file_id = FileId(span.file_id);
         let loc: SourceLocation = source_map.lookup_location(file_id, span.start);
 
@@ -784,12 +780,8 @@ mod tests {
 
     #[test]
     fn test_diagnostic_with_note() {
-        let diag = Diagnostic::new(
-            Severity::Error,
-            Span::new(0, 10, 15),
-            "type mismatch",
-        )
-        .with_note(Span::new(0, 0, 5), "expected 'int'");
+        let diag = Diagnostic::new(Severity::Error, Span::new(0, 10, 15), "type mismatch")
+            .with_note(Span::new(0, 0, 5), "expected 'int'");
 
         assert_eq!(diag.notes.len(), 1);
         assert_eq!(diag.notes[0].1, "expected 'int'");
@@ -955,11 +947,7 @@ mod tests {
         let mut sm = SourceMap::new();
         let _fid = sm.add_file("test.c".to_string(), "int x = 0;\n".to_string());
 
-        let diag = Diagnostic::new(
-            Severity::Error,
-            Span::new(0, 4, 5),
-            "expected ';'",
-        );
+        let diag = Diagnostic::new(Severity::Error, Span::new(0, 4, 5), "expected ';'");
 
         let mut buf = Vec::new();
         DiagnosticEngine::format_diagnostic(&mut buf, &diag, &sm);
@@ -1013,11 +1001,7 @@ mod tests {
     #[test]
     fn test_format_diagnostic_dummy_span() {
         let sm = SourceMap::new();
-        let diag = Diagnostic::new(
-            Severity::Error,
-            Span::DUMMY,
-            "internal compiler error",
-        );
+        let diag = Diagnostic::new(Severity::Error, Span::DUMMY, "internal compiler error");
 
         let mut buf = Vec::new();
         DiagnosticEngine::format_diagnostic(&mut buf, &diag, &sm);
@@ -1032,11 +1016,7 @@ mod tests {
         let _fid = sm.add_file("test.c".to_string(), "unknown_func();\n".to_string());
 
         // Span covering "unknown_func" (bytes 0..12)
-        let diag = Diagnostic::new(
-            Severity::Error,
-            Span::new(0, 0, 12),
-            "undeclared",
-        );
+        let diag = Diagnostic::new(Severity::Error, Span::new(0, 0, 12), "undeclared");
 
         let mut buf = Vec::new();
         DiagnosticEngine::format_diagnostic(&mut buf, &diag, &sm);
@@ -1049,7 +1029,10 @@ mod tests {
     #[test]
     fn test_print_all_with_source_map() {
         let mut sm = SourceMap::new();
-        let _fid = sm.add_file("main.c".to_string(), "int main() {\n  return x;\n}\n".to_string());
+        let _fid = sm.add_file(
+            "main.c".to_string(),
+            "int main() {\n  return x;\n}\n".to_string(),
+        );
 
         let mut engine = DiagnosticEngine::new();
         engine.error(Span::new(0, 23, 24), "use of undeclared identifier 'x'");
@@ -1098,11 +1081,7 @@ mod tests {
         );
 
         // "bad" is at byte offset 19..22 (line 2)
-        let diag = Diagnostic::new(
-            Severity::Error,
-            Span::new(0, 19, 22),
-            "undeclared 'bad'",
-        );
+        let diag = Diagnostic::new(Severity::Error, Span::new(0, 19, 22), "undeclared 'bad'");
 
         let mut buf = Vec::new();
         DiagnosticEngine::format_diagnostic(&mut buf, &diag, &sm);

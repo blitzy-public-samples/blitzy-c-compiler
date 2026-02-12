@@ -394,10 +394,7 @@ mod tests {
 
         // Section layout: [0x00, b'm', b'a', b'i', b'n', 0x00]
         assert_eq!(table.section_size(), 6);
-        assert_eq!(
-            table.as_bytes(),
-            &[0x00, b'm', b'a', b'i', b'n', 0x00]
-        );
+        assert_eq!(table.as_bytes(), &[0x00, b'm', b'a', b'i', b'n', 0x00]);
     }
 
     #[test]
@@ -416,7 +413,7 @@ mod tests {
         assert_eq!(table.section_size(), 9);
 
         let expected: &[u8] = &[
-            0x00,                   // initial empty string
+            0x00, // initial empty string
             b'a', b'b', b'c', 0x00, // "abc"
             b'x', b'y', b'z', 0x00, // "xyz"
         ];
@@ -454,7 +451,7 @@ mod tests {
         let off_a = table.add_string("alpha");
         let off_b = table.add_string("beta");
         let off_a2 = table.add_string("alpha"); // Duplicate.
-        let off_b2 = table.add_string("beta");  // Duplicate.
+        let off_b2 = table.add_string("beta"); // Duplicate.
 
         assert_eq!(off_a, off_a2);
         assert_eq!(off_b, off_b2);
@@ -595,8 +592,8 @@ mod tests {
         // Typical strings added during DWARF emission:
         let producer = table.add_string("bcc 1.0.0");
         let comp_dir = table.add_string("/home/user/project");
-        let source   = table.add_string("main.c");
-        let func     = table.add_string("main");
+        let source = table.add_string("main.c");
+        let func = table.add_string("main");
         let var_name = table.add_string("argc");
         let type_name = table.add_string("int");
 
@@ -633,8 +630,7 @@ mod tests {
             assert_eq!(
                 bytes[end], 0x00,
                 "String '{}' missing null terminator at offset {}",
-                s,
-                end,
+                s, end,
             );
         }
     }
@@ -691,11 +687,7 @@ mod tests {
         // Verify deduplication: adding the same strings again yields same offsets.
         for (s, expected_off) in &recorded_offsets {
             let off = table.add_string(s);
-            assert_eq!(
-                off, *expected_off,
-                "Deduplication failed for '{}'",
-                s,
-            );
+            assert_eq!(off, *expected_off, "Deduplication failed for '{}'", s,);
         }
 
         // Size should not have grown after the deduplication pass.

@@ -127,44 +127,13 @@ impl fmt::Debug for Symbol {
 /// requiring a fresh hash-map lookup on first encounter.
 const C11_KEYWORDS: &[&str] = &[
     // Storage class specifiers
-    "auto",
-    "extern",
-    "register",
-    "static",
-    "typedef",
-    // Type specifiers
-    "char",
-    "double",
-    "enum",
-    "float",
-    "int",
-    "long",
-    "short",
-    "signed",
-    "struct",
-    "union",
-    "unsigned",
-    "void",
-    // Type qualifiers
-    "const",
-    "restrict",
-    "volatile",
-    // Function specifiers
-    "inline",
-    // Control flow
-    "break",
-    "case",
-    "continue",
-    "default",
-    "do",
-    "else",
-    "for",
-    "goto",
-    "if",
-    "return",
-    "switch",
-    "while",
-    // Operators and misc
+    "auto", "extern", "register", "static", "typedef", // Type specifiers
+    "char", "double", "enum", "float", "int", "long", "short", "signed", "struct", "union",
+    "unsigned", "void", // Type qualifiers
+    "const", "restrict", "volatile", // Function specifiers
+    "inline",   // Control flow
+    "break", "case", "continue", "default", "do", "else", "for", "goto", "if", "return", "switch",
+    "while", // Operators and misc
     "sizeof",
 ];
 

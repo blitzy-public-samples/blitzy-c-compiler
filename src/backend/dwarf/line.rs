@@ -785,11 +785,7 @@ impl LineNumberProgramBuilder {
         // unit_length field itself.
         let total = self.data.len();
         let unit_length = total - (self.unit_length_offset + 4);
-        patch_u32_le(
-            &mut self.data,
-            self.unit_length_offset,
-            unit_length as u32,
-        );
+        patch_u32_le(&mut self.data, self.unit_length_offset, unit_length as u32);
         self.data.clone()
     }
 
@@ -913,8 +909,7 @@ fn write_sleb128(data: &mut Vec<u8>, mut value: i64) {
         // Termination condition:
         //   - If value is 0 and bit 6 of byte is clear (positive), done.
         //   - If value is -1 and bit 6 of byte is set (negative), done.
-        let done = (value == 0 && (byte & 0x40) == 0)
-            || (value == -1 && (byte & 0x40) != 0);
+        let done = (value == 0 && (byte & 0x40) == 0) || (value == -1 && (byte & 0x40) != 0);
         if done {
             data.push(byte);
             break;
@@ -1218,7 +1213,10 @@ mod tests {
 
     #[test]
     fn test_split_path_unix() {
-        assert_eq!(split_path("/home/user/src/main.c"), ("/home/user/src", "main.c"));
+        assert_eq!(
+            split_path("/home/user/src/main.c"),
+            ("/home/user/src", "main.c")
+        );
     }
 
     #[test]
@@ -1352,7 +1350,10 @@ mod tests {
         let mut builder = LineNumberProgramBuilder::new(Target::AArch64);
         builder.add_file("test.c", 0);
         builder.emit_header();
-        assert_eq!(builder.data[10], 4, "minimum_instruction_length for AArch64");
+        assert_eq!(
+            builder.data[10], 4,
+            "minimum_instruction_length for AArch64"
+        );
     }
 
     #[test]
@@ -1362,8 +1363,12 @@ mod tests {
         // Opcode lengths are at offsets 16..27 (inclusive)
         let expected: [u8; 12] = [0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 1];
         for (i, &expected_len) in expected.iter().enumerate() {
-            assert_eq!(builder.data[16 + i], expected_len,
-                "opcode {} length mismatch", i + 1);
+            assert_eq!(
+                builder.data[16 + i],
+                expected_len,
+                "opcode {} length mismatch",
+                i + 1
+            );
         }
     }
 
@@ -1541,9 +1546,9 @@ mod tests {
 
         builder.emit_set_address(0x401000);
         builder.emit_set_file(file_idx);
-        builder.emit_line_advance(0, 0);       // line 1 at start
-        builder.emit_line_advance(5, 1);       // +5 bytes, +1 line
-        builder.emit_line_advance(3, 1);       // +3 bytes, +1 line
+        builder.emit_line_advance(0, 0); // line 1 at start
+        builder.emit_line_advance(5, 1); // +5 bytes, +1 line
+        builder.emit_line_advance(3, 1); // +3 bytes, +1 line
         builder.emit_end_sequence();
 
         let bytes = builder.finish();
@@ -1639,8 +1644,10 @@ mod tests {
 
         // header_length is at offset 6..9
         let header_length = u32::from_le_bytes([
-            builder.data[6], builder.data[7],
-            builder.data[8], builder.data[9],
+            builder.data[6],
+            builder.data[7],
+            builder.data[8],
+            builder.data[9],
         ]);
         // The header content starts at offset 10 (after header_length field)
         // and ends at the first program opcode.

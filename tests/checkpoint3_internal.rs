@@ -308,16 +308,9 @@ fn parse_test_results(output: &str) -> TestResults {
 /// * `label`      — Human-readable label for diagnostic messages (e.g.,
 ///   "Full test suite" or "common module tests").
 /// * `bcc_output` — The raw subprocess output for inclusion in failure messages.
-fn assert_all_tests_pass(
-    results: &TestResults,
-    label: &str,
-    bcc_output: &common::BccOutput,
-) {
+fn assert_all_tests_pass(results: &TestResults, label: &str, bcc_output: &common::BccOutput) {
     // Emit summary for CI log visibility (always printed, even on success).
-    eprintln!(
-        "[Checkpoint 3] {} — Test results: {}",
-        label, results
-    );
+    eprintln!("[Checkpoint 3] {} — Test results: {}", label, results);
 
     // Hard gate: zero failures required (Section 0.7.5).
     assert!(
@@ -422,10 +415,7 @@ fn run_and_validate_module_tests(module_name: &str) {
     let filter = format!("{}::", module_name);
     let label = format!("{} module tests", module_name);
 
-    eprintln!(
-        "[Checkpoint 3] Running {} (filter: '{}')",
-        label, filter
-    );
+    eprintln!("[Checkpoint 3] Running {} (filter: '{}')", label, filter);
 
     // Execute module-filtered library tests.
     let output = run_cargo_test_lib(Some(&filter));
@@ -647,14 +637,10 @@ fn test_regression_after_feature_addition() {
             let filter = format!("{}::", module_name);
             let module_output = run_cargo_test_lib(Some(&filter));
 
-            let module_combined =
-                format!("{}\n{}", module_output.stdout, module_output.stderr);
+            let module_combined = format!("{}\n{}", module_output.stdout, module_output.stderr);
             let module_results = parse_test_results(&module_combined);
 
-            eprintln!(
-                "[Checkpoint 3]   {} — {}",
-                module_name, module_results
-            );
+            eprintln!("[Checkpoint 3]   {} — {}", module_name, module_results);
 
             // Each module must individually pass — attribute regressions to
             // the specific module for actionable diagnostics.

@@ -33,3 +33,10 @@
 /// character-level scanner and (future) token type definitions, numeric
 /// literal parsing, and string literal parsing.
 pub mod lexer;
+
+/// Semantic Analyzer — Phase 5 semantic analysis.
+///
+/// Type checking, scope management, symbol table construction, constant
+/// expression evaluation, GCC builtin evaluation, initializer analysis,
+/// and attribute validation.
+pub mod sema;

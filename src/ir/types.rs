@@ -1448,19 +1448,19 @@ mod tests {
             packed: false,
         };
         assert_eq!(
-            IrType::struct_field_offset(&st.struct_fields().unwrap().to_vec(), 0, false, &t),
+            IrType::struct_field_offset(st.struct_fields().unwrap(), 0, false, &t),
             0
         );
         assert_eq!(
-            IrType::struct_field_offset(&st.struct_fields().unwrap().to_vec(), 1, false, &t),
+            IrType::struct_field_offset(st.struct_fields().unwrap(), 1, false, &t),
             2
         );
         assert_eq!(
-            IrType::struct_field_offset(&st.struct_fields().unwrap().to_vec(), 2, false, &t),
+            IrType::struct_field_offset(st.struct_fields().unwrap(), 2, false, &t),
             4
         );
         assert_eq!(
-            IrType::struct_field_offset(&st.struct_fields().unwrap().to_vec(), 3, false, &t),
+            IrType::struct_field_offset(st.struct_fields().unwrap(), 3, false, &t),
             8
         );
         assert_eq!(st.size_bytes(&t), 16);

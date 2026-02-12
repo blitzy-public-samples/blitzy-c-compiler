@@ -881,13 +881,7 @@ impl SymbolTable {
 
         // Update the name-to-ID auxiliary index. If this is the first
         // symbol with this name, create a new vector; otherwise append.
-        if self.name_index.contains_key(&name) {
-            // Name already present — push the new ID onto the existing list.
-            self.name_index.get_mut(&name).unwrap().push(id);
-        } else {
-            // First occurrence — create a new entry in the index.
-            self.name_index.insert(name, vec![id]);
-        }
+        self.name_index.entry(name).or_default().push(id);
         id
     }
 
@@ -959,6 +953,7 @@ impl SymbolTable {
     ///
     /// - `Ok(())` if the merge succeeded.
     /// - `Err(())` if the redeclaration is invalid (diagnostic emitted).
+    #[allow(clippy::result_unit_err)]
     pub fn merge_declaration(
         &mut self,
         existing_id: SymbolId,
@@ -968,7 +963,7 @@ impl SymbolTable {
         let existing = &self.symbols[existing_id.as_usize()];
         let existing_span = existing.span;
         let existing_is_def = existing.is_definition;
-        let existing_is_tentative = existing.is_tentative;
+        let _existing_is_tentative = existing.is_tentative;
         let existing_linkage = existing.linkage;
         let existing_storage = existing.storage_class;
         let existing_ty = existing.ty.clone();

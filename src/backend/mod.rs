@@ -26,3 +26,7 @@
 /// DWARF v4 debug information generation — `.debug_info`, `.debug_abbrev`,
 /// `.debug_line`, and `.debug_str` section builders.
 pub mod dwarf;
+
+/// x86-64 (AMD64) backend — `ArchCodegen` trait implementation, instruction
+/// selection, built-in assembler, and built-in linker for the x86-64 target.
+pub mod x86_64;

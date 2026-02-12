@@ -43,6 +43,7 @@ use std::fmt;
 /// x86-64 ABI supplement. The variants carry no data; metadata is accessed via the
 /// associated methods (`elf_value`, `size`, `is_pc_relative`, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(non_camel_case_types)]
 pub enum X86_64RelocationType {
     /// ELF value 0 — No relocation action required. Used as a placeholder or padding
     /// in relocation tables.

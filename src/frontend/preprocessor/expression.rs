@@ -125,6 +125,7 @@ impl PPValue {
 ///
 /// `Err(())` on unrecoverable parse failure (a diagnostic will already have
 /// been emitted).
+#[allow(clippy::result_unit_err)]
 pub fn evaluate_expression(
     tokens: &[Token],
     macros: &FxHashMap<Symbol, MacroDef>,
@@ -717,12 +718,10 @@ impl<'a> ExprParser<'a> {
             TokenKind::LeftParen => {
                 self.advance();
                 let inner = self.parse_ternary(suppress);
-                if !self.eat(&TokenKind::RightParen) {
-                    if !suppress {
-                        let span = self.peek_span();
-                        self.diag
-                            .error(span, "expected ')' in preprocessor expression");
-                    }
+                if !self.eat(&TokenKind::RightParen) && !suppress {
+                    let span = self.peek_span();
+                    self.diag
+                        .error(span, "expected ')' in preprocessor expression");
                 }
                 inner
             }
@@ -862,7 +861,7 @@ fn apply_shift(
     let (a, _b, unsigned) = promote(a, b);
     let shift = b.val;
     // Validate shift amount.
-    if shift < 0 || shift >= 64 {
+    if !(0..64).contains(&shift) {
         diag.warning(span, "shift amount out of range for preprocessor expression");
         return PPValue {
             val: 0,

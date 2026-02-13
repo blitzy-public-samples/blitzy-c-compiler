@@ -259,57 +259,25 @@ impl Preprocessor {
 
     // ─── Predefined macro registration ──────────────────────────────────
 
-    /// Registers all predefined macros (`__FILE__`, `__LINE__`, `__DATE__`,
-    /// `__TIME__`, `__STDC__`, `__STDC_VERSION__`, and architecture-specific
-    /// defines) into the macro table.
+    /// Registers **all** predefined macros into the macro table.
+    ///
+    /// Delegates to the comprehensive [`predefined::register_predefined_macros`]
+    /// function which populates:
+    ///
+    /// 1. Dynamic macros (`__FILE__`, `__LINE__`, `__DATE__`, `__TIME__`, `__COUNTER__`)
+    /// 2. C11 standard macros (`__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__`,
+    ///    `__STDC_UTF_16__`, `__STDC_UTF_32__`, `__STDC_NO_VLA__`)
+    /// 3. Architecture-specific macros from `Target::predefined_macros()`
+    /// 4. Platform macros (`__linux__`, `__ELF__`, `__unix__`, etc.)
+    /// 5. Compiler identification (`__BCC__`, `__BCC_VERSION__`, `__GNUC__`, etc.)
+    /// 6. Type-size and type-limit macros (`__SIZEOF_*__`, `__INT_MAX__`, etc.)
+    /// 7. GCC sync builtins indicator macros
     fn register_predefined_macros(&mut self) {
-        // Standard C predefined macros — registered as predefined so the
-        // expander can compute them dynamically.
-        let predefined_names = [
-            "__FILE__",
-            "__LINE__",
-            "__DATE__",
-            "__TIME__",
-            "__STDC__",
-            "__STDC_VERSION__",
-            "__STDC_HOSTED__",
-            "__COUNTER__",
-        ];
-        for name in &predefined_names {
-            let sym = self.interner.intern(name);
-            self.macros.insert(sym, MacroDef::predefined(sym));
-        }
-
-        // Architecture-specific predefined macros from target info.
-        // `predefined_macros()` returns `Vec<(&str, &str)>` where value is
-        // a textual representation (e.g., "1", "201112L", "8").
-        let arch_macros = self.target.predefined_macros();
-        for (name, value) in arch_macros {
-            let sym = self.interner.intern(name);
-            // Skip macros already registered as dynamically-expanded predefined
-            // macros (e.g. __STDC__, __STDC_VERSION__, __STDC_HOSTED__).
-            if self.macros.contains_key(&sym) {
-                continue;
-            }
-            let body = if value.is_empty() {
-                // Flag-style define: `#define __x86_64__` (empty body).
-                Vec::new()
-            } else {
-                // Value define: `#define __SIZEOF_POINTER__ 8`.
-                // Parse the value string into a token using the same logic
-                // as command-line `-D` definitions.
-                self.tokenize_define_value(value)
-            };
-            let def = MacroDef {
-                name: sym,
-                params: None,
-                is_variadic: false,
-                body,
-                is_predefined: true,
-                source_span: Span::DUMMY,
-            };
-            self.macros.insert(sym, def);
-        }
+        // Target is Copy, so we can take a local copy to avoid double-borrow
+        // (predefined module needs &mut self for macro insertion AND &Target
+        // for architecture-dependent values).
+        let target = self.target;
+        predefined::register_predefined_macros(self, &target);
     }
 
     /// Adds a system include search path (from `-I` flag).

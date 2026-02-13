@@ -1909,15 +1909,17 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0x9400_0000); // BL #0
+        // Use offset=0 so the byte index into the buffer is valid.
+        // P = 0, S = 0x100 → S + A - P = 0x100 (256 bytes, 64 instructions)
         let entry = RelocationEntry {
-            offset: 0x1000,         // P = 0x1000
+            offset: 0,              // P = 0 (byte index into buffer)
             reloc_type: R_AARCH64_CALL26,
             symbol_name: "target".to_string(),
-            symbol_value: 0x1100,   // S = 0x1100
+            symbol_value: 0x100,    // S = 0x100
             addend: 0,              // A = 0
             output_section: 0,
         };
-        // S + A - P = 0x1100 - 0x1000 = 0x100 (256 bytes, 64 instructions)
+        // S + A - P = 0x100 - 0x0 = 0x100 (256 bytes, 64 instructions)
         handler
             .apply_relocation(&entry, &mut data, 0, 0)
             .unwrap();
@@ -1930,19 +1932,22 @@ mod tests {
     fn test_apply_relocation_adrp_add_pair() {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 8];
-        // ADRP X0, #0 at offset 0 (P = 0x1000)
+        // ADRP X0, #0 at buffer offset 0 (P = 0x0)
         write_u32_le(&mut data, 0, 0x9000_0000);
-        // ADD X0, X0, #0 at offset 4 (P = 0x1004)
+        // ADD X0, X0, #0 at buffer offset 4 (P = 0x4)
         write_u32_le(&mut data, 4, 0x9100_0000);
 
-        // Target symbol at 0x3ABC
-        let s: u64 = 0x3ABC;
-        let p_adrp: u64 = 0x1000;
+        // Use S = 0x2ABC so that with P = 0:
+        //   Page(0x2ABC) = 0x2000, Page(0x0) = 0x0
+        //   page_delta = (0x2000 - 0x0) >> 12 = 2
+        //   lo12 = 0x2ABC & 0xFFF = 0xABC
+        // These produce the same expected values as the original test.
+        let s: u64 = 0x2ABC;
 
-        // ADRP: Page(0x3ABC) = 0x3000, Page(0x1000) = 0x1000
-        // page_delta = (0x3000 - 0x1000) >> 12 = 2
+        // ADRP: Page(0x2ABC) = 0x2000, Page(0) = 0x0
+        // page_delta = (0x2000 - 0x0) >> 12 = 2
         let adrp_entry = RelocationEntry {
-            offset: p_adrp,
+            offset: 0,
             reloc_type: R_AARCH64_ADR_PREL_PG_HI21,
             symbol_name: "sym".to_string(),
             symbol_value: s,
@@ -1955,7 +1960,7 @@ mod tests {
 
         // ADD: low 12 of S+A = 0xABC
         let add_entry = RelocationEntry {
-            offset: 0x1004,
+            offset: 4,
             reloc_type: R_AARCH64_ADD_ABS_LO12_NC,
             symbol_name: "sym".to_string(),
             symbol_value: s,

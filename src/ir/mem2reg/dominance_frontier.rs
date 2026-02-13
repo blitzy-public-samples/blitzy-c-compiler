@@ -689,8 +689,8 @@ mod tests {
         func.get_block_mut(BasicBlockId(0)).set_terminator(
             Instruction::CondBranch {
                 condition: crate::ir::instructions::ValueId(0),
-                true_block: BasicBlockId(1),
-                false_block: BasicBlockId(2),
+                true_target: BasicBlockId(1),
+                false_target: BasicBlockId(2),
             },
         );
         func.get_block_mut(BasicBlockId(1)).set_terminator(
@@ -738,7 +738,7 @@ mod tests {
         let func = IrFunction::new("trivial".into(), IrType::Void, vec![]);
 
         // Add a return terminator to the entry block.
-        func.blocks()[0].clone(); // verify block exists
+        let _ = func.blocks()[0].clone(); // verify block exists
         let mut func = func;
         func.get_block_mut(BasicBlockId(0)).set_terminator(
             Instruction::Return { value: None },

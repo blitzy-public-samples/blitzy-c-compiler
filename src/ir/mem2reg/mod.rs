@@ -35,6 +35,11 @@
 /// both dominance frontier computation and SSA renaming traversal order.
 pub mod dominator_tree;
 
+/// Dominance frontier computation — implements the Cytron et al. 1991
+/// algorithm for computing dominance frontiers and the iterated dominance
+/// frontier (IDF) worklist algorithm for phi-node placement.
+pub mod dominance_frontier;
+
 /// Phase 9 phi-node elimination — converts SSA phi nodes back to copy
 /// operations at predecessor block terminators for consumption by the
 /// register allocator and backend code generator.
@@ -43,4 +48,5 @@ pub mod phi_eliminate;
 // ── Convenience re-exports ──────────────────────────────────────────────────
 
 pub use dominator_tree::DominatorTree;
+pub use dominance_frontier::DominanceFrontier;
 pub use phi_eliminate::{eliminate_phis, verify_no_phis};

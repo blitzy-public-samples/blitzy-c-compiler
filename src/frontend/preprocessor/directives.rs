@@ -416,6 +416,13 @@ fn handle_undef(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directiv
 ///   - `#include <path>` — system include (angle-bracket delimited).
 ///   - `#include MACRO` — computed include (macro-expanded, then re-parsed).
 ///
+/// For `<...>` system includes, the raw source text is extracted directly from
+/// the source map using token spans when possible. This is critical because the
+/// C tokenizer misinterprets parts of filenames (e.g., `stubs-64.h` — where
+/// `64.h` is lexed as a floating-point literal, losing the original text). The
+/// C standard specifies that `<h-char-sequence>` is a special "header-name"
+/// preprocessing token, not a sequence of regular C tokens.
+///
 /// Returns the include kind and path string, or `None` on parse failure.
 fn parse_include_path(
     pp: &mut Preprocessor,
@@ -435,20 +442,44 @@ fn parse_include_path(
         return Some((IncludeKind::User, path_string));
     }
 
-    // Form 2: `#include <path>` — system include (assembled from tokens).
+    // Form 2: `#include <path>` — system include.
+    // Extract raw source text between `<` and `>` to preserve exact filenames.
     if tokens[0].kind == TokenKind::Less {
-        let mut path = String::new();
-        let mut i = 1;
-        while i < tokens.len() {
-            if tokens[i].kind == TokenKind::Greater {
+        // Find the closing `>` token.
+        let close_idx = tokens[1..]
+            .iter()
+            .position(|t| t.kind == TokenKind::Greater)
+            .map(|pos| pos + 1);
+        let close_idx = match close_idx {
+            Some(idx) => idx,
+            None => {
+                pp.diagnostics
+                    .error(span, "missing '>' in #include <...>");
+                return None;
+            }
+        };
+
+        // Preferred approach: extract raw source text from spans. Tokens in a
+        // non-macro-expanded #include line originate from the same file, so spans
+        // are contiguous and valid.
+        let lt_span = tokens[0].span;
+        let gt_span = tokens[close_idx].span;
+        if lt_span.file_id == gt_span.file_id && lt_span.file_id != u32::MAX {
+            let file_id = FileId(lt_span.file_id);
+            let raw = pp.source_map.get_snippet(file_id, lt_span.end, gt_span.start);
+            let path = raw.trim().to_string();
+            if !path.is_empty() {
                 return Some((IncludeKind::System, path));
             }
-            path.push_str(&token_text(&tokens[i], &pp.interner));
-            i += 1;
         }
-        pp.diagnostics
-            .error(span, "missing '>' in #include <...>");
-        return None;
+
+        // Fallback: reconstruct from token text (for cases where span extraction
+        // yields an empty path, e.g., tokens generated synthetically).
+        let mut path = String::new();
+        for tok in &tokens[1..close_idx] {
+            path.push_str(&token_text(tok, &pp.interner));
+        }
+        return Some((IncludeKind::System, path));
     }
 
     // Form 3: computed include — macro-expand and re-parse.
@@ -467,18 +498,38 @@ fn parse_include_path(
     }
 
     if expanded[0].kind == TokenKind::Less {
-        let mut path = String::new();
-        let mut i = 1;
-        while i < expanded.len() {
-            if expanded[i].kind == TokenKind::Greater {
+        // Find closing `>` in expanded tokens.
+        let close_idx = expanded[1..]
+            .iter()
+            .position(|t| t.kind == TokenKind::Greater)
+            .map(|pos| pos + 1);
+        let close_idx = match close_idx {
+            Some(idx) => idx,
+            None => {
+                pp.diagnostics
+                    .error(span, "missing '>' in computed #include <...>");
+                return None;
+            }
+        };
+
+        // Try span-based extraction for expanded tokens too.
+        let lt_span = expanded[0].span;
+        let gt_span = expanded[close_idx].span;
+        if lt_span.file_id == gt_span.file_id && lt_span.file_id != u32::MAX {
+            let file_id = FileId(lt_span.file_id);
+            let raw = pp.source_map.get_snippet(file_id, lt_span.end, gt_span.start);
+            let path = raw.trim().to_string();
+            if !path.is_empty() {
                 return Some((IncludeKind::System, path));
             }
-            path.push_str(&token_text(&expanded[i], &pp.interner));
-            i += 1;
         }
-        pp.diagnostics
-            .error(span, "missing '>' in computed #include <...>");
-        return None;
+
+        // Fallback: reconstruct from token text.
+        let mut path = String::new();
+        for tok in &expanded[1..close_idx] {
+            path.push_str(&token_text(tok, &pp.interner));
+        }
+        return Some((IncludeKind::System, path));
     }
 
     pp.diagnostics

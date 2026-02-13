@@ -30,8 +30,13 @@
 
 use std::env;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
+
+// Library imports for the preprocessing pipeline (-E mode).
+use bcc::common::{DiagnosticEngine, Interner, SourceMap, Target as LibTarget};
+use bcc::frontend::preprocessor::Preprocessor;
+use bcc::frontend::lexer::token::{TokenKind, Token as LexToken};
 
 /// Maximum recursion depth for the parser and macro expander.
 /// Enforced to prevent stack overflow on deeply nested kernel constructs.
@@ -383,6 +388,222 @@ fn derive_output_path(input: &std::path::Path, mode: OutputMode) -> PathBuf {
     }
 }
 
+/// Convert a CLI `TargetArch` to the library `Target` enum.
+///
+/// The CLI defines its own `TargetArch` type for argument parsing, while
+/// the library uses `bcc::common::Target`. This helper bridges the two.
+fn to_lib_target(arch: TargetArch) -> LibTarget {
+    match arch {
+        TargetArch::X86_64 => LibTarget::X86_64,
+        TargetArch::I686 => LibTarget::I686,
+        TargetArch::AArch64 => LibTarget::AArch64,
+        TargetArch::RiscV64 => LibTarget::RiscV64,
+    }
+}
+
+/// Convert a preprocessor token to its textual representation for `-E` output.
+///
+/// The library's `Token::Display` implementation prints category names
+/// (e.g., "identifier", "string literal") which is useful for diagnostics
+/// but not for preprocessor output. This function reconstructs the actual
+/// C source text from the token data.
+///
+/// # Arguments
+///
+/// * `token` — The token to convert.
+/// * `interner` — The string interner for resolving identifier `Symbol` handles.
+fn token_to_text(token: &LexToken, interner: &Interner) -> String {
+    match &token.kind {
+        // Identifiers — resolve from the interner.
+        TokenKind::Identifier(sym) => interner.resolve(*sym).to_string(),
+
+        // Integer literals — reconstruct value + suffix.
+        TokenKind::IntegerLiteral { value, suffix } => {
+            format!("{}{}", value, suffix)
+        }
+
+        // Floating-point literals — reconstruct value + suffix.
+        TokenKind::FloatLiteral { value, suffix } => {
+            // Use a representation that can round-trip. For values that are
+            // whole numbers, ensure a decimal point is present.
+            let val_str = if value.fract() == 0.0 && !value.is_infinite() && !value.is_nan() {
+                format!("{:.1}", value)
+            } else {
+                format!("{}", value)
+            };
+            format!("{}{}", val_str, suffix)
+        }
+
+        // String literals — reconstruct with prefix, quotes, and escape sequences.
+        TokenKind::StringLiteral { value, prefix } => {
+            let mut s = format!("{}\"", prefix);
+            for &b in value.iter() {
+                match b {
+                    b'\\' => s.push_str("\\\\"),
+                    b'"' => s.push_str("\\\""),
+                    b'\n' => s.push_str("\\n"),
+                    b'\r' => s.push_str("\\r"),
+                    b'\t' => s.push_str("\\t"),
+                    0 => s.push_str("\\0"),
+                    0x20..=0x7e => s.push(b as char),
+                    _ => {
+                        // Non-printable / high bytes — hex escape.
+                        s.push_str(&format!("\\x{:02x}", b));
+                    }
+                }
+            }
+            s.push('"');
+            s
+        }
+
+        // Character literals — reconstruct with prefix and quotes.
+        TokenKind::CharLiteral { value, prefix } => {
+            let ch = *value;
+            let prefix_str = format!("{}", prefix);
+            if (0x20..0x7f).contains(&ch) && ch != (b'\\' as u32) && ch != (b'\'' as u32) {
+                format!("{}'{}'" , prefix_str, char::from_u32(ch).unwrap_or('?'))
+            } else {
+                match ch {
+                    0x0a => format!("{}'\\n'", prefix_str),
+                    0x0d => format!("{}'\\r'", prefix_str),
+                    0x09 => format!("{}'\\t'", prefix_str),
+                    0x00 => format!("{}'\\0'", prefix_str),
+                    0x5c => format!("{}'\\\\'" , prefix_str),
+                    0x27 => format!("{}'\\''", prefix_str),
+                    _ => format!("{}'\\x{:02x}'", prefix_str, ch),
+                }
+            }
+        }
+
+        // EOF — no output text.
+        TokenKind::Eof => String::new(),
+
+        // Newline / Whitespace — emit a space to separate tokens.
+        TokenKind::Newline => "\n".to_string(),
+        TokenKind::Whitespace => " ".to_string(),
+
+        // Error tokens — skip in preprocessor output.
+        TokenKind::Error => String::new(),
+
+        // All other tokens (keywords, operators, punctuators, builtins) —
+        // the Display implementation produces the correct C source text.
+        other => format!("{}", other),
+    }
+}
+
+/// Run the preprocessing pipeline for `-E` mode.
+///
+/// Instantiates the preprocessor, processes the input file, and writes
+/// the token stream as reconstructed C source text to stdout. Returns
+/// `true` on success, `false` on failure.
+fn run_preprocess(ctx: &CompilationContext, input_path: &Path) -> bool {
+    let lib_target = to_lib_target(ctx.target);
+    let source_map = SourceMap::new();
+    let diagnostics = DiagnosticEngine::new();
+    let interner = Interner::new();
+
+    let mut pp = Preprocessor::new(source_map, diagnostics, lib_target, interner);
+
+    // Add system include paths for standard header resolution.
+    pp.add_include_path(PathBuf::from("/usr/include"));
+    pp.add_include_path(PathBuf::from("/usr/local/include"));
+
+    // Architecture-specific system include paths.
+    match ctx.target {
+        TargetArch::X86_64 => {
+            pp.add_include_path(PathBuf::from("/usr/include/x86_64-linux-gnu"));
+        }
+        TargetArch::I686 => {
+            pp.add_include_path(PathBuf::from("/usr/include/i386-linux-gnu"));
+        }
+        TargetArch::AArch64 => {
+            pp.add_include_path(PathBuf::from("/usr/include/aarch64-linux-gnu"));
+        }
+        TargetArch::RiscV64 => {
+            pp.add_include_path(PathBuf::from("/usr/include/riscv64-linux-gnu"));
+        }
+    }
+
+    // Add GCC internal include paths for builtins (stdarg.h, stddef.h, etc.).
+    // Search for the latest GCC version available on the system.
+    if let Ok(entries) = std::fs::read_dir("/usr/lib/gcc/x86_64-linux-gnu/") {
+        let mut versions: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        versions.sort();
+        if let Some(latest) = versions.last() {
+            pp.add_include_path(PathBuf::from(format!(
+                "/usr/lib/gcc/x86_64-linux-gnu/{}/include",
+                latest
+            )));
+        }
+    }
+
+    // Add user include paths from -I flags.
+    for path in &ctx.include_paths {
+        pp.add_user_include_path(path.clone());
+    }
+
+    // Add macro definitions from -D flags.
+    for (name, value) in &ctx.macro_definitions {
+        if let Some(val) = value {
+            pp.add_define(&format!("{}={}", name, val));
+        } else {
+            pp.add_define(name);
+        }
+    }
+
+    // Run preprocessing.
+    match pp.preprocess(input_path) {
+        Ok(tokens) => {
+            // Reconstruct and write the preprocessed token stream to stdout.
+            let stdout = std::io::stdout();
+            let mut out = std::io::BufWriter::new(stdout.lock());
+
+            let mut need_space = false;
+
+            for tok in &tokens {
+                match &tok.kind {
+                    TokenKind::Eof => break,
+                    TokenKind::Newline => {
+                        let _ = writeln!(out);
+                        need_space = false;
+                    }
+                    TokenKind::Whitespace => {
+                        need_space = true;
+                    }
+                    _ => {
+                        let text = token_to_text(tok, &pp.interner);
+                        if !text.is_empty() {
+                            if need_space {
+                                let _ = write!(out, " ");
+                            }
+                            let _ = write!(out, "{}", text);
+                            need_space = true;
+                        }
+                    }
+                }
+            }
+            // Final newline to ensure clean output.
+            let _ = writeln!(out);
+            let _ = out.flush();
+
+            // Print any diagnostics (warnings) that occurred during preprocessing.
+            if pp.diagnostics.has_errors() {
+                pp.diagnostics.print_all(&pp.source_map);
+                return false;
+            }
+            true
+        }
+        Err(()) => {
+            // Print diagnostics from the preprocessor.
+            pp.diagnostics.print_all(&pp.source_map);
+            false
+        }
+    }
+}
+
 /// Run the compilation pipeline for a single input file.
 ///
 /// Executes the full 10-phase compilation pipeline:
@@ -413,6 +634,19 @@ pub fn run_compilation(ctx: &CompilationContext) -> i32 {
             continue;
         }
 
+        // ── Handle -E mode (preprocess only) ─────────────────────────
+        // For -E mode, we invoke the preprocessor directly and write the
+        // expanded token stream to stdout. No further pipeline stages are
+        // needed. This is fully operational and does not depend on IR or
+        // backend modules.
+        if ctx.output_mode == OutputMode::Preprocess {
+            if !run_preprocess(ctx, input_path) {
+                had_errors = true;
+            }
+            continue;
+        }
+
+        // ── Full compilation pipeline (Phases 1–10) ─────────────────
         // Determine the output path for this input file.
         let output = ctx
             .output_path

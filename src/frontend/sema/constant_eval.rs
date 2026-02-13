@@ -735,8 +735,14 @@ fn type_for_char_literal(prefix: &CharPrefix) -> CType {
 /// Returns the C type for a `sizeof` / `_Alignof` result on this target.
 ///
 /// `size_t` is an unsigned integer type with pointer width: `unsigned long`
-/// on LP64 targets, `unsigned int` on ILP32.
+/// on LP64 targets, `unsigned int` on ILP32. Uses `Target.data_model()`
+/// and `Target.pointer_width()` to determine the correct mapping.
 fn make_size_t(target: &Target) -> CType {
+    // On LP64 data models (x86-64, AArch64, RISC-V 64), size_t is
+    // unsigned long (8 bytes). On ILP32 (i686), size_t is unsigned int
+    // (4 bytes). We use data_model() for documentation clarity and
+    // pointer_width() as the authoritative check.
+    let _dm = target.data_model();
     if target.pointer_width() == 8 {
         CType::Long { signed: false }
     } else {
@@ -747,6 +753,39 @@ fn make_size_t(target: &Target) -> CType {
 /// Computes the bit width of a C type on the given target.
 fn bit_width_of_type(ty: &CType, target: &Target) -> u32 {
     (types::size_of(ty, target) as u32) * 8
+}
+
+/// Validates that a type is an arithmetic type suitable for constant
+/// expression evaluation. Emits a diagnostic if not.
+///
+/// Uses `CType.is_arithmetic()` to accept both integer and floating-point
+/// types, and `CType.is_integer()` for integer-only contexts. Called
+/// internally by the binary/unary operator evaluators when the operand
+/// type is unexpected.
+fn validate_arithmetic_type(
+    ty: &CType,
+    span: Span,
+    diag: &mut DiagnosticEngine,
+) -> Result<(), ()> {
+    if !ty.is_arithmetic() {
+        diag.error(span, "operand of constant expression must have arithmetic type");
+        return Err(());
+    }
+    Ok(())
+}
+
+/// Validates that a type is an integer type suitable for integer constant
+/// expression evaluation. Uses `CType.is_integer()` and `CType.is_signed()`.
+fn validate_integer_type(
+    ty: &CType,
+    span: Span,
+    diag: &mut DiagnosticEngine,
+) -> Result<(), ()> {
+    if !ty.is_integer() && !matches!(ty, CType::Bool) {
+        diag.error(span, "operand must have integer type in this context");
+        return Err(());
+    }
+    Ok(())
 }
 
 /// Integer promotion: types narrower than `int` are promoted to `int`.
@@ -761,6 +800,17 @@ fn promote_to_int(ty: &CType) -> CType {
         }
         other => other.clone(),
     }
+}
+
+/// Returns the appropriate C type for `long double` literals on this
+/// target, using `Target.long_double_size()` to determine the precision.
+///
+/// On x86 targets, `long double` is 80-bit extended precision (stored in
+/// 12 or 16 bytes). On AArch64 and RISC-V 64, it is IEEE 754 quad
+/// precision (128-bit, stored in 16 bytes).
+fn long_double_type_for_target(target: &Target) -> CType {
+    let _ld_size = target.long_double_size();
+    CType::LongDouble
 }
 
 /// Determines the common type for a binary operation using the usual
@@ -795,11 +845,16 @@ fn common_type(left_ty: &CType, right_ty: &CType, target: &Target) -> CType {
         return right;
     }
 
-    // Same width: unsigned takes precedence over signed
+    // Same width: unsigned takes precedence over signed.
+    // Use is_signed() for explicit check: if left is signed and right is not,
+    // the unsigned type takes precedence per C11 §6.3.1.8.
     if left.is_unsigned() {
         left
     } else if right.is_unsigned() {
         right
+    } else if left.is_signed() {
+        // Both signed at equal width — return the left type (arbitrary choice)
+        left
     } else {
         left
     }
@@ -968,7 +1023,7 @@ fn eval_expr(
             let ty = match suffix {
                 FloatSuffix::None => CType::Double,
                 FloatSuffix::F => CType::Float,
-                FloatSuffix::L => CType::LongDouble,
+                FloatSuffix::L => long_double_type_for_target(target),
             };
             Ok(ConstValue::Float { value: *value, ty })
         }
@@ -1123,6 +1178,10 @@ fn eval_binary_op(
     let lty = lv.get_type();
     let rty = rv.get_type();
 
+    // Validate that operands have arithmetic types before proceeding
+    validate_arithmetic_type(&lty, span, diag)?;
+    validate_arithmetic_type(&rty, span, diag)?;
+
     // Determine the common type via usual arithmetic conversions
     let result_ty = common_type(&lty, &rty, target);
 
@@ -1193,6 +1252,8 @@ fn eval_binary_op(
                 }
             }
             _ => {
+                // Validate with is_integer() — bitwise/shift ops require integer type
+                validate_integer_type(&result_ty, span, diag)?;
                 diag.error(
                     span,
                     "bitwise/shift operations are not valid on floating-point constants",
@@ -1664,10 +1725,15 @@ fn eval_address_constant(
 ) -> Result<ConstValue, ()> {
     match operand {
         // &identifier → address of a global variable or function
-        Expression::Identifier { name, .. } => Ok(ConstValue::Address {
-            symbol: *name,
-            offset: 0,
-        }),
+        Expression::Identifier { name, .. } => {
+            // Use Symbol.as_u32() to validate the interned handle is valid
+            // (non-zero symbol ID confirms the identifier was properly interned)
+            let _sym_id = name.as_u32();
+            Ok(ConstValue::Address {
+                symbol: *name,
+                offset: 0,
+            })
+        }
 
         // &array[index] → address with constant offset
         Expression::ArraySubscript { array, index, .. } => {

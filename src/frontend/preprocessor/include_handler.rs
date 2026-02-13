@@ -46,7 +46,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::common::encoding::read_source_file;
-use crate::common::fx_hash::{FxHashMap, FxHashSet, fx_hash_map, fx_hash_set};
+use crate::common::fx_hash::{fx_hash_map, fx_hash_set, FxHashMap, FxHashSet};
 use crate::common::source_map::{FileId, SourceMap};
 use crate::common::string_interner::Symbol;
 use crate::frontend::lexer::token::{Token, TokenKind};
@@ -540,7 +540,11 @@ impl IncludeHandler {
         // Check for circular dependency by comparing canonical paths.
         // Use .as_path() for explicit &Path comparison against stack entries.
         let canonical_ref = canonical.as_path();
-        if self.include_stack.iter().any(|p| p.as_path() == canonical_ref) {
+        if self
+            .include_stack
+            .iter()
+            .any(|p| p.as_path() == canonical_ref)
+        {
             let mut chain: Vec<PathBuf> = self
                 .include_stack
                 .iter()

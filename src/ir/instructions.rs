@@ -227,12 +227,7 @@ impl BinOp {
     pub fn is_division(&self) -> bool {
         matches!(
             self,
-            BinOp::UDiv
-                | BinOp::SDiv
-                | BinOp::URem
-                | BinOp::SRem
-                | BinOp::FDiv
-                | BinOp::FRem
+            BinOp::UDiv | BinOp::SDiv | BinOp::URem | BinOp::SRem | BinOp::FDiv | BinOp::FRem
         )
     }
 }
@@ -930,17 +925,11 @@ impl Instruction {
                 uses
             }
 
-            Instruction::Return { value } => {
-                value.map_or_else(Vec::new, |v| vec![v])
-            }
+            Instruction::Return { value } => value.map_or_else(Vec::new, |v| vec![v]),
 
-            Instruction::Phi { incoming, .. } => {
-                incoming.iter().map(|(v, _)| *v).collect()
-            }
+            Instruction::Phi { incoming, .. } => incoming.iter().map(|(v, _)| *v).collect(),
 
-            Instruction::GetElementPtr {
-                base, indices, ..
-            } => {
+            Instruction::GetElementPtr { base, indices, .. } => {
                 let mut uses = Vec::with_capacity(1 + indices.len());
                 uses.push(*base);
                 uses.extend_from_slice(indices);
@@ -1051,9 +1040,7 @@ impl Instruction {
                 ..
             } => vec![*true_target, *false_target],
 
-            Instruction::Switch {
-                default, cases, ..
-            } => {
+            Instruction::Switch { default, cases, .. } => {
                 let mut blocks = Vec::with_capacity(1 + cases.len());
                 blocks.push(*default);
                 for (_, target) in cases {
@@ -1174,9 +1161,7 @@ impl Instruction {
                 }
             }
 
-            Instruction::GetElementPtr {
-                base, indices, ..
-            } => {
+            Instruction::GetElementPtr { base, indices, .. } => {
                 sub(base, old, new);
                 for idx in indices.iter_mut() {
                     sub(idx, old, new);
@@ -1227,9 +1212,7 @@ impl Instruction {
                 sub(false_target, old, new);
             }
 
-            Instruction::Switch {
-                default, cases, ..
-            } => {
+            Instruction::Switch { default, cases, .. } => {
                 sub(default, old, new);
                 for (_, target) in cases.iter_mut() {
                     sub(target, old, new);
@@ -2021,10 +2004,7 @@ mod tests {
             is_tail: false,
         };
         assert_eq!(instr.result(), Some(ValueId(5)));
-        assert_eq!(
-            instr.uses(),
-            vec![ValueId(0), ValueId(1), ValueId(2)]
-        );
+        assert_eq!(instr.uses(), vec![ValueId(0), ValueId(1), ValueId(2)]);
         assert!(instr.has_side_effects());
     }
 
@@ -2061,10 +2041,7 @@ mod tests {
         let mut instr = Instruction::Phi {
             result: ValueId(3),
             ty: IrType::I32,
-            incoming: vec![
-                (ValueId(0), BasicBlockId(0)),
-                (ValueId(1), BasicBlockId(1)),
-            ],
+            incoming: vec![(ValueId(0), BasicBlockId(0)), (ValueId(1), BasicBlockId(1))],
         };
         assert!(instr.is_phi());
         assert_eq!(instr.result(), Some(ValueId(3)));
@@ -2109,10 +2086,7 @@ mod tests {
             ty: IrType::I32,
             in_bounds: true,
         };
-        assert_eq!(
-            instr.uses(),
-            vec![ValueId(0), ValueId(1), ValueId(2)]
-        );
+        assert_eq!(instr.uses(), vec![ValueId(0), ValueId(1), ValueId(2)]);
     }
 
     #[test]
@@ -2194,10 +2168,7 @@ mod tests {
         let mut instr = Instruction::Phi {
             result: ValueId(3),
             ty: IrType::I32,
-            incoming: vec![
-                (ValueId(0), BasicBlockId(0)),
-                (ValueId(1), BasicBlockId(1)),
-            ],
+            incoming: vec![(ValueId(0), BasicBlockId(0)), (ValueId(1), BasicBlockId(1))],
         };
         instr.replace_use(ValueId(0), ValueId(10));
         let ops = instr.phi_operands().unwrap();
@@ -2230,10 +2201,7 @@ mod tests {
             in_bounds: true,
         };
         instr.replace_use(ValueId(0), ValueId(10));
-        assert_eq!(
-            instr.uses(),
-            vec![ValueId(10), ValueId(1), ValueId(10)]
-        );
+        assert_eq!(instr.uses(), vec![ValueId(10), ValueId(1), ValueId(10)]);
     }
 
     #[test]
@@ -2298,10 +2266,7 @@ mod tests {
         let mut instr = Instruction::Phi {
             result: ValueId(3),
             ty: IrType::I32,
-            incoming: vec![
-                (ValueId(0), BasicBlockId(0)),
-                (ValueId(1), BasicBlockId(1)),
-            ],
+            incoming: vec![(ValueId(0), BasicBlockId(0)), (ValueId(1), BasicBlockId(1))],
         };
         instr.replace_block(BasicBlockId(0), BasicBlockId(5));
         let ops = instr.phi_operands().unwrap();
@@ -2426,10 +2391,7 @@ mod tests {
         let instr = Instruction::Phi {
             result: ValueId(3),
             ty: IrType::I32,
-            incoming: vec![
-                (ValueId(0), BasicBlockId(0)),
-                (ValueId(1), BasicBlockId(1)),
-            ],
+            incoming: vec![(ValueId(0), BasicBlockId(0)), (ValueId(1), BasicBlockId(1))],
         };
         let s = format!("{}", instr);
         assert!(s.contains("phi"));
@@ -2552,10 +2514,7 @@ mod tests {
             is_align_stack: false,
         };
         instr.replace_use(ValueId(0), ValueId(99));
-        assert_eq!(
-            instr.uses(),
-            vec![ValueId(99), ValueId(1), ValueId(99)]
-        );
+        assert_eq!(instr.uses(), vec![ValueId(99), ValueId(1), ValueId(99)]);
     }
 
     // -- FCmp uses --

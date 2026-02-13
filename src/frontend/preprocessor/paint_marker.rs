@@ -246,8 +246,7 @@ impl PartialEq for PaintState {
                         set.len() == 1 && set.contains(s)
                     }
                     (PaintSet::Multi(a_set), PaintSet::Multi(b_set)) => {
-                        a_set.len() == b_set.len()
-                            && a_set.iter().all(|sym| b_set.contains(sym))
+                        a_set.len() == b_set.len() && a_set.iter().all(|sym| b_set.contains(sym))
                     }
                 }
             }
@@ -486,9 +485,7 @@ pub fn merge_paint(a: &PaintState, b: &PaintState) -> PaintState {
 
         // One side painted, the other unpainted — clone the painted side.
         (PaintState::Painted(set), PaintState::Unpainted)
-        | (PaintState::Unpainted, PaintState::Painted(set)) => {
-            PaintState::Painted(set.clone())
-        }
+        | (PaintState::Unpainted, PaintState::Painted(set)) => PaintState::Painted(set.clone()),
 
         // Both sides painted — compute the union.
         (PaintState::Painted(set_a), PaintState::Painted(set_b)) => {

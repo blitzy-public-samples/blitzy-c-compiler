@@ -1637,10 +1637,7 @@ impl TranslationUnit {
 
     /// Creates a new translation unit with the given declarations and span.
     pub fn with_declarations(declarations: Vec<Declaration>, span: Span) -> Self {
-        TranslationUnit {
-            declarations,
-            span,
-        }
+        TranslationUnit { declarations, span }
     }
 }
 

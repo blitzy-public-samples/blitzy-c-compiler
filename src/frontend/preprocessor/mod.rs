@@ -44,33 +44,33 @@
 
 // ── Submodule declarations ──────────────────────────────────────────────────
 pub mod directives;
+pub mod expression;
+pub mod include_handler;
 pub mod macro_expander;
 pub mod paint_marker;
-pub mod include_handler;
-pub mod token_paster;
-pub mod expression;
 pub mod predefined;
+pub mod token_paster;
 
 // ── Standard library imports ────────────────────────────────────────────────
 use std::path::{Path, PathBuf};
 
 // ── Internal crate imports ──────────────────────────────────────────────────
-use crate::common::fx_hash::{FxHashMap, fx_hash_map};
-use crate::common::encoding::read_source_file;
 use crate::common::diagnostics::{DiagnosticEngine, Span};
+use crate::common::encoding::read_source_file;
+use crate::common::fx_hash::{fx_hash_map, FxHashMap};
 use crate::common::source_map::{FileId, SourceMap};
-use crate::common::target::Target;
 use crate::common::string_interner::{Interner, Symbol};
+use crate::common::target::Target;
 
 // ── Sibling / child imports ─────────────────────────────────────────────────
-use crate::frontend::lexer::token::{Token, TokenKind};
-use self::paint_marker::{PaintedToken, paint_tokens, is_painted_for};
 use self::include_handler::IncludeHandler;
+use self::paint_marker::{is_painted_for, paint_tokens, PaintedToken};
 use self::token_paster::{paste_tokens, stringify};
+use crate::frontend::lexer::token::{Token, TokenKind};
 
 // ── Re-exports for ergonomic access by other modules ────────────────────────
-pub use self::paint_marker::PaintState;
 pub use self::include_handler::IncludeKind;
+pub use self::paint_marker::PaintState;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Constants
@@ -378,6 +378,7 @@ impl Preprocessor {
     /// 3. Tokenizes the result with the lightweight preprocessor tokenizer.
     /// 4. Processes Phase 2 (directives and macro expansion).
     /// 5. Returns the fully expanded token stream consumed by the parser.
+    #[allow(clippy::result_unit_err)]
     pub fn preprocess(&mut self, file_path: &Path) -> Result<Vec<Token>, ()> {
         // Step 1: Read source with PUA encoding for non-UTF-8 fidelity.
         let raw_source = match read_source_file(file_path) {
@@ -385,7 +386,7 @@ impl Preprocessor {
             Err(e) => {
                 self.diagnostics.error(
                     Span::DUMMY,
-                    &format!("cannot open source file '{}': {}", file_path.display(), e),
+                    format!("cannot open source file '{}': {}", file_path.display(), e),
                 );
                 return Err(());
             }
@@ -395,10 +396,7 @@ impl Preprocessor {
         let spliced = phase1_trigraphs_and_line_splice(&raw_source);
 
         // Step 3: Register the file in the source map and set current dir.
-        let file_name = file_path
-            .to_str()
-            .unwrap_or("<unknown>")
-            .to_string();
+        let file_name = file_path.to_str().unwrap_or("<unknown>").to_string();
         self.current_file_dir = file_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -416,11 +414,7 @@ impl Preprocessor {
     /// Process an already-tokenized stream through Phase 2 (directive
     /// processing and macro expansion). Shared between the top-level
     /// `preprocess` and `#include` handling.
-    fn process_tokens(
-        &mut self,
-        tokens: Vec<Token>,
-        file_id: u32,
-    ) -> Result<Vec<Token>, ()> {
+    fn process_tokens(&mut self, tokens: Vec<Token>, file_id: u32) -> Result<Vec<Token>, ()> {
         let mut output: Vec<Token> = Vec::new();
         let mut idx = 0;
         let len = tokens.len();
@@ -489,9 +483,7 @@ impl Preprocessor {
             // Collect tokens until the next newline to form a logical line
             // and expand macros on the batch.
             let line_start = idx;
-            while idx < len
-                && tokens[idx].kind != TokenKind::Newline
-            {
+            while idx < len && tokens[idx].kind != TokenKind::Newline {
                 idx += 1;
             }
             let line_tokens = tokens[line_start..idx].to_vec();
@@ -507,10 +499,8 @@ impl Preprocessor {
 
         // Validate conditional stack is balanced.
         if let Some(unclosed) = self.cond_stack.last() {
-            self.diagnostics.error(
-                unclosed.origin_span,
-                "unterminated #if / #ifdef / #ifndef",
-            );
+            self.diagnostics
+                .error(unclosed.origin_span, "unterminated #if / #ifdef / #ifndef");
             return Err(());
         }
 
@@ -581,7 +571,7 @@ impl Preprocessor {
             _ => {
                 self.diagnostics.warning(
                     dir_span,
-                    &format!("unknown preprocessing directive '#{}' ignored", dir_name),
+                    format!("unknown preprocessing directive '#{}' ignored", dir_name),
                 );
                 Ok(())
             }
@@ -594,14 +584,16 @@ impl Preprocessor {
     fn handle_define(&mut self, tokens: &[Token], span: Span) -> Result<(), ()> {
         let tokens = skip_ws(tokens);
         if tokens.is_empty() {
-            self.diagnostics.error(span, "expected macro name after #define");
+            self.diagnostics
+                .error(span, "expected macro name after #define");
             return Err(());
         }
 
         let name_sym = match tokens[0].kind {
             TokenKind::Identifier(s) => s,
             _ => {
-                self.diagnostics.error(tokens[0].span, "expected identifier for macro name");
+                self.diagnostics
+                    .error(tokens[0].span, "expected identifier for macro name");
                 return Err(());
             }
         };
@@ -624,7 +616,8 @@ impl Preprocessor {
 
             loop {
                 if i >= after_paren.len() {
-                    self.diagnostics.error(span, "unterminated macro parameter list");
+                    self.diagnostics
+                        .error(span, "unterminated macro parameter list");
                     return Err(());
                 }
 
@@ -640,7 +633,8 @@ impl Preprocessor {
                     i += 1;
                     let rest_ws = skip_ws(&after_paren[i..]);
                     if rest_ws.is_empty() || rest_ws[0].kind != TokenKind::RightParen {
-                        self.diagnostics.error(span, "expected ')' after '...' in macro parameter list");
+                        self.diagnostics
+                            .error(span, "expected ')' after '...' in macro parameter list");
                         return Err(());
                     }
                     i += after_paren[i..].len() - rest_ws.len() + 1;
@@ -687,10 +681,7 @@ impl Preprocessor {
                 if !existing.is_predefined {
                     self.diagnostics.warning(
                         span,
-                        &format!(
-                            "'{}' macro redefined",
-                            self.interner.resolve(name_sym)
-                        ),
+                        format!("'{}' macro redefined", self.interner.resolve(name_sym)),
                     );
                 }
             }
@@ -705,10 +696,7 @@ impl Preprocessor {
                 if !existing.is_predefined {
                     self.diagnostics.warning(
                         span,
-                        &format!(
-                            "'{}' macro redefined",
-                            self.interner.resolve(name_sym)
-                        ),
+                        format!("'{}' macro redefined", self.interner.resolve(name_sym)),
                     );
                 }
             }
@@ -724,7 +712,8 @@ impl Preprocessor {
     fn handle_undef(&mut self, tokens: &[Token], span: Span) -> Result<(), ()> {
         let tokens = skip_ws(tokens);
         if tokens.is_empty() {
-            self.diagnostics.error(span, "expected macro name after #undef");
+            self.diagnostics
+                .error(span, "expected macro name after #undef");
             return Err(());
         }
         match tokens[0].kind {
@@ -733,7 +722,8 @@ impl Preprocessor {
                 Ok(())
             }
             _ => {
-                self.diagnostics.error(tokens[0].span, "expected identifier after #undef");
+                self.diagnostics
+                    .error(tokens[0].span, "expected identifier after #undef");
                 Err(())
             }
         }
@@ -750,7 +740,8 @@ impl Preprocessor {
     ) -> Result<(), ()> {
         let tokens = skip_ws(tokens);
         if tokens.is_empty() {
-            self.diagnostics.error(span, "expected file path after #include");
+            self.diagnostics
+                .error(span, "expected file path after #include");
             return Err(());
         }
 
@@ -763,7 +754,7 @@ impl Preprocessor {
         if self.recursion_depth >= self.max_recursion_depth {
             self.diagnostics.error(
                 span,
-                &format!(
+                format!(
                     "#include nesting depth exceeds limit ({})",
                     self.max_recursion_depth,
                 ),
@@ -774,17 +765,14 @@ impl Preprocessor {
 
         // Resolve the include path via the include handler.
         let current_dir = self.current_file_dir.clone();
-        let resolved = match self.include_handler.resolve_include(
-            &path_str,
-            kind,
-            &current_dir,
-        ) {
+        let resolved = match self
+            .include_handler
+            .resolve_include(&path_str, kind, &current_dir)
+        {
             Some(p) => p,
             None => {
-                self.diagnostics.error(
-                    span,
-                    &format!("'{}': file not found", path_str),
-                );
+                self.diagnostics
+                    .error(span, format!("'{}': file not found", path_str));
                 self.recursion_depth -= 1;
                 return Err(());
             }
@@ -794,10 +782,8 @@ impl Preprocessor {
         let raw_source = match read_source_file(&resolved) {
             Ok(s) => s,
             Err(e) => {
-                self.diagnostics.error(
-                    span,
-                    &format!("cannot read '{}': {}", resolved.display(), e),
-                );
+                self.diagnostics
+                    .error(span, format!("cannot read '{}': {}", resolved.display(), e));
                 self.recursion_depth -= 1;
                 return Err(());
             }
@@ -859,11 +845,13 @@ impl Preprocessor {
                 path.push_str(&self.token_text(&tokens[i]));
                 i += 1;
             }
-            self.diagnostics.error(span, "missing '>' in #include <...>");
+            self.diagnostics
+                .error(span, "missing '>' in #include <...>");
             return Err(());
         }
 
-        self.diagnostics.error(span, "expected \"file\" or <file> after #include");
+        self.diagnostics
+            .error(span, "expected \"file\" or <file> after #include");
         Err(())
     }
 
@@ -886,13 +874,15 @@ impl Preprocessor {
             "ifdef" => {
                 let tokens = skip_ws(tokens);
                 if tokens.is_empty() {
-                    self.diagnostics.error(span, "expected identifier after #ifdef");
+                    self.diagnostics
+                        .error(span, "expected identifier after #ifdef");
                     return Err(());
                 }
                 match tokens[0].kind {
                     TokenKind::Identifier(sym) => self.macros.contains_key(&sym),
                     _ => {
-                        self.diagnostics.error(tokens[0].span, "expected identifier after #ifdef");
+                        self.diagnostics
+                            .error(tokens[0].span, "expected identifier after #ifdef");
                         return Err(());
                     }
                 }
@@ -900,13 +890,15 @@ impl Preprocessor {
             "ifndef" => {
                 let tokens = skip_ws(tokens);
                 if tokens.is_empty() {
-                    self.diagnostics.error(span, "expected identifier after #ifndef");
+                    self.diagnostics
+                        .error(span, "expected identifier after #ifndef");
                     return Err(());
                 }
                 match tokens[0].kind {
                     TokenKind::Identifier(sym) => !self.macros.contains_key(&sym),
                     _ => {
-                        self.diagnostics.error(tokens[0].span, "expected identifier after #ifndef");
+                        self.diagnostics
+                            .error(tokens[0].span, "expected identifier after #ifndef");
                         return Err(());
                     }
                 }
@@ -1007,26 +999,25 @@ impl Preprocessor {
     /// Handle `#error message`.
     fn handle_error(&mut self, tokens: &[Token], span: Span) -> Result<(), ()> {
         let msg = self.concat_token_text(tokens);
-        self.diagnostics.error(span, &format!("#error {}", msg.trim()));
+        self.diagnostics
+            .error(span, format!("#error {}", msg.trim()));
         Err(())
     }
 
     /// Handle `#warning message` (GCC extension).
     fn handle_warning(&mut self, tokens: &[Token], span: Span) -> Result<(), ()> {
         let msg = self.concat_token_text(tokens);
-        self.diagnostics.warning(span, &format!("#warning {}", msg.trim()));
+        self.diagnostics
+            .warning(span, format!("#warning {}", msg.trim()));
         Ok(())
     }
 
     /// Handle `#line NUMBER ["filename"]`.
-    fn handle_line_directive(
-        &mut self,
-        tokens: &[Token],
-        span: Span,
-    ) -> Result<(), ()> {
+    fn handle_line_directive(&mut self, tokens: &[Token], span: Span) -> Result<(), ()> {
         let tokens = skip_ws(tokens);
         if tokens.is_empty() {
-            self.diagnostics.error(span, "expected line number after #line");
+            self.diagnostics
+                .error(span, "expected line number after #line");
             return Err(());
         }
         // Parse the line number.
@@ -1052,7 +1043,8 @@ impl Preprocessor {
             // to integration with the source_map module's remap API.
             Ok(())
         } else {
-            self.diagnostics.error(tokens[0].span, "expected integer after #line");
+            self.diagnostics
+                .error(tokens[0].span, "expected integer after #line");
             Err(())
         }
     }
@@ -1064,13 +1056,10 @@ impl Preprocessor {
     /// The expression is evaluated after macro expansion. Identifiers that
     /// remain after expansion (not defined as macros) are replaced with `0`
     /// per C11 §6.10.1p4, except for `defined(NAME)` / `defined NAME`.
-    fn evaluate_condition(
-        &mut self,
-        tokens: &[Token],
-        span: Span,
-    ) -> Result<bool, ()> {
+    fn evaluate_condition(&mut self, tokens: &[Token], span: Span) -> Result<bool, ()> {
         if tokens.is_empty() {
-            self.diagnostics.error(span, "expected expression in #if directive");
+            self.diagnostics
+                .error(span, "expected expression in #if directive");
             return Err(());
         }
 
@@ -1102,7 +1091,8 @@ impl Preprocessor {
         match result {
             Ok(val) => Ok(val != 0),
             Err(msg) => {
-                self.diagnostics.error(span, &format!("invalid preprocessor expression: {}", msg));
+                self.diagnostics
+                    .error(span, format!("invalid preprocessor expression: {}", msg));
                 Err(())
             }
         }
@@ -1202,10 +1192,7 @@ impl Preprocessor {
     /// Expand all macros in a line of tokens. Returns the fully expanded
     /// token sequence.
     fn expand_line(&mut self, tokens: Vec<Token>) -> Result<Vec<Token>, ()> {
-        let mut painted: Vec<PaintedToken> = tokens
-            .into_iter()
-            .map(PaintedToken::new)
-            .collect();
+        let mut painted: Vec<PaintedToken> = tokens.into_iter().map(PaintedToken::new).collect();
 
         let mut output: Vec<Token> = Vec::new();
         let mut i = 0;
@@ -1224,7 +1211,7 @@ impl Preprocessor {
                         if self.recursion_depth >= self.max_recursion_depth {
                             self.diagnostics.error(
                                 tok.span,
-                                &format!(
+                                format!(
                                     "macro expansion depth exceeds limit ({})",
                                     self.max_recursion_depth,
                                 ),
@@ -1256,15 +1243,11 @@ impl Preprocessor {
                                 )?;
 
                                 // Substitute parameters and expand.
-                                let replacement = self.substitute_params(
-                                    &def, &args, tok.span,
-                                );
+                                let replacement = self.substitute_params(&def, &args, tok.span);
 
                                 // Paint all output tokens for this macro.
-                                let mut expanded_painted: Vec<PaintedToken> = replacement
-                                    .into_iter()
-                                    .map(PaintedToken::new)
-                                    .collect();
+                                let mut expanded_painted: Vec<PaintedToken> =
+                                    replacement.into_iter().map(PaintedToken::new).collect();
                                 paint_tokens(&mut expanded_painted, sym);
 
                                 // Re-scan: insert expanded tokens for further expansion.
@@ -1285,12 +1268,8 @@ impl Preprocessor {
                             }
                         } else {
                             // Object-like macro: substitute body.
-                            let mut expanded_painted: Vec<PaintedToken> = def
-                                .body
-                                .iter()
-                                .cloned()
-                                .map(PaintedToken::new)
-                                .collect();
+                            let mut expanded_painted: Vec<PaintedToken> =
+                                def.body.iter().cloned().map(PaintedToken::new).collect();
                             paint_tokens(&mut expanded_painted, sym);
 
                             // Re-scan: insert expanded tokens for further expansion.
@@ -1384,7 +1363,8 @@ impl Preprocessor {
             i += 1;
         }
 
-        self.diagnostics.error(span, "unterminated macro argument list");
+        self.diagnostics
+            .error(span, "unterminated macro argument list");
         Err(())
     }
 
@@ -1428,17 +1408,40 @@ impl Preprocessor {
 
             // Check for `##` (token pasting) — handled by collecting lhs and rhs.
             if i + 1 < body.len() && body[i + 1].kind == TokenKind::HashHash {
-                let lhs_tokens = self.resolve_param_or_token(&body[i], params, args, &va_args_sym, def.is_variadic);
+                let lhs_tokens = self.resolve_param_or_token(
+                    &body[i],
+                    params,
+                    args,
+                    &va_args_sym,
+                    def.is_variadic,
+                );
                 if i + 2 < body.len() {
-                    let rhs_tokens = self.resolve_param_or_token(&body[i + 2], params, args, &va_args_sym, def.is_variadic);
+                    let rhs_tokens = self.resolve_param_or_token(
+                        &body[i + 2],
+                        params,
+                        args,
+                        &va_args_sym,
+                        def.is_variadic,
+                    );
                     // Take the last token of lhs and first token of rhs for pasting.
-                    let lhs_tok = lhs_tokens.last().cloned().unwrap_or_else(|| body[i].clone());
-                    let rhs_tok = rhs_tokens.first().cloned().unwrap_or_else(|| body[i + 2].clone());
+                    let lhs_tok = lhs_tokens
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| body[i].clone());
+                    let rhs_tok = rhs_tokens
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| body[i + 2].clone());
                     // Emit any lhs tokens before the last one.
                     if lhs_tokens.len() > 1 {
                         result.extend_from_slice(&lhs_tokens[..lhs_tokens.len() - 1]);
                     }
-                    let pasted = paste_tokens(&lhs_tok, &rhs_tok, &mut self.interner, &mut self.diagnostics);
+                    let pasted = paste_tokens(
+                        &lhs_tok,
+                        &rhs_tok,
+                        &mut self.interner,
+                        &mut self.diagnostics,
+                    );
                     result.push(pasted);
                     // Emit any rhs tokens after the first one.
                     if rhs_tokens.len() > 1 {
@@ -1588,8 +1591,7 @@ impl Preprocessor {
             }
             "__COUNTER__" => {
                 // Monotonically increasing counter.
-                static COUNTER: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
+                static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
                 let val = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 vec![Token::new(
                     TokenKind::IntegerLiteral {
@@ -1921,7 +1923,9 @@ fn pp_tokenize(source: &str, file_id: u32, interner: &mut Interner) -> Vec<Token
         }
 
         // ── Numeric literals (decimal, hex, octal, binary, float) ─
-        if b.is_ascii_digit() || (b == b'.' && (pos as usize) + 1 < len && bytes[(pos as usize) + 1].is_ascii_digit()) {
+        if b.is_ascii_digit()
+            || (b == b'.' && (pos as usize) + 1 < len && bytes[(pos as usize) + 1].is_ascii_digit())
+        {
             let (tok, new_pos) = lex_number(source, pos, file_id, interner);
             tokens.push(tok);
             pos = new_pos;
@@ -2025,7 +2029,8 @@ fn lex_number(source: &str, start: u32, file_id: u32, _interner: &mut Interner) 
             b'b' | b'B' => {
                 // Binary literal.
                 pos += 2;
-                while pos < len && (bytes[pos] == b'0' || bytes[pos] == b'1' || bytes[pos] == b'_') {
+                while pos < len && (bytes[pos] == b'0' || bytes[pos] == b'1' || bytes[pos] == b'_')
+                {
                     pos += 1;
                 }
             }
@@ -2262,7 +2267,7 @@ fn skip_ws(tokens: &[Token]) -> &[Token] {
 /// - Integer literals (decimal, hex, octal)
 /// - Unary: `+`, `-`, `!`, `~`
 /// - Binary: `*`, `/`, `%`, `+`, `-`, `<<`, `>>`, `<`, `<=`, `>`, `>=`,
-///           `==`, `!=`, `&`, `^`, `|`, `&&`, `||`
+///   `==`, `!=`, `&`, `^`, `|`, `&&`, `||`
 /// - Ternary: `? :`
 /// - Parenthesized sub-expressions
 ///

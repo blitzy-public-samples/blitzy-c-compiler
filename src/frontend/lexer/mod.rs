@@ -91,8 +91,8 @@ pub mod string_literal;
 // Re-exports — canonical types available as `lexer::Token`, `lexer::Span`, etc.
 // ---------------------------------------------------------------------------
 
-pub use token::{Token, TokenKind, Span};
 pub use scanner::Scanner;
+pub use token::{Span, Token, TokenKind};
 
 // ---------------------------------------------------------------------------
 // Internal imports
@@ -101,11 +101,11 @@ pub use scanner::Scanner;
 use std::sync::OnceLock;
 
 use crate::common::diagnostics::DiagnosticEngine;
-use crate::common::source_map::{SourceMap, FileId};
-use crate::common::string_interner::Interner;
 use crate::common::fx_hash::FxHashMap;
+use crate::common::source_map::{FileId, SourceMap};
+use crate::common::string_interner::Interner;
 
-use token::{StringPrefix, CharPrefix};
+use token::{CharPrefix, StringPrefix};
 
 // ---------------------------------------------------------------------------
 // Keyword table — lazily initialised, shared across all Lexer instances
@@ -131,120 +131,123 @@ fn keyword_table() -> &'static FxHashMap<&'static str, TokenKind> {
         // =================================================================
         // C11 standard keywords (34)
         // =================================================================
-        m.insert("auto",        TokenKind::Auto);
-        m.insert("break",       TokenKind::Break);
-        m.insert("case",        TokenKind::Case);
-        m.insert("char",        TokenKind::Char);
-        m.insert("const",       TokenKind::Const);
-        m.insert("continue",    TokenKind::Continue);
-        m.insert("default",     TokenKind::Default);
-        m.insert("do",          TokenKind::Do);
-        m.insert("double",      TokenKind::Double);
-        m.insert("else",        TokenKind::Else);
-        m.insert("enum",        TokenKind::Enum);
-        m.insert("extern",      TokenKind::Extern);
-        m.insert("float",       TokenKind::Float);
-        m.insert("for",         TokenKind::For);
-        m.insert("goto",        TokenKind::Goto);
-        m.insert("if",          TokenKind::If);
-        m.insert("inline",      TokenKind::Inline);
-        m.insert("int",         TokenKind::Int);
-        m.insert("long",        TokenKind::Long);
-        m.insert("register",    TokenKind::Register);
-        m.insert("restrict",    TokenKind::Restrict);
-        m.insert("return",      TokenKind::Return);
-        m.insert("short",       TokenKind::Short);
-        m.insert("signed",      TokenKind::Signed);
-        m.insert("sizeof",      TokenKind::Sizeof);
-        m.insert("static",      TokenKind::Static);
-        m.insert("struct",      TokenKind::Struct);
-        m.insert("switch",      TokenKind::Switch);
-        m.insert("typedef",     TokenKind::Typedef);
-        m.insert("union",       TokenKind::Union);
-        m.insert("unsigned",    TokenKind::Unsigned);
-        m.insert("void",        TokenKind::Void);
-        m.insert("volatile",    TokenKind::Volatile);
-        m.insert("while",       TokenKind::While);
+        m.insert("auto", TokenKind::Auto);
+        m.insert("break", TokenKind::Break);
+        m.insert("case", TokenKind::Case);
+        m.insert("char", TokenKind::Char);
+        m.insert("const", TokenKind::Const);
+        m.insert("continue", TokenKind::Continue);
+        m.insert("default", TokenKind::Default);
+        m.insert("do", TokenKind::Do);
+        m.insert("double", TokenKind::Double);
+        m.insert("else", TokenKind::Else);
+        m.insert("enum", TokenKind::Enum);
+        m.insert("extern", TokenKind::Extern);
+        m.insert("float", TokenKind::Float);
+        m.insert("for", TokenKind::For);
+        m.insert("goto", TokenKind::Goto);
+        m.insert("if", TokenKind::If);
+        m.insert("inline", TokenKind::Inline);
+        m.insert("int", TokenKind::Int);
+        m.insert("long", TokenKind::Long);
+        m.insert("register", TokenKind::Register);
+        m.insert("restrict", TokenKind::Restrict);
+        m.insert("return", TokenKind::Return);
+        m.insert("short", TokenKind::Short);
+        m.insert("signed", TokenKind::Signed);
+        m.insert("sizeof", TokenKind::Sizeof);
+        m.insert("static", TokenKind::Static);
+        m.insert("struct", TokenKind::Struct);
+        m.insert("switch", TokenKind::Switch);
+        m.insert("typedef", TokenKind::Typedef);
+        m.insert("union", TokenKind::Union);
+        m.insert("unsigned", TokenKind::Unsigned);
+        m.insert("void", TokenKind::Void);
+        m.insert("volatile", TokenKind::Volatile);
+        m.insert("while", TokenKind::While);
 
         // =================================================================
         // C11 special keywords (10)
         // =================================================================
-        m.insert("_Alignas",        TokenKind::Alignas);
-        m.insert("_Alignof",        TokenKind::Alignof);
-        m.insert("_Atomic",         TokenKind::Atomic);
-        m.insert("_Bool",           TokenKind::Bool);
-        m.insert("_Complex",        TokenKind::Complex);
-        m.insert("_Generic",        TokenKind::Generic);
-        m.insert("_Imaginary",      TokenKind::Imaginary);
-        m.insert("_Noreturn",       TokenKind::Noreturn);
-        m.insert("_Static_assert",  TokenKind::StaticAssert);
-        m.insert("_Thread_local",   TokenKind::ThreadLocal);
+        m.insert("_Alignas", TokenKind::Alignas);
+        m.insert("_Alignof", TokenKind::Alignof);
+        m.insert("_Atomic", TokenKind::Atomic);
+        m.insert("_Bool", TokenKind::Bool);
+        m.insert("_Complex", TokenKind::Complex);
+        m.insert("_Generic", TokenKind::Generic);
+        m.insert("_Imaginary", TokenKind::Imaginary);
+        m.insert("_Noreturn", TokenKind::Noreturn);
+        m.insert("_Static_assert", TokenKind::StaticAssert);
+        m.insert("_Thread_local", TokenKind::ThreadLocal);
 
         // =================================================================
         // GCC extension keywords (with alternate spellings)
         // =================================================================
         m.insert("__attribute__", TokenKind::Attribute);
-        m.insert("__attribute",   TokenKind::Attribute);
+        m.insert("__attribute", TokenKind::Attribute);
 
-        m.insert("typeof",       TokenKind::TypeofKeyword);
-        m.insert("__typeof__",   TokenKind::TypeofKeyword);
-        m.insert("__typeof",     TokenKind::TypeofKeyword);
+        m.insert("typeof", TokenKind::TypeofKeyword);
+        m.insert("__typeof__", TokenKind::TypeofKeyword);
+        m.insert("__typeof", TokenKind::TypeofKeyword);
 
         m.insert("__extension__", TokenKind::Extension);
 
-        m.insert("asm",          TokenKind::AsmKeyword);
-        m.insert("__asm__",      TokenKind::AsmKeyword);
-        m.insert("__asm",        TokenKind::AsmKeyword);
+        m.insert("asm", TokenKind::AsmKeyword);
+        m.insert("__asm__", TokenKind::AsmKeyword);
+        m.insert("__asm", TokenKind::AsmKeyword);
 
         m.insert("__volatile__", TokenKind::VolatileGcc);
-        m.insert("__volatile",   TokenKind::VolatileGcc);
+        m.insert("__volatile", TokenKind::VolatileGcc);
 
-        m.insert("__inline__",   TokenKind::InlineGcc);
-        m.insert("__inline",     TokenKind::InlineGcc);
+        m.insert("__inline__", TokenKind::InlineGcc);
+        m.insert("__inline", TokenKind::InlineGcc);
 
-        m.insert("__signed__",   TokenKind::SignedGcc);
-        m.insert("__signed",     TokenKind::SignedGcc);
+        m.insert("__signed__", TokenKind::SignedGcc);
+        m.insert("__signed", TokenKind::SignedGcc);
 
         // __unsigned is an alternate spelling of the standard `unsigned`.
-        m.insert("__unsigned",   TokenKind::Unsigned);
+        m.insert("__unsigned", TokenKind::Unsigned);
 
-        m.insert("__const__",    TokenKind::ConstGcc);
-        m.insert("__const",      TokenKind::ConstGcc);
+        m.insert("__const__", TokenKind::ConstGcc);
+        m.insert("__const", TokenKind::ConstGcc);
 
         m.insert("__restrict__", TokenKind::RestrictGcc);
-        m.insert("__restrict",   TokenKind::RestrictGcc);
+        m.insert("__restrict", TokenKind::RestrictGcc);
 
-        m.insert("__label__",    TokenKind::Label);
+        m.insert("__label__", TokenKind::Label);
 
         // =================================================================
         // GCC builtins — variadic argument support
         // =================================================================
-        m.insert("__builtin_va_list",  TokenKind::BuiltinVaList);
+        m.insert("__builtin_va_list", TokenKind::BuiltinVaList);
         m.insert("__builtin_va_start", TokenKind::BuiltinVaStart);
-        m.insert("__builtin_va_end",   TokenKind::BuiltinVaEnd);
-        m.insert("__builtin_va_arg",   TokenKind::BuiltinVaArg);
-        m.insert("__builtin_va_copy",  TokenKind::BuiltinVaCopy);
+        m.insert("__builtin_va_end", TokenKind::BuiltinVaEnd);
+        m.insert("__builtin_va_arg", TokenKind::BuiltinVaArg);
+        m.insert("__builtin_va_copy", TokenKind::BuiltinVaCopy);
 
         // =================================================================
         // GCC builtins — type introspection and compile-time evaluation
         // =================================================================
-        m.insert("__builtin_offsetof",           TokenKind::BuiltinOffsetof);
-        m.insert("__builtin_types_compatible_p",  TokenKind::BuiltinTypesCompatibleP);
-        m.insert("__builtin_choose_expr",         TokenKind::BuiltinChooseExpr);
-        m.insert("__builtin_constant_p",          TokenKind::BuiltinConstantP);
+        m.insert("__builtin_offsetof", TokenKind::BuiltinOffsetof);
+        m.insert(
+            "__builtin_types_compatible_p",
+            TokenKind::BuiltinTypesCompatibleP,
+        );
+        m.insert("__builtin_choose_expr", TokenKind::BuiltinChooseExpr);
+        m.insert("__builtin_constant_p", TokenKind::BuiltinConstantP);
 
         // =================================================================
         // GCC builtins — branch prediction and control flow
         // =================================================================
-        m.insert("__builtin_expect",       TokenKind::BuiltinExpect);
-        m.insert("__builtin_unreachable",  TokenKind::BuiltinUnreachable);
-        m.insert("__builtin_trap",         TokenKind::BuiltinTrap);
+        m.insert("__builtin_expect", TokenKind::BuiltinExpect);
+        m.insert("__builtin_unreachable", TokenKind::BuiltinUnreachable);
+        m.insert("__builtin_trap", TokenKind::BuiltinTrap);
 
         // =================================================================
         // GCC builtins — bit manipulation
         // =================================================================
-        m.insert("__builtin_clz",      TokenKind::BuiltinClz);
-        m.insert("__builtin_ctz",      TokenKind::BuiltinCtz);
+        m.insert("__builtin_clz", TokenKind::BuiltinClz);
+        m.insert("__builtin_ctz", TokenKind::BuiltinCtz);
         m.insert("__builtin_popcount", TokenKind::BuiltinPopcount);
 
         // =================================================================
@@ -257,10 +260,10 @@ fn keyword_table() -> &'static FxHashMap<&'static str, TokenKind> {
         // =================================================================
         // GCC builtins — miscellaneous
         // =================================================================
-        m.insert("__builtin_ffs",             TokenKind::BuiltinFfs);
-        m.insert("__builtin_frame_address",   TokenKind::BuiltinFrameAddress);
-        m.insert("__builtin_return_address",  TokenKind::BuiltinReturnAddress);
-        m.insert("__builtin_assume_aligned",  TokenKind::BuiltinAssumeAligned);
+        m.insert("__builtin_ffs", TokenKind::BuiltinFfs);
+        m.insert("__builtin_frame_address", TokenKind::BuiltinFrameAddress);
+        m.insert("__builtin_return_address", TokenKind::BuiltinReturnAddress);
+        m.insert("__builtin_assume_aligned", TokenKind::BuiltinAssumeAligned);
 
         // =================================================================
         // GCC builtins — checked arithmetic (overflow detection)
@@ -525,7 +528,9 @@ impl<'src> Lexer<'src> {
                             loop {
                                 match self.scanner.peek() {
                                     None | Some('\n') | Some('\r') => break,
-                                    _ => { self.scanner.advance(); }
+                                    _ => {
+                                        self.scanner.advance();
+                                    }
                                 }
                             }
                             // Do NOT consume the newline — it is significant
@@ -740,9 +745,7 @@ impl<'src> Lexer<'src> {
 
             // ---- Dot / ellipsis ----
             '.' => {
-                if self.scanner.peek() == Some('.')
-                    && self.scanner.peek_ahead(1) == Some('.')
-                {
+                if self.scanner.peek() == Some('.') && self.scanner.peek_ahead(1) == Some('.') {
                     self.scanner.advance(); // second '.'
                     self.scanner.advance(); // third '.'
                     TokenKind::Ellipsis
@@ -943,7 +946,8 @@ mod tests {
 
     #[test]
     fn test_operators_multi_char() {
-        let kinds = token_kinds("== != <= >= << >> -> ++ -- && || += -= *= /= %= &= |= ^= <<= >>= ...");
+        let kinds =
+            token_kinds("== != <= >= << >> -> ++ -- && || += -= *= /= %= &= |= ^= <<= >>= ...");
         assert_eq!(
             kinds,
             vec![
@@ -992,7 +996,9 @@ mod tests {
 
     #[test]
     fn test_c11_special_keywords() {
-        let kinds = token_kinds("_Alignas _Alignof _Atomic _Bool _Static_assert _Thread_local _Generic _Noreturn");
+        let kinds = token_kinds(
+            "_Alignas _Alignof _Atomic _Bool _Static_assert _Thread_local _Generic _Noreturn",
+        );
         assert_eq!(
             kinds,
             vec![

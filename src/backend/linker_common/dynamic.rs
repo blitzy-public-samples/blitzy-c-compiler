@@ -547,7 +547,11 @@ pub fn build_gnu_hash(symbols: &[DynSymEntry], _dynstr: &[u8]) -> Vec<u8> {
     let nsyms = hashable.len();
     // symoffset: the index of the first hashed symbol in .dynsym.
     // Typically 1 (the null symbol at 0 is never hashed).
-    let symoffset: u32 = if hashable.is_empty() { 1 } else { hashable[0].0 as u32 };
+    let symoffset: u32 = if hashable.is_empty() {
+        1
+    } else {
+        hashable[0].0 as u32
+    };
 
     // Choose bucket count: at least 1, roughly nsyms/1 for small tables,
     // capped to next power of two for alignment efficiency.
@@ -603,7 +607,7 @@ pub fn build_gnu_hash(symbols: &[DynSymEntry], _dynstr: &[u8]) -> Vec<u8> {
     // last element of each bucket's chain (end-of-chain marker).
     for (chain_idx, &(bucket, h, _)) in sorted.iter().enumerate() {
         let mut chain_val = h & !1u32; // clear LSB
-        // Check if this is the last entry in its bucket.
+                                       // Check if this is the last entry in its bucket.
         let is_last = chain_idx + 1 >= sorted.len() || sorted[chain_idx + 1].0 != bucket;
         if is_last {
             chain_val |= 1; // set end-of-chain bit
@@ -808,7 +812,8 @@ impl DynamicSectionBuilder {
             self.entries
                 .push(DynamicEntry::new(DT_PLTRELSZ, self.rela_plt_size));
             // DT_PLTREL value 7 = DT_RELA (we use RELA format for all arches).
-            self.entries.push(DynamicEntry::new(DT_PLTREL, DT_RELA as u64));
+            self.entries
+                .push(DynamicEntry::new(DT_PLTREL, DT_RELA as u64));
             self.entries
                 .push(DynamicEntry::new(DT_JMPREL, layout.rela_plt_addr));
         }
@@ -1115,8 +1120,8 @@ impl PltBuilder {
             // ff 35 XX XX XX XX  : push [rip+disp32] ; GOT[1] = link_map
             // ff 25 XX XX XX XX  : jmp  [rip+disp32] ; GOT[2] = resolver
             // 0f 1f 40 00        : nop DWORD [rax+0] (4-byte NOP)
-            let got1 = got_plt_base + ptr_size;      // GOT[1]
-            let got2 = got_plt_base + 2 * ptr_size;  // GOT[2]
+            let got1 = got_plt_base + ptr_size; // GOT[1]
+            let got2 = got_plt_base + 2 * ptr_size; // GOT[2]
 
             // push [rip+disp32]: instruction at PLT0+0, length=6, so rip=PLT0+6
             let push_disp = (got1 as i64) - (plt0_addr as i64) - 6;
@@ -1184,7 +1189,7 @@ impl PltBuilder {
 
         // PLT[0]
         {
-            let got1 = got_plt_base + ptr_size;     // GOT[1]
+            let got1 = got_plt_base + ptr_size; // GOT[1]
             let got2 = got_plt_base + 2 * ptr_size; // GOT[2]
 
             // ff 35 XX XX XX XX : push dword ptr [abs32] GOT[1]
@@ -1252,7 +1257,7 @@ impl PltBuilder {
 
         // PLT[0] — resolver stub (32 bytes = 8 instructions)
         {
-            let got1_addr = got_plt_base + ptr_size;     // GOT[1] link_map
+            let got1_addr = got_plt_base + ptr_size; // GOT[1] link_map
             let got2_addr = got_plt_base + 2 * ptr_size; // GOT[2] resolver
 
             // stp x16, x30, [sp, #-16]!
@@ -1337,7 +1342,7 @@ impl PltBuilder {
 
         // PLT[0] — resolver stub (32 bytes = 8 instructions × 4 bytes)
         {
-            let got1_addr = got_plt_base + ptr_size;     // GOT[1] link_map
+            let got1_addr = got_plt_base + ptr_size; // GOT[1] link_map
             let got2_addr = got_plt_base + 2 * ptr_size; // GOT[2] resolver
 
             // auipc t2(x7), %pcrel_hi(GOT+8)
@@ -1472,7 +1477,12 @@ fn riscv_jalr(rd: u32, rs1: u32, offset: i32) -> u32 {
 /// funct7 = 0x20 (bits [31:25]), funct3 = 0b000 (bits [14:12]), opcode = 0x33 (OP).
 #[allow(clippy::identity_op)]
 fn riscv_sub(rd: u32, rs1: u32, rs2: u32) -> u32 {
-    (0x20 << 25) | ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | (0x0 << 12) | ((rd & 0x1F) << 7) | 0x33
+    (0x20 << 25)
+        | ((rs2 & 0x1F) << 20)
+        | ((rs1 & 0x1F) << 15)
+        | (0x0 << 12)
+        | ((rd & 0x1F) << 7)
+        | 0x33
 }
 
 /// Encodes RISC-V SRLI: `srli rd, rs1, shamt`.
@@ -1591,7 +1601,10 @@ mod tests {
         let entry = DynamicEntry::new(DT_FINI, 0x1234);
         let bytes = entry.to_bytes_32_le();
         assert_eq!(bytes.len(), 8);
-        assert_eq!(i32::from_le_bytes(bytes[0..4].try_into().unwrap()), DT_FINI as i32);
+        assert_eq!(
+            i32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            DT_FINI as i32
+        );
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 0x1234);
     }
 
@@ -1612,10 +1625,7 @@ mod tests {
         let r_info = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
         assert_eq!(r_info >> 32, 3); // symbol index
         assert_eq!(r_info & 0xFFFF_FFFF, 7); // reloc type
-        assert_eq!(
-            i64::from_le_bytes(bytes[16..24].try_into().unwrap()),
-            -8
-        );
+        assert_eq!(i64::from_le_bytes(bytes[16..24].try_into().unwrap()), -8);
     }
 
     #[test]
@@ -1625,7 +1635,7 @@ mod tests {
         // "printf" hash = well-known value from glibc
         let h = gnu_hash("printf");
         assert_ne!(h, 0); // basic sanity
-        // Determinism: hashing the same string twice gives the same result.
+                          // Determinism: hashing the same string twice gives the same result.
         assert_eq!(gnu_hash("main"), gnu_hash("main"));
         // Different strings should (very likely) produce different hashes.
         assert_ne!(gnu_hash("foo"), gnu_hash("bar"));
@@ -1845,15 +1855,22 @@ mod tests {
         assert!(!bytes.is_empty());
         // Each entry is 16 bytes (64-bit). Last entry is DT_NULL.
         assert_eq!(bytes.len() % 16, 0);
-        let last_tag = i64::from_le_bytes(bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap());
+        let last_tag =
+            i64::from_le_bytes(bytes[bytes.len() - 16..bytes.len() - 8].try_into().unwrap());
         assert_eq!(last_tag, DT_NULL);
     }
 
     #[test]
     fn test_interp_string() {
-        assert_eq!(interp_string(&Target::X86_64), "/lib64/ld-linux-x86-64.so.2");
+        assert_eq!(
+            interp_string(&Target::X86_64),
+            "/lib64/ld-linux-x86-64.so.2"
+        );
         assert_eq!(interp_string(&Target::I686), "/lib/ld-linux.so.2");
-        assert_eq!(interp_string(&Target::AArch64), "/lib/ld-linux-aarch64.so.1");
+        assert_eq!(
+            interp_string(&Target::AArch64),
+            "/lib/ld-linux-aarch64.so.1"
+        );
         assert_eq!(
             interp_string(&Target::RiscV64),
             "/lib/ld-linux-riscv64-lp64d.so.1"

@@ -461,10 +461,7 @@ fn try_lex_hex_number(after_prefix: &str) -> Option<TokenKind> {
         return None;
     }
     // Hex float: contains '.' or 'p'/'P'
-    if after_prefix.contains('.')
-        || after_prefix.contains('p')
-        || after_prefix.contains('P')
-    {
+    if after_prefix.contains('.') || after_prefix.contains('p') || after_prefix.contains('P') {
         return try_lex_hex_float(after_prefix);
     }
     let (digits, suffix) = split_integer_suffix(after_prefix);
@@ -495,7 +492,8 @@ fn try_lex_decimal_or_octal(text: &str) -> Option<TokenKind> {
         return None;
     }
     // Octal: starts with '0' and all digits are 0-7
-    if digits.starts_with('0') && digits.len() > 1
+    if digits.starts_with('0')
+        && digits.len() > 1
         && digits.bytes().all(|b| (b'0'..=b'7').contains(&b))
     {
         let value = u128::from_str_radix(digits, 8).ok()?;
@@ -594,9 +592,7 @@ fn resolve_paste_operand(tok: &Token, args: &[Vec<Token>], params: &[Symbol]) ->
         if idx < args.len() {
             args[idx]
                 .iter()
-                .filter(|t| {
-                    !matches!(t.kind, TokenKind::Whitespace | TokenKind::Newline)
-                })
+                .filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Newline))
                 .cloned()
                 .collect()
         } else {
@@ -747,18 +743,14 @@ pub fn apply_paste_operators(
             loop {
                 // Skip whitespace after ##
                 while i < tokens.len()
-                    && matches!(
-                        tokens[i].kind,
-                        TokenKind::Whitespace | TokenKind::Newline
-                    )
+                    && matches!(tokens[i].kind, TokenKind::Whitespace | TokenKind::Newline)
                 {
                     i += 1;
                 }
 
                 if i >= tokens.len() {
                     // ## at end of body — right operand is a placemarker
-                    current =
-                        paste_operand_pair(current, Vec::new(), interner, diag);
+                    current = paste_operand_pair(current, Vec::new(), interner, diag);
                     break;
                 }
 
@@ -776,8 +768,7 @@ pub fn apply_paste_operators(
                 {
                     next_look += 1;
                 }
-                if next_look < tokens.len()
-                    && matches!(tokens[next_look].kind, TokenKind::HashHash)
+                if next_look < tokens.len() && matches!(tokens[next_look].kind, TokenKind::HashHash)
                 {
                     // Continue the chain
                     i = next_look + 1;
@@ -942,10 +933,7 @@ mod tests {
 
     /// Helper: build an identifier token.
     fn ident(name: &str, interner: &mut Interner) -> Token {
-        Token::new(
-            TokenKind::Identifier(interner.intern(name)),
-            Span::DUMMY,
-        )
+        Token::new(TokenKind::Identifier(interner.intern(name)), Span::DUMMY)
     }
 
     /// Helper: build an integer literal token.
@@ -991,7 +979,10 @@ mod tests {
         let left = int_tok(1);
         let right = int_tok(2);
         let result = paste_tokens(&left, &right, &mut int, &mut diag);
-        assert!(matches!(result.kind, TokenKind::IntegerLiteral { value: 12, .. }));
+        assert!(matches!(
+            result.kind,
+            TokenKind::IntegerLiteral { value: 12, .. }
+        ));
     }
 
     #[test]

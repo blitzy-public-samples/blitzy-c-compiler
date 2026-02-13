@@ -256,10 +256,7 @@ pub fn parse_statement_expression(parser: &mut Parser) -> Result<Expression, Par
                     // Emit diagnostic and attempt recovery by synchronizing.
                     parser.diagnostics.error(
                         e.span,
-                        format!(
-                            "error in statement expression body: {}",
-                            e.message
-                        ),
+                        format!("error in statement expression body: {}", e.message),
                     );
                     parser.synchronize();
                     // If synchronization brought us to `}`, stop.
@@ -274,10 +271,7 @@ pub fn parse_statement_expression(parser: &mut Parser) -> Result<Expression, Par
                 Err(e) => {
                     parser.diagnostics.error(
                         e.span,
-                        format!(
-                            "error in statement expression body: {}",
-                            e.message
-                        ),
+                        format!("error in statement expression body: {}", e.message),
                     );
                     parser.synchronize();
                     if parser.check(TokenKind::RightBrace) {
@@ -684,10 +678,9 @@ pub fn parse_transparent_union(parser: &mut Parser) -> Result<Declaration, Parse
 
             // Validate: the union must have at least one member.
             if fields.is_empty() {
-                parser.diagnostics.warning(
-                    span,
-                    "transparent_union applied to union with no members",
-                );
+                parser
+                    .diagnostics
+                    .warning(span, "transparent_union applied to union with no members");
             }
 
             Ok(Declaration::UnionDef {
@@ -808,10 +801,9 @@ fn parse_label_identifier(parser: &mut Parser, context_span: Span) -> Result<Sym
             Ok(label)
         }
         _ => {
-            parser.diagnostics.error(
-                token.span,
-                "expected label name in __label__ declaration",
-            );
+            parser
+                .diagnostics
+                .error(token.span, "expected label name in __label__ declaration");
             Err(ParseError {
                 span: Span::merge(context_span, token.span),
                 message: "expected identifier in __label__ declaration".to_string(),
@@ -843,10 +835,7 @@ fn parse_label_identifier(parser: &mut Parser, context_span: Span) -> Result<Sym
 /// # Returns
 ///
 /// An `Expression::Error` node with a diagnostic emitted.
-pub fn diagnose_unknown_extension_expr(
-    parser: &mut Parser,
-    token_kind: &TokenKind,
-) -> Expression {
+pub fn diagnose_unknown_extension_expr(parser: &mut Parser, token_kind: &TokenKind) -> Expression {
     let span = parser.current().span;
     parser.diagnostics.error(
         span,
@@ -877,10 +866,7 @@ pub fn diagnose_unknown_extension_expr(
 /// # Returns
 ///
 /// A `Declaration::Error` node with a diagnostic emitted.
-pub fn diagnose_unknown_extension_decl(
-    parser: &mut Parser,
-    token_kind: &TokenKind,
-) -> Declaration {
+pub fn diagnose_unknown_extension_decl(parser: &mut Parser, token_kind: &TokenKind) -> Declaration {
     let span = parser.current().span;
     parser.diagnostics.error(
         span,
@@ -941,7 +927,9 @@ mod tests {
         assert!(!is_gcc_extension_start(&TokenKind::LeftParen));
         assert!(!is_gcc_extension_start(&TokenKind::Colon));
         assert!(!is_gcc_extension_start(&TokenKind::Eof));
-        assert!(!is_gcc_extension_start(&TokenKind::Identifier(Symbol::EMPTY)));
+        assert!(!is_gcc_extension_start(&TokenKind::Identifier(
+            Symbol::EMPTY
+        )));
         assert!(!is_gcc_extension_start(&TokenKind::AmpAmp));
         assert!(!is_gcc_extension_start(&TokenKind::Question));
         assert!(!is_gcc_extension_start(&TokenKind::Ellipsis));
@@ -954,14 +942,35 @@ mod tests {
     /// Verify the diagnostic formatter for known extension tokens.
     #[test]
     fn test_format_token_kind() {
-        assert_eq!(format_token_kind_for_diagnostic(&TokenKind::Extension), "__extension__");
-        assert_eq!(format_token_kind_for_diagnostic(&TokenKind::Label), "__label__");
-        assert_eq!(format_token_kind_for_diagnostic(&TokenKind::Attribute), "__attribute__");
-        assert_eq!(format_token_kind_for_diagnostic(&TokenKind::TypeofKeyword), "typeof/__typeof__");
-        assert_eq!(format_token_kind_for_diagnostic(&TokenKind::AsmKeyword), "asm/__asm__");
+        assert_eq!(
+            format_token_kind_for_diagnostic(&TokenKind::Extension),
+            "__extension__"
+        );
+        assert_eq!(
+            format_token_kind_for_diagnostic(&TokenKind::Label),
+            "__label__"
+        );
+        assert_eq!(
+            format_token_kind_for_diagnostic(&TokenKind::Attribute),
+            "__attribute__"
+        );
+        assert_eq!(
+            format_token_kind_for_diagnostic(&TokenKind::TypeofKeyword),
+            "typeof/__typeof__"
+        );
+        assert_eq!(
+            format_token_kind_for_diagnostic(&TokenKind::AsmKeyword),
+            "asm/__asm__"
+        );
         assert_eq!(format_token_kind_for_diagnostic(&TokenKind::AmpAmp), "&&");
         assert_eq!(format_token_kind_for_diagnostic(&TokenKind::Star), "*");
-        assert_eq!(format_token_kind_for_diagnostic(&TokenKind::Ellipsis), "...");
-        assert_eq!(format_token_kind_for_diagnostic(&TokenKind::Semicolon), "<unknown GCC extension>");
+        assert_eq!(
+            format_token_kind_for_diagnostic(&TokenKind::Ellipsis),
+            "..."
+        );
+        assert_eq!(
+            format_token_kind_for_diagnostic(&TokenKind::Semicolon),
+            "<unknown GCC extension>"
+        );
     }
 }

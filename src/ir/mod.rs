@@ -61,9 +61,7 @@ pub mod basic_block;
 pub use types::IrType;
 
 // Re-export instruction-layer types for convenient access.
-pub use instructions::{
-    BasicBlockId, BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId,
-};
+pub use instructions::{BasicBlockId, BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId};
 
 // Re-export basic block types for convenient access.
 pub use basic_block::BasicBlock;

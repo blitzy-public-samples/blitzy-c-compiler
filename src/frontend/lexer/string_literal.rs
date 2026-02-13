@@ -502,10 +502,7 @@ pub fn lex_char_literal(
                         CharPrefix::None => {
                             // Plain char: value must fit in 8 bits
                             if value > 0xFF {
-                                diag.warning(
-                                    span,
-                                    "character constant too large for type 'char'",
-                                );
+                                diag.warning(span, "character constant too large for type 'char'");
                                 value &= 0xFF;
                             }
                         }
@@ -807,9 +804,7 @@ pub fn try_concatenate_strings(
                 }
             }
             Some('u') => {
-                if scanner.peek_ahead(1) == Some('8')
-                    && scanner.peek_ahead(2) == Some('"')
-                {
+                if scanner.peek_ahead(1) == Some('8') && scanner.peek_ahead(2) == Some('"') {
                     Some(StringPrefix::U8)
                 } else if scanner.peek_ahead(1) == Some('"') {
                     Some(StringPrefix::SmallU)

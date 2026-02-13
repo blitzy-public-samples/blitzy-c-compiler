@@ -182,10 +182,7 @@ fn lex_hex_literal(
             // At least one hex digit required across integer + fractional parts.
             if int_digits.is_empty() && frac_digits.is_empty() {
                 let span = Span::new(file_id, start, scanner.byte_offset());
-                diag.error(
-                    span,
-                    "no hex digits in hexadecimal floating constant",
-                );
+                diag.error(span, "no hex digits in hexadecimal floating constant");
                 consume_invalid_suffix(scanner);
                 return Token::new(
                     TokenKind::Error,
@@ -196,10 +193,7 @@ fn lex_hex_literal(
             // Binary exponent (p/P) is mandatory for hex floats.
             if !matches!(scanner.peek(), Some('p') | Some('P')) {
                 let span = Span::new(file_id, start, scanner.byte_offset());
-                diag.error(
-                    span,
-                    "hexadecimal floating constant requires an exponent",
-                );
+                diag.error(span, "hexadecimal floating constant requires an exponent");
                 consume_invalid_suffix(scanner);
                 return Token::new(
                     TokenKind::Error,
@@ -207,10 +201,8 @@ fn lex_hex_literal(
                 );
             }
 
-            let (exp_sign, exp_value) =
-                consume_binary_exponent(scanner, diag, start, file_id);
-            let value =
-                compute_hex_float_value(int_digits, frac_digits, exp_sign, exp_value);
+            let (exp_sign, exp_value) = consume_binary_exponent(scanner, diag, start, file_id);
+            let value = compute_hex_float_value(int_digits, frac_digits, exp_sign, exp_value);
             finish_float(scanner, diag, start, file_id, value)
         }
 
@@ -225,8 +217,7 @@ fn lex_hex_literal(
                     Span::new(file_id, start, scanner.byte_offset()),
                 );
             }
-            let (exp_sign, exp_value) =
-                consume_binary_exponent(scanner, diag, start, file_id);
+            let (exp_sign, exp_value) = consume_binary_exponent(scanner, diag, start, file_id);
             let value = compute_hex_float_value(int_digits, "", exp_sign, exp_value);
             finish_float(scanner, diag, start, file_id, value)
         }
@@ -278,7 +269,10 @@ fn lex_binary_literal(
     if bin_digits.is_empty() {
         // "0b" with no binary digits.
         let span = Span::new(file_id, start, scanner.byte_offset());
-        diag.error(span, "no binary digits in binary constant after '0b' prefix");
+        diag.error(
+            span,
+            "no binary digits in binary constant after '0b' prefix",
+        );
         consume_invalid_suffix(scanner);
         return Token::new(
             TokenKind::Error,
@@ -290,10 +284,7 @@ fn lex_binary_literal(
     if let Some(ch) = scanner.peek() {
         if Scanner::is_digit(ch) && ch != '0' && ch != '1' {
             let span = Span::new(file_id, start, scanner.byte_offset());
-            diag.error(
-                span,
-                format!("invalid digit '{}' in binary constant", ch),
-            );
+            diag.error(span, format!("invalid digit '{}' in binary constant", ch));
             consume_invalid_suffix(scanner);
             return Token::new(
                 TokenKind::Error,
@@ -366,10 +357,7 @@ fn lex_after_leading_zero(
     for ch in extra_digits.chars() {
         if !Scanner::is_octal_digit(ch) {
             let span = Span::new(file_id, start, scanner.byte_offset());
-            diag.error(
-                span,
-                format!("invalid digit '{}' in octal constant", ch),
-            );
+            diag.error(span, format!("invalid digit '{}' in octal constant", ch));
             consume_invalid_suffix(scanner);
             return Token::new(
                 TokenKind::Error,
@@ -549,18 +537,19 @@ fn consume_binary_exponent(
     let exp_digits = scanner.advance_while(Scanner::is_digit);
     if exp_digits.is_empty() {
         let span = Span::new(file_id, start, scanner.byte_offset());
-        diag.error(span, "exponent has no digits in hexadecimal floating constant");
+        diag.error(
+            span,
+            "exponent has no digits in hexadecimal floating constant",
+        );
         return (sign, 0);
     }
 
     // Parse the exponent magnitude. Exponents above a few thousand are
     // effectively ±infinity for f64, so u32 is more than sufficient.
-    let exp_val: u32 = exp_digits
-        .chars()
-        .fold(0u32, |acc, ch| {
-            acc.saturating_mul(10)
-                .saturating_add((ch as u32).wrapping_sub('0' as u32))
-        });
+    let exp_val: u32 = exp_digits.chars().fold(0u32, |acc, ch| {
+        acc.saturating_mul(10)
+            .saturating_add((ch as u32).wrapping_sub('0' as u32))
+    });
 
     (sign, exp_val)
 }
@@ -585,9 +574,8 @@ fn finish_integer(
     // as a potential integer suffix. Unicode identifier continuations are
     // excluded — only C suffix letters (u/U, l/L) and error-recovery
     // characters (other ASCII letters and digits) are consumed.
-    let suffix_text = scanner.advance_while(|ch| {
-        matches!(ch, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9')
-    });
+    let suffix_text =
+        scanner.advance_while(|ch| matches!(ch, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'));
 
     if suffix_text.is_empty() {
         let span = Span::new(file_id, start, scanner.byte_offset());
@@ -637,9 +625,8 @@ fn finish_float(
 ) -> Token {
     // Consume potential float suffix (f/F/l/L) and any erroneous trailing
     // identifier characters for error recovery.
-    let suffix_text = scanner.advance_while(|ch| {
-        matches!(ch, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9')
-    });
+    let suffix_text =
+        scanner.advance_while(|ch| matches!(ch, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'));
 
     if suffix_text.is_empty() {
         let span = Span::new(file_id, start, scanner.byte_offset());
@@ -906,9 +893,7 @@ fn safe_parse_f64(
 /// the scanner past any trailing letters, digits, or underscores so that
 /// the lexer does not produce cascading errors on the leftover characters.
 fn consume_invalid_suffix(scanner: &mut Scanner) {
-    scanner.advance_while(|ch| {
-        matches!(ch, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9') || ch == '.'
-    });
+    scanner.advance_while(|ch| matches!(ch, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9') || ch == '.');
 }
 
 // ===========================================================================

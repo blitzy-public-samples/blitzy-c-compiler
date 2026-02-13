@@ -613,9 +613,7 @@ impl RelocationProcessor {
                             return Ok((sym.name.clone(), sym.value));
                         }
                     }
-                    return Err(RelocationError::UndefinedSymbol {
-                        name: name.clone(),
-                    });
+                    return Err(RelocationError::UndefinedSymbol { name: name.clone() });
                 }
 
                 // Empty name — section-relative symbol. The section_index
@@ -667,9 +665,7 @@ impl RelocationProcessor {
     fn format_symbol_id(&self, pending: &PendingRelocation) -> String {
         let base = format!(
             "symbol_index_{} (object {}, section {})",
-            pending.input_reloc.symbol_index,
-            pending.object_index,
-            pending.input_section_index,
+            pending.input_reloc.symbol_index, pending.object_index, pending.input_section_index,
         );
         if let Some(target) = self.target {
             format!("{} [e_machine={}]", base, target.elf_machine())
@@ -682,9 +678,7 @@ impl RelocationProcessor {
     /// target's pointer width via [`Target::pointer_width`].
     /// Falls back to 8 bytes (64-bit) when no target is configured.
     fn default_relocation_size(&self) -> u8 {
-        self.target
-            .map(|t| t.pointer_width() as u8)
-            .unwrap_or(8)
+        self.target.map(|t| t.pointer_width() as u8).unwrap_or(8)
     }
 }
 
@@ -1162,7 +1156,10 @@ mod tests {
 
         // Write back and verify the second input section was updated
         write_back_flat_data(&mut section, &flat_data);
-        assert_eq!(section.input_sections[0].input.data, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+        assert_eq!(
+            section.input_sections[0].input.data,
+            vec![0xAA, 0xBB, 0xCC, 0xDD]
+        );
         assert_eq!(section.input_sections[1].input.data[0], 0xFF);
         assert_eq!(section.input_sections[1].input.data[1], 0xEE);
     }

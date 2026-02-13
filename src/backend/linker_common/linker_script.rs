@@ -40,8 +40,8 @@
 //! to the project's strict zero-dependency mandate.
 
 use crate::backend::elf_writer_common::{
-    ProgramHeader, PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP,
-    PT_LOAD, PT_PHDR, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS,
+    ProgramHeader, PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD,
+    PT_PHDR, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS,
 };
 use crate::backend::linker_common::section_merger::OutputSection;
 use crate::backend::linker_common::symbol_resolver::ResolvedSymbols;
@@ -118,12 +118,7 @@ impl SectionAssignment {
     /// * `input_patterns` — Patterns matching input section names.
     /// * `flags` — ELF section flags for the output section.
     /// * `alignment` — Minimum alignment for the output section.
-    pub fn new(
-        output_name: &str,
-        input_patterns: Vec<&str>,
-        flags: u64,
-        alignment: u64,
-    ) -> Self {
+    pub fn new(output_name: &str, input_patterns: Vec<&str>, flags: u64, alignment: u64) -> Self {
         Self {
             output_name: output_name.to_string(),
             input_patterns: input_patterns.iter().map(|s| s.to_string()).collect(),
@@ -189,12 +184,7 @@ pub struct SegmentRule {
 
 impl SegmentRule {
     /// Creates a new segment rule.
-    pub fn new(
-        segment_type: u32,
-        flags: u32,
-        alignment: u64,
-        sections: Vec<String>,
-    ) -> Self {
+    pub fn new(segment_type: u32, flags: u32, alignment: u64, sections: Vec<String>) -> Self {
         Self {
             segment_type,
             flags,
@@ -397,10 +387,7 @@ impl LinkerScript {
     ///
     /// * `output_sections` — Finalized output sections with addresses and
     ///   offsets from the section merger.
-    pub fn compute_segment_layout(
-        &self,
-        output_sections: &[OutputSection],
-    ) -> Vec<ProgramHeader> {
+    pub fn compute_segment_layout(&self, output_sections: &[OutputSection]) -> Vec<ProgramHeader> {
         let mut headers: Vec<ProgramHeader> = Vec::new();
         // Track which output sections have been claimed by a segment rule.
         let mut claimed: Vec<bool> = vec![false; output_sections.len()];
@@ -462,8 +449,7 @@ impl LinkerScript {
 
                 // ---- PT_DYNAMIC: dynamic linking metadata ----
                 PT_DYNAMIC => {
-                    if let Some((idx, dynamic)) =
-                        find_section_indexed(output_sections, ".dynamic")
+                    if let Some((idx, dynamic)) = find_section_indexed(output_sections, ".dynamic")
                     {
                         claimed[idx] = true;
                         headers.push(ProgramHeader {
@@ -612,9 +598,9 @@ impl LinkerScript {
             OutputType::SharedLibrary | OutputType::RelocatableObject => 0,
             OutputType::Executable => match target {
                 Target::X86_64 => 0x0040_0000,  // 4 MiB — standard Linux x86-64
-                Target::I686 => 0x0804_8000,     // classic Linux i386
-                Target::AArch64 => 0x0040_0000,  // standard AArch64
-                Target::RiscV64 => 0x0001_0000,  // standard RISC-V Linux
+                Target::I686 => 0x0804_8000,    // classic Linux i386
+                Target::AArch64 => 0x0040_0000, // standard AArch64
+                Target::RiscV64 => 0x0001_0000, // standard RISC-V Linux
             },
         }
     }
@@ -655,68 +641,18 @@ impl LinkerScript {
                 16,
             ),
             // ---- Read-only data ----
-            SectionAssignment::new(
-                ".rodata",
-                vec![".rodata", ".rodata.*"],
-                SHF_ALLOC,
-                16,
-            ),
-            SectionAssignment::new(
-                ".eh_frame",
-                vec![".eh_frame"],
-                SHF_ALLOC,
-                8,
-            ),
-            SectionAssignment::new(
-                ".eh_frame_hdr",
-                vec![".eh_frame_hdr"],
-                SHF_ALLOC,
-                4,
-            ),
+            SectionAssignment::new(".rodata", vec![".rodata", ".rodata.*"], SHF_ALLOC, 16),
+            SectionAssignment::new(".eh_frame", vec![".eh_frame"], SHF_ALLOC, 8),
+            SectionAssignment::new(".eh_frame_hdr", vec![".eh_frame_hdr"], SHF_ALLOC, 4),
             // ---- Read-only dynamic link tables ----
-            SectionAssignment::new(
-                ".dynsym",
-                vec![".dynsym"],
-                SHF_ALLOC,
-                8,
-            ),
-            SectionAssignment::new(
-                ".dynstr",
-                vec![".dynstr"],
-                SHF_ALLOC,
-                1,
-            ),
-            SectionAssignment::new(
-                ".gnu.hash",
-                vec![".gnu.hash"],
-                SHF_ALLOC,
-                8,
-            ),
-            SectionAssignment::new(
-                ".rela.dyn",
-                vec![".rela.dyn", ".rela.*"],
-                SHF_ALLOC,
-                8,
-            ),
-            SectionAssignment::new(
-                ".rela.plt",
-                vec![".rela.plt"],
-                SHF_ALLOC,
-                8,
-            ),
-            SectionAssignment::new(
-                ".interp",
-                vec![".interp"],
-                SHF_ALLOC,
-                1,
-            ),
+            SectionAssignment::new(".dynsym", vec![".dynsym"], SHF_ALLOC, 8),
+            SectionAssignment::new(".dynstr", vec![".dynstr"], SHF_ALLOC, 1),
+            SectionAssignment::new(".gnu.hash", vec![".gnu.hash"], SHF_ALLOC, 8),
+            SectionAssignment::new(".rela.dyn", vec![".rela.dyn", ".rela.*"], SHF_ALLOC, 8),
+            SectionAssignment::new(".rela.plt", vec![".rela.plt"], SHF_ALLOC, 8),
+            SectionAssignment::new(".interp", vec![".interp"], SHF_ALLOC, 1),
             // ---- Initialised writable data ----
-            SectionAssignment::new(
-                ".data",
-                vec![".data", ".data.*"],
-                SHF_ALLOC | SHF_WRITE,
-                16,
-            ),
+            SectionAssignment::new(".data", vec![".data", ".data.*"], SHF_ALLOC | SHF_WRITE, 16),
             SectionAssignment::new(
                 ".init_array",
                 vec![".init_array", ".init_array.*"],
@@ -729,38 +665,13 @@ impl LinkerScript {
                 SHF_ALLOC | SHF_WRITE,
                 8,
             ),
-            SectionAssignment::new(
-                ".ctors",
-                vec![".ctors"],
-                SHF_ALLOC | SHF_WRITE,
-                8,
-            ),
-            SectionAssignment::new(
-                ".dtors",
-                vec![".dtors"],
-                SHF_ALLOC | SHF_WRITE,
-                8,
-            ),
+            SectionAssignment::new(".ctors", vec![".ctors"], SHF_ALLOC | SHF_WRITE, 8),
+            SectionAssignment::new(".dtors", vec![".dtors"], SHF_ALLOC | SHF_WRITE, 8),
             // ---- GOT / PLT data ----
-            SectionAssignment::new(
-                ".got",
-                vec![".got"],
-                SHF_ALLOC | SHF_WRITE,
-                8,
-            ),
-            SectionAssignment::new(
-                ".got.plt",
-                vec![".got.plt"],
-                SHF_ALLOC | SHF_WRITE,
-                8,
-            ),
+            SectionAssignment::new(".got", vec![".got"], SHF_ALLOC | SHF_WRITE, 8),
+            SectionAssignment::new(".got.plt", vec![".got.plt"], SHF_ALLOC | SHF_WRITE, 8),
             // ---- Dynamic linking metadata ----
-            SectionAssignment::new(
-                ".dynamic",
-                vec![".dynamic"],
-                SHF_ALLOC | SHF_WRITE,
-                8,
-            ),
+            SectionAssignment::new(".dynamic", vec![".dynamic"], SHF_ALLOC | SHF_WRITE, 8),
             // ---- Uninitialised data (NOBITS) ----
             SectionAssignment::new(
                 ".bss",
@@ -769,12 +680,7 @@ impl LinkerScript {
                 16,
             ),
             // ---- Note sections ----
-            SectionAssignment::new(
-                ".note",
-                vec![".note", ".note.*"],
-                SHF_ALLOC,
-                4,
-            ),
+            SectionAssignment::new(".note", vec![".note", ".note.*"], SHF_ALLOC, 4),
             // ---- Debug sections (non-loadable, no SHF_ALLOC) ----
             SectionAssignment::new(".debug_info", vec![".debug_info"], 0, 1),
             SectionAssignment::new(".debug_abbrev", vec![".debug_abbrev"], 0, 1),
@@ -807,12 +713,8 @@ impl LinkerScript {
         let page = self.page_sz;
 
         // PT_PHDR — program header table self-reference
-        self.segment_rules.push(SegmentRule::new(
-            PT_PHDR,
-            PF_R,
-            8,
-            vec![],
-        ));
+        self.segment_rules
+            .push(SegmentRule::new(PT_PHDR, PF_R, 8, vec![]));
 
         // PT_INTERP — path to dynamic linker (shared libs and dynamically linked exes)
         if self.output_type == OutputType::SharedLibrary {
@@ -894,12 +796,8 @@ impl LinkerScript {
         }
 
         // PT_GNU_STACK — non-executable stack marker (always last)
-        self.segment_rules.push(SegmentRule::new(
-            PT_GNU_STACK,
-            PF_R | PF_W,
-            0x10,
-            vec![],
-        ));
+        self.segment_rules
+            .push(SegmentRule::new(PT_GNU_STACK, PF_R | PF_W, 0x10, vec![]));
     }
 
     // ---------------------------------------------------------------
@@ -910,10 +808,7 @@ impl LinkerScript {
     ///
     /// Handles the `SHT_NOBITS` distinction: `.bss` sections contribute
     /// to `p_memsz` but NOT to `p_filesz`.
-    fn build_load_header(
-        rule: &SegmentRule,
-        matched: &[(usize, &OutputSection)],
-    ) -> ProgramHeader {
+    fn build_load_header(rule: &SegmentRule, matched: &[(usize, &OutputSection)]) -> ProgramHeader {
         let mut min_offset = u64::MAX;
         let mut min_vaddr = u64::MAX;
         let mut max_file_end: u64 = 0;
@@ -1101,8 +996,7 @@ impl LinkerScript {
                     }
                     if !is_nobits {
                         let sec_end_file = section.offset.saturating_add(section.size);
-                        let current_end_file =
-                            hdr.p_offset.saturating_add(hdr.p_filesz);
+                        let current_end_file = hdr.p_offset.saturating_add(hdr.p_filesz);
                         if sec_end_file > current_end_file {
                             hdr.p_filesz = sec_end_file - hdr.p_offset;
                         }
@@ -1152,10 +1046,7 @@ fn find_section_indexed<'a>(
     sections: &'a [OutputSection],
     name: &str,
 ) -> Option<(usize, &'a OutputSection)> {
-    sections
-        .iter()
-        .enumerate()
-        .find(|(_, s)| s.name == name)
+    sections.iter().enumerate().find(|(_, s)| s.name == name)
 }
 
 /// Collects all output sections whose names appear in `names`, returning
@@ -1227,15 +1118,18 @@ pub fn page_size(target: &Target) -> u64 {
 mod tests {
     use super::*;
     use crate::backend::elf_writer_common::{
-        PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD,
-        PT_PHDR, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS,
+        PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_PHDR,
+        SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS,
     };
 
     // ---- OutputType tests --------------------------------------------
 
     #[test]
     fn output_type_display() {
-        assert_eq!(format!("{}", OutputType::Executable), "executable (ET_EXEC)");
+        assert_eq!(
+            format!("{}", OutputType::Executable),
+            "executable (ET_EXEC)"
+        );
         assert_eq!(
             format!("{}", OutputType::SharedLibrary),
             "shared library (ET_DYN)"
@@ -1390,8 +1284,7 @@ mod tests {
 
     #[test]
     fn shared_library_no_entry() {
-        let script =
-            LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
+        let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
         assert_eq!(script.entry_point(), "");
         assert_eq!(script.base_address(), 0);
     }
@@ -1406,7 +1299,12 @@ mod tests {
 
     #[test]
     fn all_architectures_create_valid_scripts() {
-        for target in &[Target::X86_64, Target::I686, Target::AArch64, Target::RiscV64] {
+        for target in &[
+            Target::X86_64,
+            Target::I686,
+            Target::AArch64,
+            Target::RiscV64,
+        ] {
             let exe = LinkerScript::default_for_target(target, OutputType::Executable);
             assert_eq!(exe.entry_point(), "_start");
             assert!(exe.base_address() > 0);
@@ -1488,8 +1386,7 @@ mod tests {
 
     #[test]
     fn shared_object_has_dynamic_segment() {
-        let script =
-            LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
+        let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
         let dynamic = script.segments_of_type(PT_DYNAMIC);
         assert!(!dynamic.is_empty());
         assert_eq!(dynamic[0].flags, PF_R | PF_W);
@@ -1504,8 +1401,7 @@ mod tests {
 
     #[test]
     fn shared_object_has_relro() {
-        let script =
-            LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
+        let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
         let relro = script.segments_of_type(PT_GNU_RELRO);
         assert!(!relro.is_empty());
         assert_eq!(relro[0].flags, PF_R);
@@ -1513,8 +1409,7 @@ mod tests {
 
     #[test]
     fn shared_object_has_interp() {
-        let script =
-            LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
+        let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
         let interp = script.segments_of_type(PT_INTERP);
         assert!(!interp.is_empty());
     }
@@ -1546,16 +1441,14 @@ mod tests {
 
     #[test]
     fn set_entry_point() {
-        let mut script =
-            LinkerScript::default_for_target(&Target::X86_64, OutputType::Executable);
+        let mut script = LinkerScript::default_for_target(&Target::X86_64, OutputType::Executable);
         script.set_entry_point("main");
         assert_eq!(script.entry_point(), "main");
     }
 
     #[test]
     fn set_base_address() {
-        let mut script =
-            LinkerScript::default_for_target(&Target::X86_64, OutputType::Executable);
+        let mut script = LinkerScript::default_for_target(&Target::X86_64, OutputType::Executable);
         script.set_base_address(0x1000_0000);
         assert_eq!(script.base_address(), 0x1000_0000);
     }
@@ -1576,12 +1469,27 @@ mod tests {
 
     #[test]
     fn standalone_base_address() {
-        assert_eq!(base_address(&Target::X86_64, &OutputType::Executable), 0x0040_0000);
-        assert_eq!(base_address(&Target::I686, &OutputType::Executable), 0x0804_8000);
-        assert_eq!(base_address(&Target::AArch64, &OutputType::Executable), 0x0040_0000);
-        assert_eq!(base_address(&Target::RiscV64, &OutputType::Executable), 0x0001_0000);
+        assert_eq!(
+            base_address(&Target::X86_64, &OutputType::Executable),
+            0x0040_0000
+        );
+        assert_eq!(
+            base_address(&Target::I686, &OutputType::Executable),
+            0x0804_8000
+        );
+        assert_eq!(
+            base_address(&Target::AArch64, &OutputType::Executable),
+            0x0040_0000
+        );
+        assert_eq!(
+            base_address(&Target::RiscV64, &OutputType::Executable),
+            0x0001_0000
+        );
         assert_eq!(base_address(&Target::X86_64, &OutputType::SharedLibrary), 0);
-        assert_eq!(base_address(&Target::I686, &OutputType::RelocatableObject), 0);
+        assert_eq!(
+            base_address(&Target::I686, &OutputType::RelocatableObject),
+            0
+        );
     }
 
     #[test]
@@ -1656,16 +1564,41 @@ mod tests {
         let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::Executable);
 
         let sections = vec![
-            make_section(".text", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 0x401000, 0x1000, 0x200),
+            make_section(
+                ".text",
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                0x401000,
+                0x1000,
+                0x200,
+            ),
             make_section(".rodata", SHT_PROGBITS, SHF_ALLOC, 0x402000, 0x2000, 0x100),
-            make_section(".data", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0x403000, 0x3000, 0x80),
-            make_section(".bss", SHT_NOBITS, SHF_ALLOC | SHF_WRITE, 0x403080, 0x3080, 0x40),
+            make_section(
+                ".data",
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_WRITE,
+                0x403000,
+                0x3000,
+                0x80,
+            ),
+            make_section(
+                ".bss",
+                SHT_NOBITS,
+                SHF_ALLOC | SHF_WRITE,
+                0x403080,
+                0x3080,
+                0x40,
+            ),
         ];
 
         let headers = script.compute_segment_layout(&sections);
 
         // Should have: PT_PHDR, PT_LOAD (R+X), PT_LOAD (R), PT_LOAD (R+W), PT_GNU_STACK
-        assert!(headers.len() >= 4, "Expected at least 4 headers, got {}", headers.len());
+        assert!(
+            headers.len() >= 4,
+            "Expected at least 4 headers, got {}",
+            headers.len()
+        );
 
         // Find the PT_PHDR
         let phdr = headers.iter().find(|h| h.p_type == PT_PHDR);
@@ -1711,16 +1644,43 @@ mod tests {
 
     #[test]
     fn compute_layout_shared_library() {
-        let script =
-            LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
+        let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::SharedLibrary);
 
         let sections = vec![
             make_section(".interp", SHT_PROGBITS, SHF_ALLOC, 0x200, 0x200, 0x1c),
-            make_section(".text", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 0x1000, 0x1000, 0x100),
+            make_section(
+                ".text",
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_EXECINSTR,
+                0x1000,
+                0x1000,
+                0x100,
+            ),
             make_section(".rodata", SHT_PROGBITS, SHF_ALLOC, 0x2000, 0x2000, 0x50),
-            make_section(".dynamic", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0x3000, 0x3000, 0xF0),
-            make_section(".got", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0x30F0, 0x30F0, 0x20),
-            make_section(".data", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0x3200, 0x3200, 0x40),
+            make_section(
+                ".dynamic",
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_WRITE,
+                0x3000,
+                0x3000,
+                0xF0,
+            ),
+            make_section(
+                ".got",
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_WRITE,
+                0x30F0,
+                0x30F0,
+                0x20,
+            ),
+            make_section(
+                ".data",
+                SHT_PROGBITS,
+                SHF_ALLOC | SHF_WRITE,
+                0x3200,
+                0x3200,
+                0x40,
+            ),
         ];
 
         let headers = script.compute_segment_layout(&sections);
@@ -1757,9 +1717,14 @@ mod tests {
     #[test]
     fn compute_layout_bss_only_segment() {
         let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::Executable);
-        let sections = vec![
-            make_section(".bss", SHT_NOBITS, SHF_ALLOC | SHF_WRITE, 0x403000, 0x3000, 0x1000),
-        ];
+        let sections = vec![make_section(
+            ".bss",
+            SHT_NOBITS,
+            SHF_ALLOC | SHF_WRITE,
+            0x403000,
+            0x3000,
+            0x1000,
+        )];
         let headers = script.compute_segment_layout(&sections);
 
         let rw_seg = headers
@@ -1778,16 +1743,14 @@ mod tests {
         let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::Executable);
 
         // Create an unusual section name that won't match any named rule
-        let sections = vec![
-            make_section(
-                ".custom_code",
-                SHT_PROGBITS,
-                SHF_ALLOC | SHF_EXECINSTR,
-                0x500000,
-                0x5000,
-                0x100,
-            ),
-        ];
+        let sections = vec![make_section(
+            ".custom_code",
+            SHT_PROGBITS,
+            SHF_ALLOC | SHF_EXECINSTR,
+            0x500000,
+            0x5000,
+            0x100,
+        )];
 
         let headers = script.compute_segment_layout(&sections);
         // The unclaimed section should be classified into a PT_LOAD R+X segment
@@ -1797,8 +1760,9 @@ mod tests {
             .collect();
         // Should have at least one code segment containing our custom section
         assert!(
-            code_segs.iter().any(|s| s.p_vaddr <= 0x500000
-                && s.p_vaddr + s.p_memsz >= 0x500100),
+            code_segs
+                .iter()
+                .any(|s| s.p_vaddr <= 0x500000 && s.p_vaddr + s.p_memsz >= 0x500100),
             "Unclaimed code section not placed in any PT_LOAD R+X segment"
         );
     }
@@ -1808,9 +1772,14 @@ mod tests {
         let script = LinkerScript::default_for_target(&Target::X86_64, OutputType::Executable);
 
         // Debug section without SHF_ALLOC — must NOT appear in any PT_LOAD
-        let sections = vec![
-            make_section(".debug_info", SHT_PROGBITS, 0, 0x0, 0x8000, 0x500),
-        ];
+        let sections = vec![make_section(
+            ".debug_info",
+            SHT_PROGBITS,
+            0,
+            0x0,
+            0x8000,
+            0x500,
+        )];
 
         let headers = script.compute_segment_layout(&sections);
         let load_segs: Vec<_> = headers.iter().filter(|h| h.p_type == PT_LOAD).collect();

@@ -701,7 +701,6 @@ fn insert_copies_before_terminator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::basic_block::BasicBlock;
     use crate::ir::function::{IrFunction, Parameter};
     use crate::ir::instructions::{BasicBlockId, Instruction, ValueId};
     use crate::ir::types::IrType;
@@ -959,7 +958,7 @@ mod tests {
         //     ret i32 %v5
 
         let params = vec![
-            crate::ir::function::Parameter {
+            Parameter {
                 name: Some("x".into()),
                 ty: IrType::I32,
                 id: ValueId(0),

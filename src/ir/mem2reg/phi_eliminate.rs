@@ -487,7 +487,7 @@ fn collect_parallel_copies(func: &IrFunction) -> FxHashMap<BasicBlockId, Vec<Par
 
                 copies
                     .entry(pred_id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((result, value, ty.clone()));
             }
         }

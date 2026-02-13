@@ -1297,7 +1297,7 @@ fn find_output_placement(
 ///
 /// Only the first `MergedInput` entry's data is replaced, since synthetic
 /// sections added by the linker have exactly one input contribution.
-fn patch_section_data(output_sections: &mut Vec<OutputSection>, name: &str, new_data: &[u8]) {
+fn patch_section_data(output_sections: &mut [OutputSection], name: &str, new_data: &[u8]) {
     for section in output_sections.iter_mut() {
         if section.name == name {
             if let Some(merged) = section.input_sections.first_mut() {

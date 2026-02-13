@@ -1078,13 +1078,13 @@ impl RiscV64Linker {
                 // R_RISCV_RELATIVE: B + A where B is the load base address.
                 // Elf64_Rela: offset(8) + info(8) + addend(8) = 24 bytes.
                 data.extend_from_slice(&offset.to_le_bytes());
-                let r_info = (0u64 << 32) | (R_RISCV_RELATIVE as u64);
+                let r_info = R_RISCV_RELATIVE as u64;
                 data.extend_from_slice(&r_info.to_le_bytes());
                 data.extend_from_slice(&(sym_value as i64).to_le_bytes());
             } else {
                 // For PIC executables, we still need R_RISCV_RELATIVE.
                 data.extend_from_slice(&offset.to_le_bytes());
-                let r_info = (0u64 << 32) | (R_RISCV_RELATIVE as u64);
+                let r_info = R_RISCV_RELATIVE as u64;
                 data.extend_from_slice(&r_info.to_le_bytes());
                 data.extend_from_slice(&(sym_value as i64).to_le_bytes());
             }

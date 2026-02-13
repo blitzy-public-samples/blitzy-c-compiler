@@ -851,18 +851,14 @@ fn find_last_intermediate(
         let mut current = old_s;
         let mut visited: FxHashSet<BasicBlockId> = fx_hash_set();
         visited.insert(current);
-        loop {
-            if let Some(&next) = redirect.get(&current) {
-                if next == final_target {
-                    return current; // This is the direct predecessor of final_target.
-                }
-                if !visited.insert(next) {
-                    break;
-                }
-                current = next;
-            } else {
+        while let Some(&next) = redirect.get(&current) {
+            if next == final_target {
+                return current; // This is the direct predecessor of final_target.
+            }
+            if !visited.insert(next) {
                 break;
             }
+            current = next;
         }
     }
     // Fallback: use the first old successor (best-effort).

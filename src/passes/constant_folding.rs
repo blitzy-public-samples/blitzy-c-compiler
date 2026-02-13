@@ -231,8 +231,14 @@ pub fn run_constant_folding(func: &mut IrFunction) -> bool {
     // -----------------------------------------------------------------
     // Phase 3: Phi-node simplification — if all incoming values of a
     // phi resolve to the same constant, record it and re-propagate.
+    // Also handles trivial phis (all same ValueId, not necessarily
+    // constant) via value-level replacement.
     // -----------------------------------------------------------------
     let mut phi_changed = true;
+    // Track phis that have already been trivially eliminated so we
+    // do not re-detect the same phi on the next while-loop iteration
+    // (the instruction itself remains in the block — DCE removes it).
+    let mut folded_phi_results: FxHashSet<ValueId> = FxHashSet::default();
     while phi_changed {
         phi_changed = false;
         let block_ids: Vec<BasicBlockId> = func.blocks().iter().map(|b| b.id).collect();
@@ -248,8 +254,16 @@ pub fn run_constant_folding(func: &mut IrFunction) -> bool {
 
             for phi in &phis {
                 if let Some(operands) = phi.phi_operands() {
+                    let result_id_opt = phi.result();
+                    // Skip phis we have already folded/eliminated.
+                    if let Some(rid) = result_id_opt {
+                        if folded_phi_results.contains(&rid) {
+                            continue;
+                        }
+                    }
+                    // --- Case A: all incoming values are the same constant ---
                     if let Some(cv) = try_fold_phi(operands, &constants) {
-                        if let Some(result_id) = phi.result() {
+                        if let Some(result_id) = result_id_opt {
                             let prev = constants.get(&result_id);
                             if prev != Some(&cv) {
                                 // If a stale constant existed, remove it
@@ -258,6 +272,7 @@ pub fn run_constant_folding(func: &mut IrFunction) -> bool {
                                     constants.remove(&result_id);
                                 }
                                 constants.insert(result_id, cv);
+                                folded_phi_results.insert(result_id);
                                 // Enqueue users for further folding.
                                 enqueue_users_of(
                                     func,
@@ -268,6 +283,31 @@ pub fn run_constant_folding(func: &mut IrFunction) -> bool {
                                 phi_changed = true;
                                 changed = true;
                             }
+                        }
+                    }
+                    // --- Case B: trivial phi — all same ValueId (may not
+                    //     be a constant, but the phi is still redundant) ---
+                    else if let Some(result_id) = result_id_opt {
+                        if let Some(common_val) =
+                            try_trivial_phi(operands, result_id)
+                        {
+                            // Replace every use of the phi result with the
+                            // single incoming value.
+                            replace_all_uses(func, result_id, common_val);
+                            folded_phi_results.insert(result_id);
+                            // Propagate any constant knowledge.
+                            if let Some(cv) = constants.get(&common_val).cloned() {
+                                constants.insert(result_id, cv);
+                            }
+                            // Enqueue users for further folding.
+                            enqueue_users_of(
+                                func,
+                                common_val,
+                                &mut worklist,
+                                &mut in_worklist,
+                            );
+                            phi_changed = true;
+                            changed = true;
                         }
                     }
                 }
@@ -547,14 +587,14 @@ fn eval_int_binop(op: BinOp, l: i128, r: i128) -> Option<i128> {
             }
         }
         BinOp::Shl => {
-            if r < 0 || r >= 128 {
+            if !(0..128).contains(&r) {
                 None // Shift by negative or ≥ width — UB.
             } else {
                 Some(l.wrapping_shl(r as u32))
             }
         }
         BinOp::LShr => {
-            if r < 0 || r >= 128 {
+            if !(0..128).contains(&r) {
                 None
             } else {
                 // Logical (unsigned) right shift.
@@ -562,7 +602,7 @@ fn eval_int_binop(op: BinOp, l: i128, r: i128) -> Option<i128> {
             }
         }
         BinOp::AShr => {
-            if r < 0 || r >= 128 {
+            if !(0..128).contains(&r) {
                 None
             } else {
                 // Arithmetic (signed) right shift — preserves sign bit.
@@ -1118,6 +1158,38 @@ fn try_fold_phi(
     }
 
     Some(first.clone())
+}
+
+/// Checks if a phi node is trivial — all incoming values are the exact
+/// same `ValueId`, regardless of whether that value is a known constant.
+///
+/// When all incoming edges carry the same SSA value, the phi is redundant
+/// and can be replaced by that value (the phi result becomes an alias).
+/// This handles the common pattern produced by mem2reg where a phi
+/// receives the same definition from every predecessor.
+///
+/// Returns `None` if the phi has no incoming edges, or if incoming
+/// values differ, or if the common value is the phi result itself
+/// (self-referencing cycle — leave for more advanced passes).
+fn try_trivial_phi(
+    incoming: &[(ValueId, BasicBlockId)],
+    result_id: ValueId,
+) -> Option<ValueId> {
+    if incoming.is_empty() {
+        return None;
+    }
+
+    let first = incoming[0].0;
+    // Avoid self-referencing: if the phi feeds itself, skip.
+    if first == result_id {
+        return None;
+    }
+    for &(val, _) in &incoming[1..] {
+        if val != first {
+            return None;
+        }
+    }
+    Some(first)
 }
 
 // ===========================================================================

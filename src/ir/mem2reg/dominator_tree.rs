@@ -295,10 +295,9 @@ impl DominatorTree {
 
         // Build dominator tree children lists.
         let mut children_result: Vec<Vec<BasicBlockId>> = vec![Vec::new(); num_slots];
-        for w in 1..n {
-            let block_id = vertex[w];
+        for block_id in vertex.iter().take(n).skip(1) {
             if let Some(idom_id) = idom_result[block_id.0 as usize] {
-                children_result[idom_id.0 as usize].push(block_id);
+                children_result[idom_id.0 as usize].push(*block_id);
             }
         }
 
@@ -785,7 +784,7 @@ fn compute_dom_tree_preorder(
 ///
 /// * `func`          — the function whose CFG to traverse.
 /// * `block_to_dfs`  — mapping from block ID to DFS number
-///                      (used to identify reachable blocks).
+///   (used to identify reachable blocks).
 /// * `num_slots`     — size of per-block arrays.
 ///
 /// # Returns

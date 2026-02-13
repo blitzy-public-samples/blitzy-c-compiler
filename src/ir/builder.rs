@@ -44,9 +44,10 @@ use crate::ir::types::IrType;
 /// The default position is [`InsertPosition::End`], which appends
 /// instructions at the end of the current block (but before any existing
 /// terminator — see [`IrBuilder::insert_inst`] for the insertion logic).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum InsertPosition {
     /// Append at the logical end of the block (the most common mode).
+    #[default]
     End,
     /// Insert *before* the instruction at the given index.
     Before(usize),
@@ -221,7 +222,7 @@ impl IrBuilder {
                 } else {
                     fields
                         .iter()
-                        .map(|f| Self::default_alignment(f))
+                        .map(Self::default_alignment)
                         .max()
                         .unwrap_or(1)
                 }
@@ -699,11 +700,11 @@ impl IrBuilder {
     /// * `constraints`      — comma-separated output/input constraint string.
     /// * `operands`         — IR values bound to constraint positions.
     /// * `clobbers`         — list of clobbered registers/flags (e.g. `"memory"`,
-    ///                        `"cc"`, `"rax"`).
+    ///   `"cc"`, `"rax"`).
     /// * `has_side_effects` — if `true`, the statement must not be removed or
-    ///                        reordered.
+    ///   reordered.
     /// * `is_align_stack`   — if `true`, the stack must be aligned before
-    ///                        execution.
+    ///   execution.
     ///
     /// Returns `Some(ValueId)` when the asm statement produces a result
     /// (detected by the constraint string starting with `=` or `+`) and
@@ -774,8 +775,7 @@ impl IrBuilder {
         // codegen phases will use the value info (type + name) to derive
         // the constant.
         let name = format!("const.int.{}", value);
-        let id = self.alloc_value(func, ty, Some(&name));
-        id
+        self.alloc_value(func, ty, Some(&name))
     }
 
     /// Create a floating-point constant value.
@@ -790,8 +790,7 @@ impl IrBuilder {
         value: f64,
     ) -> ValueId {
         let name = format!("const.float.{}", value);
-        let id = self.alloc_value(func, ty, Some(&name));
-        id
+        self.alloc_value(func, ty, Some(&name))
     }
 
     /// Create a null pointer constant.
@@ -800,8 +799,7 @@ impl IrBuilder {
         func: &mut IrFunction,
         ty: IrType,
     ) -> ValueId {
-        let id = self.alloc_value(func, ty, Some("const.null"));
-        id
+        self.alloc_value(func, ty, Some("const.null"))
     }
 
     /// Create a reference to a global variable or function by name.
@@ -815,8 +813,7 @@ impl IrBuilder {
         ty: IrType,
     ) -> ValueId {
         let ref_name = format!("global.{}", name);
-        let id = self.alloc_value(func, ty, Some(&ref_name));
-        id
+        self.alloc_value(func, ty, Some(&ref_name))
     }
 }
 
@@ -827,12 +824,6 @@ impl IrBuilder {
 impl Default for IrBuilder {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Default for InsertPosition {
-    fn default() -> Self {
-        InsertPosition::End
     }
 }
 

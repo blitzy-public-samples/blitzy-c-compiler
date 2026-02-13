@@ -878,7 +878,7 @@ impl X86_64Linker {
 
         // Build program headers using the linker script.
         let linker_script =
-            LinkerScript::default_for_target(&Target::X86_64, self.config.output_type.clone());
+            LinkerScript::default_for_target(&Target::X86_64, self.config.output_type);
         let program_headers = linker_script.compute_segment_layout(sections);
 
         for phdr in &program_headers {

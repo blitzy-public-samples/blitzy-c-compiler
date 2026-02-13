@@ -2,6 +2,11 @@
 //
 // Designated initializer semantic analysis for Phase 5 of the BCC compiler.
 //
+// Errors are reported through `DiagnosticEngine`; `Err(())` merely signals
+// that one or more diagnostics were emitted, so `Result<_, ()>` is an
+// intentional design choice throughout this module.
+#![allow(clippy::result_unit_err)]
+//
 // This module implements C99/C11 initializer analysis (§6.7.9), transforming
 // raw AST initializer trees into a linearized, type-checked representation
 // (`CheckedInitializer`) consumed by IR lowering.
@@ -744,8 +749,8 @@ fn analyze_array_from_items(
     let mut result_fields: Vec<FieldInit> = Vec::with_capacity(effective_size);
     let mut any_zero_filled = false;
 
-    for i in 0..effective_size {
-        let value = match init_map[i].take() {
+    for (i, item) in init_map.iter_mut().take(effective_size).enumerate() {
+        let value = match item.take() {
             Some(v) => v,
             None => {
                 any_zero_filled = true;

@@ -205,7 +205,7 @@ impl PassManager {
     /// # Parameters
     ///
     /// - `max`: Maximum number of fixpoint iterations per function.
-    ///          Must be at least 1.
+    ///   Must be at least 1.
     pub fn with_max_iterations(max: usize) -> Self {
         let max = if max == 0 { 1 } else { max };
         Self {

@@ -46,6 +46,12 @@ pub mod frontend;
 /// Consumed by `passes` (optimization) and `backend` (code generation).
 pub mod ir;
 
+/// Optimization passes module — Phase 8 of the compilation pipeline.
+/// Provides constant folding, dead code elimination, and CFG simplification.
+/// Runs between SSA construction (Phase 7 / mem2reg) and phi elimination
+/// (Phase 9). Depends on `common` and `ir`.
+pub mod passes;
+
 /// Backend module — code generation, assemblers, linkers, and DWARF debug
 /// information generation for all four target architectures.
 pub mod backend;

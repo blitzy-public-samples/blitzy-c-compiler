@@ -35,7 +35,7 @@
 //! opportunities) are fully exploited.
 
 use crate::common::fx_hash::{fx_hash_map, fx_hash_set, FxHashMap, FxHashSet};
-use crate::ir::basic_block::{BasicBlock, BasicBlockId};
+use crate::ir::basic_block::BasicBlockId;
 use crate::ir::function::{IrFunction, ValueId};
 use crate::ir::instructions::{ICmpPredicate, Instruction};
 

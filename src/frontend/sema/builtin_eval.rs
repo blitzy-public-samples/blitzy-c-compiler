@@ -744,12 +744,10 @@ fn eval_offsetof(
             // the FieldLayout entry.
             for (idx, field) in fields.iter().enumerate() {
                 if let Some(ref field_name) = field.name {
-                    if field_name == &member {
-                        if idx < layout.fields.len() {
-                            let offset = layout.fields[idx].offset;
-                            let size_t_ty = make_size_t(target);
-                            return Ok(make_compile_time_uint(offset as u128, size_t_ty));
-                        }
+                    if field_name == &member && idx < layout.fields.len() {
+                        let offset = layout.fields[idx].offset;
+                        let size_t_ty = make_size_t(target);
+                        return Ok(make_compile_time_uint(offset as u128, size_t_ty));
                     }
                 }
             }

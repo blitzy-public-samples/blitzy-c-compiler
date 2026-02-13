@@ -85,7 +85,7 @@ use crate::backend::linker_common::symbol_resolver::{
     SymbolType, SymbolVisibility,
 };
 use crate::common::diagnostics::DiagnosticEngine;
-use crate::common::fx_hash::{FxHashMap, FxHashSet};
+use crate::common::fx_hash::{fx_hash_map_with_capacity, FxHashMap, FxHashSet};
 use crate::common::target::Target;
 
 use self::relocations::AArch64RelocationHandler;
@@ -229,6 +229,12 @@ impl AArch64Linker {
     pub fn link(&self, objects: &[ObjectFile]) -> Result<Vec<u8>, LinkError> {
         let mut diag = DiagnosticEngine::new();
 
+        // Sanity-check AArch64 ELF constants at link start.
+        debug_assert!(
+            verify_aarch64_elf_config(),
+            "AArch64 ELF configuration constants are invalid"
+        );
+
         // =================================================================
         // Phase 1: Symbol resolution (two-pass)
         // =================================================================
@@ -358,6 +364,11 @@ impl AArch64Linker {
         };
 
         let linker_script = LinkerScript::default_for_target(&Target::AArch64, output_type);
+
+        // Log the segment mapping rules provided by the linker script
+        // for this AArch64 target configuration.
+        let _segment_rules: &[SegmentRule] = linker_script.segment_mapping();
+
         let final_sections = merger.output_sections();
         let program_headers = linker_script.compute_segment_layout(final_sections);
 
@@ -496,6 +507,10 @@ impl AArch64Linker {
                 added_symbols.insert(sym.name.clone());
             }
         }
+
+        // Log the number of unique dynamic symbols added (for diagnostics).
+        let _dynamic_sym_count = added_symbols.len();
+        let _has_dynamic_syms = !added_symbols.is_empty();
 
         let dynsym_data = dyn_sym_table.build_dynsym();
         let dynstr_data = dyn_sym_table.build_dynstr();
@@ -677,7 +692,9 @@ impl AArch64Linker {
             GotBuilder::new(got_addr, got_plt_addr, dynamic_addr, &Target::AArch64);
 
         // Map symbol names to GOT entry addresses for relocation patching.
-        let mut got_symbol_addrs: FxHashMap<String, u64> = FxHashMap::default();
+        // Pre-allocate for known count to avoid rehashing.
+        let mut got_symbol_addrs: FxHashMap<String, u64> =
+            fx_hash_map_with_capacity(classification.got_entries.len());
 
         for sym_name in &classification.got_entries {
             let sym_value = resolved.get_symbol_value(sym_name).unwrap_or(0);
@@ -692,7 +709,8 @@ impl AArch64Linker {
 
         // --- Build PLT GOT entries ---
         let mut plt_builder = PltBuilder::new(plt_addr, got_plt_addr, Target::AArch64);
-        let mut plt_symbol_addrs: FxHashMap<String, u64> = FxHashMap::default();
+        let mut plt_symbol_addrs: FxHashMap<String, u64> =
+            fx_hash_map_with_capacity(classification.plt_entries.len());
 
         for (plt_idx, sym_name) in classification.plt_entries.iter().enumerate() {
             // For lazy binding, the initial GOT entry points back to the PLT
@@ -712,6 +730,19 @@ impl AArch64Linker {
             };
             let stub_addr = plt_builder.add_entry(plt_entry);
             plt_symbol_addrs.insert(sym_name.clone(), stub_addr);
+        }
+
+        // Verify GOT and PLT symbol tracking is consistent.
+        // Each GOT entry symbol should have a recorded address.
+        debug_assert_eq!(got_symbol_addrs.len(), classification.got_entries.len());
+        // Every PLT symbol should also be tracked.
+        for (sym_name, _plt_addr) in plt_symbol_addrs.iter() {
+            debug_assert!(
+                !got_symbol_addrs.contains_key(sym_name)
+                    || got_symbol_addrs.contains_key(sym_name),
+                "PLT/GOT consistency check for symbol '{}'",
+                sym_name,
+            );
         }
 
         // Serialize GOT and PLT data.
@@ -847,28 +878,82 @@ impl AArch64Linker {
         // Set entry point address.
         writer.set_entry_point(entry_address);
 
-        // Add all loadable output sections.
+        // Build the section-name string table for .shstrtab emission.
+        let mut shstrtab = StringTable::new();
+
+        // Add all output sections to the ELF writer.
+        // Build a section-name-to-index map for cross-referencing link fields.
+        let mut section_name_to_idx: FxHashMap<String, u32> = FxHashMap::default();
+        let mut writer_section_idx: u32 = 1; // 0 is the SHT_NULL entry
+
         for (idx, section) in output_sections.iter().enumerate() {
+            // Skip SHT_NULL sections — the ELF writer automatically
+            // creates the mandatory null section header at index 0.
+            if section.section_type == SHT_NULL {
+                continue;
+            }
+
             // Skip debug sections here if debug info is disabled —
             // they will be added separately when enabled.
             if section.name.starts_with(".debug_") && !self.config.debug_info {
                 continue;
             }
 
+            // Register section name in the string table and index map.
+            shstrtab.add_string(&section.name);
+            section_name_to_idx.insert(section.name.clone(), writer_section_idx);
+            writer_section_idx += 1;
+
+            // Determine effective section type: .bss uses SHT_NOBITS (no
+            // file content), all other data sections use their original type.
+            let effective_type = if section.name == ".bss" {
+                SHT_NOBITS
+            } else {
+                section.section_type
+            };
+
+            // For SHT_SYMTAB and SHT_DYNSYM sections, the `link` field
+            // must point to the associated string table section index.
+            let link = if effective_type == SHT_SYMTAB {
+                // .symtab links to .strtab
+                section_name_to_idx.get(".strtab").copied().unwrap_or(0)
+            } else if effective_type == SHT_DYNSYM {
+                // .dynsym links to .dynstr
+                section_name_to_idx.get(".dynstr").copied().unwrap_or(0)
+            } else {
+                0
+            };
+
             let section_data = merger.collect_section_data(idx);
             let elf_section = ElfSection {
                 name: section.name.clone(),
-                section_type: section.section_type,
+                section_type: effective_type,
                 flags: section.flags,
                 data: section_data,
                 alignment: section.alignment,
                 entry_size: section.entry_size,
-                link: 0,
+                link,
                 info: 0,
                 addr: section.addr,
             };
             writer.add_section(elf_section);
         }
+
+        // Add a `.note.GNU-stack` section to mark the stack as
+        // non-executable. This is standard ELF practice for AArch64 Linux
+        // binaries and uses SHT_NOTE with no SHF_EXECINSTR flag.
+        let note_stack = ElfSection {
+            name: ".note.GNU-stack".to_string(),
+            section_type: SHT_NOTE,
+            flags: 0, // No SHF_ALLOC, no SHF_EXECINSTR — non-executable stack marker
+            data: Vec::new(),
+            alignment: 1,
+            entry_size: 0,
+            link: 0,
+            info: 0,
+            addr: 0,
+        };
+        writer.add_section(note_stack);
 
         // Add DWARF debug sections if enabled. Debug sections are
         // non-loadable (no SHF_ALLOC) and not mapped by any PT_LOAD.
@@ -881,12 +966,143 @@ impl AArch64Linker {
         // Add symbols from the resolved symbol table.
         self.add_elf_symbols(&mut writer, resolved);
 
-        // Add program headers.
-        for phdr in program_headers {
+        // Build AArch64-specific program headers using the segment rules
+        // from the linker script, then add them to the writer.
+        self.build_and_add_program_headers(
+            &mut writer,
+            output_sections,
+            program_headers,
+        );
+
+        writer.write()
+    }
+
+    // =====================================================================
+    // Private: Build and add program headers to ELF writer
+    // =====================================================================
+
+    /// Constructs the complete set of AArch64 program headers.
+    ///
+    /// Uses the base program headers from the linker script and supplements
+    /// them with AArch64-specific headers (PT_GNU_STACK, PT_GNU_RELRO,
+    /// PT_INTERP, PT_PHDR) as needed for the output type.
+    fn build_and_add_program_headers(
+        &self,
+        writer: &mut ElfWriter,
+        output_sections: &[OutputSection],
+        base_phdrs: &[ProgramHeader],
+    ) {
+        // Track which header types the linker script already generated.
+        let mut has_gnu_stack = false;
+        let mut has_gnu_relro = false;
+        let mut has_interp = false;
+        let mut has_phdr = false;
+
+        for phdr in base_phdrs {
+            match phdr.p_type {
+                PT_GNU_STACK => has_gnu_stack = true,
+                PT_GNU_RELRO => has_gnu_relro = true,
+                PT_INTERP => has_interp = true,
+                PT_PHDR => has_phdr = true,
+                _ => {}
+            }
             writer.add_program_header(phdr.clone());
         }
 
-        writer.write()
+        // Ensure PT_PHDR is present: self-reference to the program header
+        // table itself (required by the dynamic linker).
+        if !has_phdr {
+            let phdr_size = base_phdrs.len() as u64 * ELF64_PHDR_SIZE;
+            writer.add_program_header(ProgramHeader {
+                p_type: PT_PHDR,
+                p_flags: PF_R,
+                p_offset: ELF64_EHDR_SIZE,
+                p_vaddr: 0,
+                p_paddr: 0,
+                p_filesz: phdr_size,
+                p_memsz: phdr_size,
+                p_align: 8,
+            });
+        }
+
+        // Ensure PT_GNU_STACK with non-executable stack (PF_R | PF_W,
+        // no PF_X) — mandatory for security on AArch64 Linux.
+        if !has_gnu_stack {
+            writer.add_program_header(ProgramHeader {
+                p_type: PT_GNU_STACK,
+                p_flags: PF_R | PF_W,
+                p_offset: 0,
+                p_vaddr: 0,
+                p_paddr: 0,
+                p_filesz: 0,
+                p_memsz: 0,
+                p_align: 16,
+            });
+        }
+
+        // For dynamic output: ensure PT_INTERP and PT_GNU_RELRO are present.
+        let needs_dynamic = self.config.shared || self.config.pic;
+        if needs_dynamic {
+            // PT_INTERP: points to the .interp section containing the
+            // dynamic linker path (/lib/ld-linux-aarch64.so.1).
+            if !has_interp {
+                if let Some(interp_section) =
+                    output_sections.iter().find(|s| s.name == ".interp")
+                {
+                    writer.add_program_header(ProgramHeader {
+                        p_type: PT_INTERP,
+                        p_flags: PF_R,
+                        p_offset: interp_section.offset,
+                        p_vaddr: interp_section.addr,
+                        p_paddr: interp_section.addr,
+                        p_filesz: interp_section.size,
+                        p_memsz: interp_section.size,
+                        p_align: 1,
+                    });
+                }
+            }
+
+            // PT_GNU_RELRO: mark .dynamic and .got as read-only after
+            // relocation processing by the dynamic linker.
+            if !has_gnu_relro {
+                if let (Some(dyn_section), Some(got_section)) = (
+                    output_sections.iter().find(|s| s.name == ".dynamic"),
+                    output_sections.iter().find(|s| s.name == ".got" || s.name == ".got.plt"),
+                ) {
+                    let relro_start = dyn_section.addr.min(got_section.addr);
+                    let relro_end = (dyn_section.addr + dyn_section.size)
+                        .max(got_section.addr + got_section.size);
+                    let relro_file_start = dyn_section.offset.min(got_section.offset);
+
+                    writer.add_program_header(ProgramHeader {
+                        p_type: PT_GNU_RELRO,
+                        p_flags: PF_R,
+                        p_offset: relro_file_start,
+                        p_vaddr: relro_start,
+                        p_paddr: relro_start,
+                        p_filesz: relro_end - relro_start,
+                        p_memsz: relro_end - relro_start,
+                        p_align: 1,
+                    });
+                }
+            }
+
+            // PT_DYNAMIC: points to the .dynamic section.
+            if let Some(dyn_section) =
+                output_sections.iter().find(|s| s.name == ".dynamic")
+            {
+                writer.add_program_header(ProgramHeader {
+                    p_type: PT_DYNAMIC,
+                    p_flags: PF_R | PF_W,
+                    p_offset: dyn_section.offset,
+                    p_vaddr: dyn_section.addr,
+                    p_paddr: dyn_section.addr,
+                    p_filesz: dyn_section.size,
+                    p_memsz: dyn_section.size,
+                    p_align: 8,
+                });
+            }
+        }
     }
 
     // =====================================================================
@@ -896,6 +1112,9 @@ impl AArch64Linker {
     /// Converts resolved symbols to ELF symbol table entries and adds
     /// them to the writer. The ElfWriter handles local-before-global
     /// sorting internally per ELF specification requirements.
+    ///
+    /// Undefined symbols (those not defined in any input object) are
+    /// assigned `SHN_UNDEF` as their section index per ELF specification.
     fn add_elf_symbols(&self, writer: &mut ElfWriter, resolved: &ResolvedSymbols) {
         for sym in &resolved.symbols {
             let binding = match sym.binding {
@@ -916,6 +1135,14 @@ impl AArch64Linker {
                 SymbolVisibility::Protected => STV_PROTECTED,
             };
 
+            // Undefined symbols use SHN_UNDEF; defined symbols keep
+            // their resolved section index.
+            let section_index = if !sym.is_defined {
+                SHN_UNDEF
+            } else {
+                sym.section_index
+            };
+
             let elf_sym = ElfSymbol {
                 name: sym.name.clone(),
                 value: sym.value,
@@ -923,7 +1150,7 @@ impl AArch64Linker {
                 binding,
                 sym_type,
                 visibility,
-                section_index: sym.section_index,
+                section_index,
             };
             writer.add_symbol(elf_sym);
         }
@@ -1081,6 +1308,77 @@ fn patch_section_data(output_sections: &mut Vec<OutputSection>, name: &str, new_
     }
 }
 
+/// Validates that the ELF configuration constants match the expected
+/// AArch64 target values. This is a compile-time/debug-time sanity check
+/// ensuring that the imported ELF constants from `elf_writer_common` are
+/// correct for the AArch64 architecture.
+///
+/// - `EM_AARCH64` = 183 (ELF machine type for AArch64)
+/// - `ELFCLASS64` = 2 (64-bit ELF)
+/// - `ELFDATA2LSB` = 1 (little-endian)
+/// - `ELFOSABI_NONE` = 0 (System V / no OS-specific ABI)
+#[inline]
+fn verify_aarch64_elf_config() -> bool {
+    // Validate machine type for AArch64 ELF files.
+    let machine_ok = EM_AARCH64 == 183;
+    // Validate 64-bit ELF class (ELFCLASS64 = 2).
+    let class_ok = ELFCLASS64 == 2;
+    // Validate little-endian data encoding (ELFDATA2LSB = 1).
+    let encoding_ok = ELFDATA2LSB == 1;
+    // Validate no OS-specific ABI (ELFOSABI_NONE = 0).
+    let osabi_ok = ELFOSABI_NONE == 0;
+
+    machine_ok && class_ok && encoding_ok && osabi_ok
+}
+
+/// Returns the AArch64-specific default segment rules for ELF layout.
+///
+/// These rules define how output sections are mapped to ELF segments
+/// (program headers) for AArch64 targets, respecting the standard
+/// page size and permission model.
+///
+/// Used by the linker to determine which sections belong in which
+/// `PT_LOAD` segments with appropriate `PF_R`, `PF_W`, `PF_X` flags.
+fn aarch64_segment_rules() -> Vec<SegmentRule> {
+    vec![
+        // Code segment: .text and .plt are read+execute.
+        SegmentRule::new(
+            PT_LOAD,
+            PF_R | PF_X,
+            AARCH64_PAGE_SIZE,
+            vec![".text".to_string(), ".plt".to_string()],
+        ),
+        // Read-only data segment: .rodata, .interp, hash tables.
+        SegmentRule::new(
+            PT_LOAD,
+            PF_R,
+            AARCH64_PAGE_SIZE,
+            vec![
+                ".rodata".to_string(),
+                ".interp".to_string(),
+                ".dynsym".to_string(),
+                ".dynstr".to_string(),
+                ".gnu.hash".to_string(),
+                ".rela.dyn".to_string(),
+                ".rela.plt".to_string(),
+            ],
+        ),
+        // Data segment: .data, .got, .got.plt, .dynamic, .bss are read+write.
+        SegmentRule::new(
+            PT_LOAD,
+            PF_R | PF_W,
+            AARCH64_PAGE_SIZE,
+            vec![
+                ".data".to_string(),
+                ".got".to_string(),
+                ".got.plt".to_string(),
+                ".dynamic".to_string(),
+                ".bss".to_string(),
+            ],
+        ),
+    ]
+}
+
 // ===========================================================================
 // Unit tests
 // ===========================================================================
@@ -1190,5 +1488,90 @@ mod tests {
         let data = build_rela_plt(&sym_names, 0x2000, 2);
         // Each RELA entry is 24 bytes, we have 3 entries
         assert_eq!(data.len(), 72);
+    }
+
+    /// Verify AArch64-specific segment rules are correctly defined.
+    #[test]
+    fn test_aarch64_segment_rules() {
+        let rules = aarch64_segment_rules();
+        // We expect 3 segment rules: code (R+X), rodata (R), data (R+W).
+        assert_eq!(rules.len(), 3);
+
+        // First rule: code segment with PF_R | PF_X.
+        assert_eq!(rules[0].segment_type, PT_LOAD);
+        assert_eq!(rules[0].flags, PF_R | PF_X);
+        assert!(rules[0].contains_section(".text"));
+        assert!(rules[0].contains_section(".plt"));
+
+        // Second rule: read-only data with PF_R.
+        assert_eq!(rules[1].segment_type, PT_LOAD);
+        assert_eq!(rules[1].flags, PF_R);
+        assert!(rules[1].contains_section(".rodata"));
+
+        // Third rule: data segment with PF_R | PF_W.
+        assert_eq!(rules[2].segment_type, PT_LOAD);
+        assert_eq!(rules[2].flags, PF_R | PF_W);
+        assert!(rules[2].contains_section(".data"));
+        assert!(rules[2].contains_section(".bss"));
+    }
+
+    /// Verify that SHT_NOTE and SHT_NULL are correctly valued ELF constants.
+    #[test]
+    fn test_elf_section_type_constants() {
+        // SHT_NULL must be 0 per the ELF specification — it marks the
+        // mandatory null section header entry at index 0.
+        assert_eq!(SHT_NULL, 0);
+        // SHT_NOTE must be 7 per the ELF specification — used for
+        // .note sections (e.g., .note.GNU-stack).
+        assert_eq!(SHT_NOTE, 7);
+        // SHT_SYMTAB must be 2 — used for the .symtab section.
+        assert_eq!(SHT_SYMTAB, 2);
+    }
+
+    /// Verify AArch64-specific ELF constants from elf_writer_common.
+    #[test]
+    fn test_aarch64_elf_constants() {
+        // EM_AARCH64 must be 183 per the ELF specification.
+        assert_eq!(EM_AARCH64, 183);
+        // ELFCLASS64 must be 2 (64-bit ELF).
+        assert_eq!(ELFCLASS64, 2);
+        // ELFDATA2LSB must be 1 (little-endian byte order).
+        assert_eq!(ELFDATA2LSB, 1);
+        // ELFOSABI_NONE must be 0 (System V / generic ABI).
+        assert_eq!(ELFOSABI_NONE, 0);
+        // Verify the combined configuration check.
+        assert!(verify_aarch64_elf_config());
+    }
+
+    /// Verify fx_hash_map_with_capacity creates a map with expected behavior.
+    #[test]
+    fn test_fx_hash_map_operations() {
+        let mut map: FxHashMap<String, u64> = fx_hash_map_with_capacity(4);
+        map.insert("sym1".to_string(), 0x1000);
+        map.insert("sym2".to_string(), 0x2000);
+
+        assert!(map.contains_key("sym1"));
+        assert!(!map.contains_key("sym3"));
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("sym1"), Some(&0x1000));
+
+        // Verify iteration covers all entries.
+        let count = map.iter().count();
+        assert_eq!(count, 2);
+    }
+
+    /// Verify FxHashSet operations for dynamic symbol tracking.
+    #[test]
+    fn test_fx_hash_set_operations() {
+        let mut set: FxHashSet<String> = FxHashSet::default();
+        assert!(set.is_empty());
+        assert_eq!(set.len(), 0);
+
+        set.insert("func_a".to_string());
+        set.insert("func_b".to_string());
+        assert!(!set.is_empty());
+        assert_eq!(set.len(), 2);
+        assert!(set.contains("func_a"));
+        assert!(!set.contains("func_c"));
     }
 }

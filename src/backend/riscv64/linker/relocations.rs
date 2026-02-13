@@ -509,12 +509,7 @@ impl RiscV64RelocationHandler {
     ///
     /// Encodes a 21-bit signed PC-relative offset into J-type format.
     /// The offset must be even and fit ±1 MiB.
-    fn apply_jal(
-        &self,
-        data: &mut [u8],
-        offset: usize,
-        value: i64,
-    ) -> Result<(), RelocationError> {
+    fn apply_jal(&self, data: &mut [u8], offset: usize, value: i64) -> Result<(), RelocationError> {
         if !(-1_048_576..=1_048_574).contains(&value) || (value & 1) != 0 {
             return Err(RelocationError::Overflow {
                 reloc_type: R_RISCV_JAL,
@@ -1012,10 +1007,7 @@ impl RiscV64RelocationHandler {
                 false
             }
             Err(RelocationError::UndefinedSymbol { ref name }) => {
-                diag.error(
-                    Span::DUMMY,
-                    format!("undefined symbol: {}", name),
-                );
+                diag.error(Span::DUMMY, format!("undefined symbol: {}", name));
                 false
             }
             Err(RelocationError::UnsupportedType { reloc_type }) => {
@@ -1134,7 +1126,8 @@ impl RiscV64RelocationHandler {
                     .wrapping_add(reloc.addend)
                     .wrapping_sub(pc as i64);
 
-                if (-1_048_576..=1_048_574).contains(&value) && (value & 1) == 0
+                if (-1_048_576..=1_048_574).contains(&value)
+                    && (value & 1) == 0
                     && offset + 8 <= section_data.len()
                 {
                     let auipc_inst = read_u32_le(section_data, offset);
@@ -1158,12 +1151,8 @@ impl RiscV64RelocationHandler {
                     let auipc_inst = read_u32_le(section_data, offset);
                     let next_inst = read_u32_le(section_data, offset + 4);
                     // AUIPC followed by LD (opcode=0000011, funct3=011)
-                    if (auipc_inst & 0x7F) == OPCODE_AUIPC
-                        && (next_inst & 0x707F) == 0x3003
-                    {
-                        return Some(RelaxationAction::ReplaceAuipcLdWithAuipcAddi {
-                            offset,
-                        });
+                    if (auipc_inst & 0x7F) == OPCODE_AUIPC && (next_inst & 0x707F) == 0x3003 {
+                        return Some(RelaxationAction::ReplaceAuipcLdWithAuipcAddi { offset });
                     }
                 }
                 None
@@ -1173,9 +1162,7 @@ impl RiscV64RelocationHandler {
                 // Alignment relaxation: count NOP bytes at this location
                 // that could be removed if preceding code was shrunk
                 let align_bytes = reloc.addend as usize;
-                if align_bytes > 0
-                    && offset + align_bytes <= section_data.len()
-                {
+                if align_bytes > 0 && offset + align_bytes <= section_data.len() {
                     let mut nop_bytes = 0usize;
                     let mut pos = offset;
                     let end = offset + align_bytes;
@@ -1250,9 +1237,7 @@ impl RiscV64RelocationHandler {
             .iter()
             .filter(|a| **a != RelaxationAction::NoRelaxation)
             .collect();
-        sorted.sort_by(|a, b| {
-            relaxation_offset(b).cmp(&relaxation_offset(a))
-        });
+        sorted.sort_by_key(|b| std::cmp::Reverse(relaxation_offset(b)));
 
         for action in &sorted {
             match action {
@@ -1363,9 +1348,7 @@ impl ArchRelocationHandler for RiscV64RelocationHandler {
             R_RISCV_64 => self.apply_abs64(output_data, offset, sym_plus_addend),
 
             // --- Dynamic relocations (static linking fallback) ---
-            R_RISCV_RELATIVE => {
-                self.apply_abs64(output_data, offset, sym_plus_addend)
-            }
+            R_RISCV_RELATIVE => self.apply_abs64(output_data, offset, sym_plus_addend),
             R_RISCV_COPY | R_RISCV_JUMP_SLOT => {
                 self.apply_abs64(output_data, offset, sym_plus_addend)
             }
@@ -1411,18 +1394,14 @@ impl ArchRelocationHandler for RiscV64RelocationHandler {
             }
 
             // --- PC-relative HI20/LO12 pairs ---
-            R_RISCV_PCREL_HI20 => {
-                self.apply_pcrel_hi20(output_data, offset, pc_relative)
-            }
+            R_RISCV_PCREL_HI20 => self.apply_pcrel_hi20(output_data, offset, pc_relative),
             R_RISCV_PCREL_LO12_I => {
                 // For PCREL_LO12, the symbol_value + addend encodes the
                 // full value from the paired HI20 (the caller/relocation
                 // processor should pre-resolve this via resolve_pcrel_lo12).
                 self.apply_pcrel_lo12_i(output_data, offset, sym_plus_addend)
             }
-            R_RISCV_PCREL_LO12_S => {
-                self.apply_pcrel_lo12_s(output_data, offset, sym_plus_addend)
-            }
+            R_RISCV_PCREL_LO12_S => self.apply_pcrel_lo12_s(output_data, offset, sym_plus_addend),
 
             // --- Absolute HI20/LO12 pairs ---
             R_RISCV_HI20 => self.apply_hi20(output_data, offset, sym_plus_addend),
@@ -1430,15 +1409,9 @@ impl ArchRelocationHandler for RiscV64RelocationHandler {
             R_RISCV_LO12_S => self.apply_lo12_s(output_data, offset, sym_plus_addend),
 
             // --- TLS Local-Exec ---
-            R_RISCV_TPREL_HI20 => {
-                self.apply_hi20(output_data, offset, sym_plus_addend)
-            }
-            R_RISCV_TPREL_LO12_I => {
-                self.apply_lo12_i(output_data, offset, sym_plus_addend)
-            }
-            R_RISCV_TPREL_LO12_S => {
-                self.apply_lo12_s(output_data, offset, sym_plus_addend)
-            }
+            R_RISCV_TPREL_HI20 => self.apply_hi20(output_data, offset, sym_plus_addend),
+            R_RISCV_TPREL_LO12_I => self.apply_lo12_i(output_data, offset, sym_plus_addend),
+            R_RISCV_TPREL_LO12_S => self.apply_lo12_s(output_data, offset, sym_plus_addend),
             R_RISCV_TPREL_ADD => {
                 // Hint relocation for TP addition — no patching needed
                 Ok(())
@@ -1469,12 +1442,8 @@ impl ArchRelocationHandler for RiscV64RelocationHandler {
             R_RISCV_RELAX => Ok(()), // Hint only — no direct patching
 
             // --- Compressed instructions ---
-            R_RISCV_RVC_BRANCH => {
-                self.apply_compressed_branch(output_data, offset, pc_relative)
-            }
-            R_RISCV_RVC_JUMP => {
-                self.apply_compressed_jump(output_data, offset, pc_relative)
-            }
+            R_RISCV_RVC_BRANCH => self.apply_compressed_branch(output_data, offset, pc_relative),
+            R_RISCV_RVC_JUMP => self.apply_compressed_jump(output_data, offset, pc_relative),
             R_RISCV_RVC_LUI => {
                 // C.LUI immediate encoding:
                 // nzimm[17] at bit 12, nzimm[16:12] at bits [6:2]
@@ -1603,25 +1572,22 @@ impl ArchRelocationHandler for RiscV64RelocationHandler {
             R_RISCV_NONE | R_RISCV_RELAX | R_RISCV_TPREL_ADD => 0,
 
             // 1-byte
-            R_RISCV_ADD8 | R_RISCV_SUB8 | R_RISCV_SET8 | R_RISCV_SUB6
-            | R_RISCV_SET6 => 1,
+            R_RISCV_ADD8 | R_RISCV_SUB8 | R_RISCV_SET8 | R_RISCV_SUB6 | R_RISCV_SET6 => 1,
 
             // 2-byte (compressed instructions)
-            R_RISCV_ADD16 | R_RISCV_SUB16 | R_RISCV_SET16
-            | R_RISCV_RVC_BRANCH | R_RISCV_RVC_JUMP | R_RISCV_RVC_LUI => 2,
+            R_RISCV_ADD16 | R_RISCV_SUB16 | R_RISCV_SET16 | R_RISCV_RVC_BRANCH
+            | R_RISCV_RVC_JUMP | R_RISCV_RVC_LUI => 2,
 
             // 4-byte (standard 32-bit instructions and data)
-            R_RISCV_32 | R_RISCV_32_PCREL | R_RISCV_ADD32 | R_RISCV_SUB32
-            | R_RISCV_SET32 | R_RISCV_BRANCH | R_RISCV_JAL
-            | R_RISCV_PCREL_HI20 | R_RISCV_PCREL_LO12_I | R_RISCV_PCREL_LO12_S
-            | R_RISCV_HI20 | R_RISCV_LO12_I | R_RISCV_LO12_S
+            R_RISCV_32 | R_RISCV_32_PCREL | R_RISCV_ADD32 | R_RISCV_SUB32 | R_RISCV_SET32
+            | R_RISCV_BRANCH | R_RISCV_JAL | R_RISCV_PCREL_HI20 | R_RISCV_PCREL_LO12_I
+            | R_RISCV_PCREL_LO12_S | R_RISCV_HI20 | R_RISCV_LO12_I | R_RISCV_LO12_S
             | R_RISCV_GOT_HI20 | R_RISCV_TLS_GOT_HI20 | R_RISCV_TLS_GD_HI20
             | R_RISCV_TPREL_HI20 | R_RISCV_TPREL_LO12_I | R_RISCV_TPREL_LO12_S
             | R_RISCV_TLS_DTPMOD32 | R_RISCV_TLS_DTPREL32 | R_RISCV_TLS_TPREL32 => 4,
 
             // 8-byte (AUIPC+JALR pairs and 64-bit data)
-            R_RISCV_64 | R_RISCV_ADD64 | R_RISCV_SUB64
-            | R_RISCV_CALL | R_RISCV_CALL_PLT
+            R_RISCV_64 | R_RISCV_ADD64 | R_RISCV_SUB64 | R_RISCV_CALL | R_RISCV_CALL_PLT
             | R_RISCV_TLS_DTPMOD64 | R_RISCV_TLS_DTPREL64 | R_RISCV_TLS_TPREL64
             | R_RISCV_RELATIVE | R_RISCV_COPY | R_RISCV_JUMP_SLOT => 8,
 
@@ -1646,12 +1612,7 @@ mod tests {
     use super::*;
 
     // Helper: create a RelocationEntry for testing
-    fn make_reloc(
-        offset: u64,
-        reloc_type: u32,
-        symbol_value: u64,
-        addend: i64,
-    ) -> RelocationEntry {
+    fn make_reloc(offset: u64, reloc_type: u32, symbol_value: u64, addend: i64) -> RelocationEntry {
         RelocationEntry {
             offset,
             reloc_type,
@@ -1694,11 +1655,21 @@ mod tests {
 
     #[test]
     fn test_encode_decode_u_imm() {
-        for &imm in &[0i32, 0x1000, -0x1000, 0x7FFFF000u32 as i32, 0x80000000u32 as i32] {
+        for &imm in &[
+            0i32,
+            0x1000,
+            -0x1000,
+            0x7FFFF000u32 as i32,
+            0x80000000u32 as i32,
+        ] {
             let aligned = imm & !0xFFF; // U-type only stores bits [31:12]
             let encoded = encode_u_imm(aligned);
             let decoded = extract_u_imm(encoded);
-            assert_eq!(decoded, aligned, "U-type round-trip failed for imm={:#x}", imm);
+            assert_eq!(
+                decoded, aligned,
+                "U-type round-trip failed for imm={:#x}",
+                imm
+            );
         }
     }
 
@@ -1707,11 +1678,7 @@ mod tests {
         for &imm in &[0i32, 1, -1, 2047, -2048, 100, -100] {
             let encoded = encode_i_imm(imm);
             let decoded = extract_i_imm(encoded);
-            assert_eq!(
-                decoded, imm,
-                "I-type round-trip failed for imm={}",
-                imm
-            );
+            assert_eq!(decoded, imm, "I-type round-trip failed for imm={}", imm);
         }
     }
 
@@ -1721,11 +1688,7 @@ mod tests {
             let encoded = encode_s_imm(imm);
             // S-type has bits scattered, decode from the full instruction
             let decoded = extract_s_imm(encoded);
-            assert_eq!(
-                decoded, imm,
-                "S-type round-trip failed for imm={}",
-                imm
-            );
+            assert_eq!(decoded, imm, "S-type round-trip failed for imm={}", imm);
         }
     }
 
@@ -1834,7 +1797,10 @@ mod tests {
         assert_eq!(handler.relocation_name(R_RISCV_BRANCH), "R_RISCV_BRANCH");
         assert_eq!(handler.relocation_name(R_RISCV_JAL), "R_RISCV_JAL");
         assert_eq!(handler.relocation_name(R_RISCV_CALL), "R_RISCV_CALL");
-        assert_eq!(handler.relocation_name(R_RISCV_GOT_HI20), "R_RISCV_GOT_HI20");
+        assert_eq!(
+            handler.relocation_name(R_RISCV_GOT_HI20),
+            "R_RISCV_GOT_HI20"
+        );
         assert_eq!(handler.relocation_name(999), "R_RISCV_UNKNOWN");
     }
 
@@ -1887,7 +1853,10 @@ mod tests {
         let reloc = make_reloc(0, R_RISCV_CALL, 0, 0);
         // Target within ±1 MiB (symbol at 0x1000, pc at 0)
         let result = handler.try_relax(&reloc, &data, 0x1000, 0);
-        assert_eq!(result, Some(RelaxationAction::ReplaceCallWithJal { offset: 0 }));
+        assert_eq!(
+            result,
+            Some(RelaxationAction::ReplaceCallWithJal { offset: 0 })
+        );
     }
 
     #[test]
@@ -1961,7 +1930,7 @@ mod tests {
         let first = read_u32_le(&data, 0);
         assert_eq!(first & 0x7F, OPCODE_JAL);
         assert_eq!((first >> 7) & 0x1F, 1); // rd preserved
-        // Second instruction should be NOP
+                                            // Second instruction should be NOP
         assert_eq!(read_u32_le(&data, 4), RISCV_NOP);
         assert_eq!(adjustments.len(), 1);
     }
@@ -2022,7 +1991,7 @@ mod tests {
         // SET6: set low 6 bits to 0x15 (21)
         handler.apply_set6(&mut data, 1, 0x15).unwrap();
         assert_eq!(data[1], 0xC0 | 0x15); // Upper 2 bits preserved
-        // SUB6: subtract 5 from low 6 bits
+                                          // SUB6: subtract 5 from low 6 bits
         handler.apply_sub6(&mut data, 1, 5).unwrap();
         assert_eq!(data[1] & 0x3F, 0x10); // 0x15 - 5 = 0x10
     }

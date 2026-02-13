@@ -1532,6 +1532,7 @@ mod tests {
         assert_eq!(c_zero.get_type(), IrType::I64);
         assert!(c_zero.is_zero());
 
+        #[allow(clippy::approx_constant)]
         let c_float = Constant::Float {
             value: 3.14,
             ty: IrType::F64,
@@ -1614,6 +1615,7 @@ mod tests {
     #[test]
     fn test_global_section_placement() {
         // Const global → .rodata
+        #[allow(clippy::approx_constant)]
         let const_global = GlobalVariable {
             name: "PI".into(),
             ty: IrType::F64,

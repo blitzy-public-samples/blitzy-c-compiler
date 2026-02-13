@@ -1798,7 +1798,7 @@ mod tests {
         let handler = RiscV64RelocationHandler::new(false);
         // AUIPC x1, 0 (rd=1) | JALR x1, x1, 0 (rd=1, rs1=1)
         let auipc: u32 = 0b00001_0010111; // AUIPC x1
-        let jalr: u32 = 0b000000000000_00001_000_00001_1100111; // JALR x1,x1,0
+        let jalr: u32 = 0b0000_0000_0000_0000_1000_0000_1110_0111; // JALR x1,x1,0
         let mut data = Vec::new();
         data.extend_from_slice(&auipc.to_le_bytes());
         data.extend_from_slice(&jalr.to_le_bytes());
@@ -1879,7 +1879,7 @@ mod tests {
 
         // Build an AUIPC+JALR pair at offset 0
         let auipc: u32 = 0b00001_0010111; // AUIPC x1
-        let jalr: u32 = 0b000000000000_00001_000_00001_1100111; // JALR x1,x1,0
+        let jalr: u32 = 0b0000_0000_0000_0000_1000_0000_1110_0111; // JALR x1,x1,0
         let mut data = Vec::new();
         data.extend_from_slice(&auipc.to_le_bytes());
         data.extend_from_slice(&jalr.to_le_bytes());
@@ -1895,7 +1895,7 @@ mod tests {
         let handler = RiscV64RelocationHandler::new(true);
 
         let auipc: u32 = 0b00001_0010111;
-        let jalr: u32 = 0b000000000000_00001_000_00001_1100111;
+        let jalr: u32 = 0b0000_0000_0000_0000_1000_0000_1110_0111;
         let mut data = Vec::new();
         data.extend_from_slice(&auipc.to_le_bytes());
         data.extend_from_slice(&jalr.to_le_bytes());
@@ -1911,7 +1911,7 @@ mod tests {
         let handler = RiscV64RelocationHandler::new(false);
 
         let auipc: u32 = 0b00001_0010111;
-        let jalr: u32 = 0b000000000000_00001_000_00001_1100111;
+        let jalr: u32 = 0b0000_0000_0000_0000_1000_0000_1110_0111;
         let mut data = Vec::new();
         data.extend_from_slice(&auipc.to_le_bytes());
         data.extend_from_slice(&jalr.to_le_bytes());
@@ -1949,7 +1949,7 @@ mod tests {
 
         // Build AUIPC+JALR at offset 0
         let auipc: u32 = 0b00001_0010111;
-        let jalr: u32 = 0b000000000000_00001_000_00001_1100111;
+        let jalr: u32 = 0b0000_0000_0000_0000_1000_0000_1110_0111;
         let mut data = Vec::new();
         data.extend_from_slice(&auipc.to_le_bytes());
         data.extend_from_slice(&jalr.to_le_bytes());

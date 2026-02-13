@@ -1135,7 +1135,8 @@ mod tests {
     fn linkage_copy_and_clone() {
         let l = Linkage::Weak;
         let l2 = l; // Copy
-        let l3 = l.clone(); // Clone
+        #[allow(clippy::clone_on_copy)]
+        let l3 = l.clone(); // Clone (verified Copy + Clone derivation)
         assert_eq!(l, l2);
         assert_eq!(l, l3);
     }
@@ -1204,17 +1205,21 @@ mod tests {
 
     #[test]
     fn function_attributes_display_noreturn() {
-        let mut attrs = FunctionAttributes::default();
-        attrs.is_noreturn = true;
+        let attrs = FunctionAttributes {
+            is_noreturn: true,
+            ..Default::default()
+        };
         assert_eq!(format!("{}", attrs), "noreturn");
     }
 
     #[test]
     fn function_attributes_display_multiple() {
-        let mut attrs = FunctionAttributes::default();
-        attrs.is_noreturn = true;
-        attrs.is_cold = true;
-        attrs.is_weak = true;
+        let attrs = FunctionAttributes {
+            is_noreturn: true,
+            is_cold: true,
+            is_weak: true,
+            ..Default::default()
+        };
         let display = format!("{}", attrs);
         assert!(display.contains("noreturn"));
         assert!(display.contains("cold"));
@@ -1223,17 +1228,21 @@ mod tests {
 
     #[test]
     fn function_attributes_display_constructor_with_priority() {
-        let mut attrs = FunctionAttributes::default();
-        attrs.is_constructor = true;
-        attrs.constructor_priority = Some(100);
+        let attrs = FunctionAttributes {
+            is_constructor: true,
+            constructor_priority: Some(100),
+            ..Default::default()
+        };
         let display = format!("{}", attrs);
         assert!(display.contains("constructor(100)"));
     }
 
     #[test]
     fn function_attributes_display_destructor_without_priority() {
-        let mut attrs = FunctionAttributes::default();
-        attrs.is_destructor = true;
+        let attrs = FunctionAttributes {
+            is_destructor: true,
+            ..Default::default()
+        };
         let display = format!("{}", attrs);
         assert!(display.contains("destructor"));
         assert!(!display.contains("destructor("));
@@ -1241,8 +1250,10 @@ mod tests {
 
     #[test]
     fn function_attributes_display_visibility_hidden() {
-        let mut attrs = FunctionAttributes::default();
-        attrs.visibility = Visibility::Hidden;
+        let attrs = FunctionAttributes {
+            visibility: Visibility::Hidden,
+            ..Default::default()
+        };
         let display = format!("{}", attrs);
         assert!(display.contains("visibility(hidden)"));
     }
@@ -1253,8 +1264,10 @@ mod tests {
         let b = FunctionAttributes::default();
         assert_eq!(a, b);
 
-        let mut c = FunctionAttributes::default();
-        c.is_noreturn = true;
+        let c = FunctionAttributes {
+            is_noreturn: true,
+            ..Default::default()
+        };
         assert_ne!(a, c);
     }
 

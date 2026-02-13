@@ -1566,7 +1566,7 @@ mod tests {
         assert_eq!(map.get("sym1"), Some(&0x1000));
 
         // Verify iteration covers all entries.
-        let count = map.iter().count();
+        let count = map.len();
         assert_eq!(count, 2);
     }
 

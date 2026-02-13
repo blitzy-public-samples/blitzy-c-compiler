@@ -1264,18 +1264,22 @@ mod tests {
 
     #[test]
     fn test_zero_constants() {
-        assert!(LongDouble::ZERO.is_zero());
-        assert!(!LongDouble::ZERO.sign);
-        assert!(LongDouble::NEG_ZERO.is_zero());
-        assert!(LongDouble::NEG_ZERO.sign);
+        let zero = LongDouble::ZERO;
+        let neg_zero = LongDouble::NEG_ZERO;
+        assert!(zero.is_zero());
+        assert!(!zero.sign);
+        assert!(neg_zero.is_zero());
+        assert!(neg_zero.sign);
     }
 
     #[test]
     fn test_infinity_constants() {
-        assert!(LongDouble::INFINITY.is_infinity());
-        assert!(!LongDouble::INFINITY.sign);
-        assert!(LongDouble::NEG_INFINITY.is_infinity());
-        assert!(LongDouble::NEG_INFINITY.sign);
+        let inf = LongDouble::INFINITY;
+        let neg_inf = LongDouble::NEG_INFINITY;
+        assert!(inf.is_infinity());
+        assert!(!inf.sign);
+        assert!(neg_inf.is_infinity());
+        assert!(neg_inf.sign);
     }
 
     #[test]

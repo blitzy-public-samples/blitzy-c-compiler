@@ -1126,6 +1126,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_float_digits_dot_digits() {
         let (tok, diag) = lex_one("3.14");
         assert!(!diag.has_errors());

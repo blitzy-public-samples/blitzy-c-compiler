@@ -197,7 +197,7 @@ fn resolve_source_dir(env_var: &str, project: &str) -> Option<PathBuf> {
 
     let mut dir = PathBuf::from(&os_val);
     // Normalise: if the path has a trailing slash component, push resolves it.
-    if dir.as_path().to_str().map_or(false, |s| s.ends_with("/.")) {
+    if dir.as_path().to_str().is_some_and(|s| s.ends_with("/.")) {
         dir.push(".");
         dir = dir.canonicalize().unwrap_or(dir);
     }

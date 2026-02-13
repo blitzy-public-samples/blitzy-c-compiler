@@ -1108,6 +1108,7 @@ mod tests {
         let mut builder = IrBuilder::new();
 
         let ci = builder.build_const_int(&mut func, IrType::I32, 100);
+        #[allow(clippy::approx_constant)]
         let cf = builder.build_const_float(&mut func, IrType::F64, 3.14);
         let cn = builder.build_const_null(&mut func, IrType::Ptr);
         let gr = builder.build_global_ref(&mut func, "my_global", IrType::Ptr);

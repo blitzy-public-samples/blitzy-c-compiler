@@ -926,7 +926,7 @@ impl MachineBasicBlock {
     pub fn has_terminator(&self) -> bool {
         self.instructions
             .last()
-            .map_or(false, |i| i.is_terminator)
+            .is_some_and(|i| i.is_terminator)
     }
 
     /// Returns a reference to the terminator instruction, if present.

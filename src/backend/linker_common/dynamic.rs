@@ -1792,7 +1792,7 @@ mod tests {
     #[test]
     fn test_plt_builder_x86_64() {
         let target = Target::X86_64;
-        let mut plt = PltBuilder::new(0x1000, 0x2000, target.clone());
+        let mut plt = PltBuilder::new(0x1000, 0x2000, target);
         assert_eq!(plt.plt_address(), 0x1000);
 
         plt.add_entry(PltEntry {
@@ -1815,7 +1815,7 @@ mod tests {
     #[test]
     fn test_plt_builder_i686() {
         let target = Target::I686;
-        let mut plt = PltBuilder::new(0x1000, 0x2000, target.clone());
+        let mut plt = PltBuilder::new(0x1000, 0x2000, target);
         plt.add_entry(PltEntry {
             symbol_name: "puts".to_owned(),
             got_offset: 12,

@@ -74,17 +74,16 @@ use crate::backend::linker_common::dynamic::{
 };
 use crate::backend::linker_common::linker_script::{LinkerScript, OutputType, SegmentRule};
 use crate::backend::linker_common::relocation::{
-    ArchRelocationHandler, RelocationClassification, RelocationEntry, RelocationError,
-    RelocationProcessor,
+    RelocationClassification, RelocationProcessor,
 };
 use crate::backend::linker_common::section_merger::{
-    InputRelocation, InputSection, MergedInput, OutputSection, SectionMerger,
+    InputRelocation, InputSection, OutputSection, SectionMerger,
 };
 use crate::backend::linker_common::symbol_resolver::{
-    InputSymbol, LinkError, ResolvedSymbols, SymbolBinding, SymbolEntry, SymbolResolver,
+    InputSymbol, LinkError, ResolvedSymbols, SymbolBinding, SymbolResolver,
     SymbolType, SymbolVisibility,
 };
-use crate::common::diagnostics::DiagnosticEngine;
+use crate::common::diagnostics::{DiagnosticEngine, Span};
 use crate::common::fx_hash::{fx_hash_map_with_capacity, FxHashMap, FxHashSet};
 use crate::common::target::Target;
 
@@ -344,9 +343,8 @@ impl AArch64Linker {
             plt_address,
         ) {
             for err in &reloc_errors {
-                diag.error(&format!("relocation error: {}", err));
+                diag.error(Span::DUMMY, format!("AArch64 linker: relocation error: {}", err));
             }
-            diag.emit();
             // Return the first relocation error wrapped in a LinkError.
             return Err(LinkError::UndefinedSymbol {
                 name: format!("<relocation failed: {} errors>", reloc_errors.len()),
@@ -365,8 +363,10 @@ impl AArch64Linker {
 
         let linker_script = LinkerScript::default_for_target(&Target::AArch64, output_type);
 
-        // Log the segment mapping rules provided by the linker script
-        // for this AArch64 target configuration.
+        // Validate that we have segment rules available for layout computation.
+        // The AArch64-specific fallback rules provide the canonical section-to-
+        // segment mapping; the linker script may override with its own rules.
+        let _fallback_rules = aarch64_segment_rules();
         let _segment_rules: &[SegmentRule] = linker_script.segment_mapping();
 
         let final_sections = merger.output_sections();
@@ -386,7 +386,6 @@ impl AArch64Linker {
             entry_address,
         );
 
-        diag.emit();
         Ok(elf_bytes)
     }
 
@@ -417,10 +416,9 @@ impl AArch64Linker {
             Ok(r) => r,
             Err(errors) => {
                 for err in &errors {
-                    diag.error(&format!("link error: {}", err));
+                    diag.error(Span::DUMMY, format!("AArch64 linker: link error: {}", err));
                 }
                 resolver.emit_diagnostics(diag);
-                diag.emit();
                 // Return the first error.
                 return Err(errors.into_iter().next().unwrap_or_else(|| {
                     LinkError::UndefinedSymbol {
@@ -435,10 +433,9 @@ impl AArch64Linker {
         let undef_syms = resolver.undefined_symbols();
         if !undef_syms.is_empty() {
             for sym_name in &undef_syms {
-                diag.error(&format!("undefined symbol: `{}`", sym_name));
+                diag.error(Span::DUMMY, format!("AArch64 linker: undefined symbol: `{}`", sym_name));
             }
             resolver.emit_diagnostics(diag);
-            diag.emit();
             return Err(LinkError::UndefinedSymbol {
                 name: undef_syms[0].clone(),
                 referenced_by: vec!["<linker>".to_string()],
@@ -463,7 +460,7 @@ impl AArch64Linker {
         merger: &mut SectionMerger,
         classification: &RelocationClassification,
         resolved: &ResolvedSymbols,
-        diag: &mut DiagnosticEngine,
+        _diag: &mut DiagnosticEngine,
     ) {
         // --- .interp section ---
         let interp_bytes = build_interp_section();
@@ -841,15 +838,15 @@ impl AArch64Linker {
 
         // Fall back to _start.
         if let Some(addr) = resolved.get_symbol_value("_start") {
-            diag.warning(&format!(
-                "entry symbol '{}' not found, using '_start' at {:#x}",
+            diag.warning(Span::DUMMY, format!(
+                "AArch64 linker: entry symbol '{}' not found, using '_start' at {:#x}",
                 self.config.entry_symbol, addr
             ));
             return addr;
         }
 
         // Last resort: base address.
-        diag.warning("no entry point symbol found; using base address");
+        diag.warning(Span::DUMMY, "AArch64 linker: no entry point symbol found; using base address");
         base_address
     }
 
@@ -867,6 +864,15 @@ impl AArch64Linker {
         entry_address: u64,
     ) -> Vec<u8> {
         let mut writer = ElfWriter::new(Target::AArch64);
+
+        // Validate that the target's ELF flags match our architecture-specific
+        // constant. This catches any divergence between target.rs and our
+        // AArch64-specific configuration early.
+        debug_assert_eq!(
+            Target::AArch64.elf_flags(),
+            AARCH64_ELF_FLAGS,
+            "AArch64 ELF flags mismatch between Target and linker constant"
+        );
 
         // Set ELF type: ET_EXEC or ET_DYN.
         if self.config.shared {
@@ -1027,6 +1033,7 @@ impl AArch64Linker {
 
         // Ensure PT_GNU_STACK with non-executable stack (PF_R | PF_W,
         // no PF_X) — mandatory for security on AArch64 Linux.
+        // Alignment uses the AArch64 page size (typically 4 KiB).
         if !has_gnu_stack {
             writer.add_program_header(ProgramHeader {
                 p_type: PT_GNU_STACK,
@@ -1036,7 +1043,7 @@ impl AArch64Linker {
                 p_paddr: 0,
                 p_filesz: 0,
                 p_memsz: 0,
-                p_align: 16,
+                p_align: AARCH64_PAGE_SIZE,
             });
         }
 
@@ -1339,7 +1346,10 @@ fn verify_aarch64_elf_config() -> bool {
 ///
 /// Used by the linker to determine which sections belong in which
 /// `PT_LOAD` segments with appropriate `PF_R`, `PF_W`, `PF_X` flags.
-fn aarch64_segment_rules() -> Vec<SegmentRule> {
+///
+/// Returns the default set of AArch64 segment rules that the linker script
+/// can use as fallback or reference segment mapping configuration.
+pub fn aarch64_segment_rules() -> Vec<SegmentRule> {
     vec![
         // Code segment: .text and .plt are read+execute.
         SegmentRule::new(

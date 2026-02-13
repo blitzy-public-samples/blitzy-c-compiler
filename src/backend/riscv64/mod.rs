@@ -18,6 +18,13 @@
 //! - LUI/AUIPC for large immediate materialization
 //! - RV64IMAFDC ISA (Integer, Multiply, Atomic, Float, Double, Compressed)
 
+/// RISC-V 64-bit register definitions — named constants for all 32 integer
+/// registers (x0–x31), 32 floating-point registers (f0–f31), ABI aliases
+/// (zero, ra, sp, gp, tp, s0–s11, t0–t6, a0–a7, fs0–fs11, ft0–ft11, fa0–fa7),
+/// register classification arrays, property query functions, CSR constants,
+/// and 5-bit hardware encoding extraction.
+pub mod registers;
+
 /// Built-in RISC-V 64 linker — relocation application with relaxation support,
 /// producing ELF executables and shared objects for the RISC-V 64 target.
 pub mod linker;

@@ -41,3 +41,8 @@ pub mod linker_common;
 /// x86-64 (AMD64) backend — `ArchCodegen` trait implementation, instruction
 /// selection, built-in assembler, and built-in linker for the x86-64 target.
 pub mod x86_64;
+
+/// RISC-V 64 (RV64IMAFDC) backend — `ArchCodegen` trait implementation,
+/// instruction selection, built-in assembler, and built-in linker for the
+/// RISC-V 64 target with linker relaxation support.
+pub mod riscv64;

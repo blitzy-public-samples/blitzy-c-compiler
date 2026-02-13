@@ -232,7 +232,7 @@ fn write_u16_le(data: &mut [u8], offset: usize, value: u16) {
 /// assert_eq!(sign_extend(0x7FF, 12),  2047_i64);
 /// ```
 #[inline]
-fn sign_extend(value: u32, bits: u32) -> i64 {
+pub fn sign_extend(value: u32, bits: u32) -> i64 {
     let shift = 32 - bits;
     ((value as i32) << shift >> shift) as i64
 }
@@ -251,7 +251,7 @@ fn sign_extend(value: u32, bits: u32) -> i64 {
 /// U-type layout: `imm[31:12]` occupies bits [31:12].
 /// Returns the value with lower 12 bits zeroed, sign-extended as `i32`.
 #[inline]
-fn extract_u_imm(instruction: u32) -> i32 {
+pub fn extract_u_imm(instruction: u32) -> i32 {
     (instruction & 0xFFFF_F000) as i32
 }
 
@@ -259,7 +259,7 @@ fn extract_u_imm(instruction: u32) -> i32 {
 ///
 /// I-type layout: `imm[11:0]` occupies bits [31:20], sign-extended.
 #[inline]
-fn extract_i_imm(instruction: u32) -> i32 {
+pub fn extract_i_imm(instruction: u32) -> i32 {
     (instruction as i32) >> 20
 }
 
@@ -268,7 +268,7 @@ fn extract_i_imm(instruction: u32) -> i32 {
 /// S-type layout: `imm[11:5]` in bits [31:25], `imm[4:0]` in bits [11:7].
 /// Returns sign-extended 12-bit value.
 #[inline]
-fn extract_s_imm(instruction: u32) -> i32 {
+pub fn extract_s_imm(instruction: u32) -> i32 {
     let imm_11_5 = (instruction >> 25) & 0x7F;
     let imm_4_0 = (instruction >> 7) & 0x1F;
     let raw = (imm_11_5 << 5) | imm_4_0;
@@ -282,7 +282,7 @@ fn extract_s_imm(instruction: u32) -> i32 {
 /// `imm[4:1]` at bits [11:8], `imm[11]` at bit 7.
 /// Returns sign-extended 13-bit value (bit 0 is always zero).
 #[inline]
-fn extract_b_imm(instruction: u32) -> i32 {
+pub fn extract_b_imm(instruction: u32) -> i32 {
     let imm_12 = (instruction >> 31) & 1;
     let imm_11 = (instruction >> 7) & 1;
     let imm_10_5 = (instruction >> 25) & 0x3F;
@@ -298,7 +298,7 @@ fn extract_b_imm(instruction: u32) -> i32 {
 /// `imm[11]` at bit 20, `imm[19:12]` at bits [19:12].
 /// Returns sign-extended 21-bit value (bit 0 is always zero).
 #[inline]
-fn extract_j_imm(instruction: u32) -> i32 {
+pub fn extract_j_imm(instruction: u32) -> i32 {
     let imm_20 = (instruction >> 31) & 1;
     let imm_10_1 = (instruction >> 21) & 0x3FF;
     let imm_11 = (instruction >> 20) & 1;
@@ -553,8 +553,10 @@ impl RiscV64RelocationHandler {
                 max_value: 2_147_483_647,
             });
         }
-        // Upper 20 bits with sign-extension compensation
-        let hi = ((value + 0x800) >> 12) as i32;
+        // Upper 20 bits with sign-extension compensation, already in U-type
+        // format (bits [31:12] populated, bits [11:0] zero). The +0x800 bias
+        // compensates for JALR's sign extension of the 12-bit immediate.
+        let hi = ((value + 0x800) as i32) & !0xFFF;
         // Lower 12 bits (hardware sign-extends this in JALR)
         let lo = (value as i32) & 0xFFF;
 
@@ -590,7 +592,7 @@ impl RiscV64RelocationHandler {
                 max_value: 2_147_483_647,
             });
         }
-        let hi = ((value + 0x800) >> 12) as i32;
+        let hi = ((value + 0x800) as i32) & !0xFFF;
         let inst = read_u32_le(data, offset);
         let cleared = inst & 0x0000_0FFF;
         write_u32_le(data, offset, cleared | encode_u_imm(hi));
@@ -641,7 +643,7 @@ impl RiscV64RelocationHandler {
         offset: usize,
         value: i64,
     ) -> Result<(), RelocationError> {
-        let hi = ((value + 0x800) >> 12) as i32;
+        let hi = ((value + 0x800) as i32) & !0xFFF;
         let inst = read_u32_le(data, offset);
         let cleared = inst & 0x0000_0FFF;
         write_u32_le(data, offset, cleared | encode_u_imm(hi));
@@ -790,7 +792,7 @@ impl RiscV64RelocationHandler {
                 max_value: 2_147_483_647,
             });
         }
-        let hi = ((value + 0x800) >> 12) as i32;
+        let hi = ((value + 0x800) as i32) & !0xFFF;
         let inst = read_u32_le(data, offset);
         let cleared = inst & 0x0000_0FFF;
         write_u32_le(data, offset, cleared | encode_u_imm(hi));

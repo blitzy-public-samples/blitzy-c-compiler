@@ -61,6 +61,13 @@ pub mod basic_block;
 /// architecture (Phase 6 lowering → Phase 7 mem2reg).
 pub mod function;
 
+/// IR module representation — [`IrModule`] is the top-level container for
+/// compilation-unit-level entities: global variables, function definitions,
+/// external declarations, string literal pool, and inline assembly blocks.
+/// The `IrModule` is the data structure passed from Phase 6 (IR lowering)
+/// through optimisation passes to Phase 10 (code generation backend).
+pub mod module;
+
 // ── Convenience re-exports ──────────────────────────────────────────────────
 // Re-export the most commonly used types so that other modules can write
 // `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.
@@ -77,3 +84,6 @@ pub use basic_block::BasicBlock;
 pub use function::{
     CallingConvention, FunctionAttributes, IrFunction, Linkage, Parameter, ValueInfo, Visibility,
 };
+
+// Re-export module-layer types for convenient access.
+pub use module::{Constant, FunctionDecl, GlobalVariable, InlineAsmBlock, IrModule, StringLiteral};

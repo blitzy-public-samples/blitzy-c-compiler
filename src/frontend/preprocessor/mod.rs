@@ -387,6 +387,12 @@ impl Preprocessor {
         let mut idx = 0;
         let len = tokens.len();
 
+        // Record the conditional stack depth at entry so that the
+        // unterminated-conditional check at the end of this file only
+        // examines conditions opened *during this call* — not those
+        // inherited from a parent file that `#include`d us.
+        let cond_stack_base = self.cond_stack.len();
+
         // Track whether we are at the start of a logical line (for directive
         // detection). The very first token is at start-of-line.
         let mut at_line_start = true;
@@ -450,8 +456,32 @@ impl Preprocessor {
             // ── Macro expansion ──────────────────────────────────────
             // Collect tokens until the next newline to form a logical line
             // and expand macros on the batch.
+            //
+            // CRITICAL: Function-like macro calls can span multiple physical
+            // lines (e.g., glibc's __REDIRECT macro). When collecting the
+            // line, if we encounter open parentheses, we track nesting depth
+            // and continue past newlines until the parentheses are balanced.
+            // This matches C11 §6.10.3 which says that a preprocessing
+            // directive's replacement list (and macro call arguments) can
+            // contain newlines that act as whitespace.
             let line_start = idx;
-            while idx < len && tokens[idx].kind != TokenKind::Newline {
+            let mut paren_depth: i32 = 0;
+            while idx < len {
+                if tokens[idx].kind == TokenKind::Newline {
+                    // Only stop at newline if parentheses are balanced.
+                    if paren_depth <= 0 {
+                        break;
+                    }
+                    // Inside a parenthesized expression — treat newline
+                    // as whitespace and continue collecting tokens.
+                    idx += 1;
+                    continue;
+                }
+                if tokens[idx].kind == TokenKind::LeftParen {
+                    paren_depth += 1;
+                } else if tokens[idx].kind == TokenKind::RightParen {
+                    paren_depth -= 1;
+                }
                 idx += 1;
             }
             let line_tokens = tokens[line_start..idx].to_vec();
@@ -465,10 +495,16 @@ impl Preprocessor {
             }
         }
 
-        // Validate conditional stack is balanced.
-        if let Some(unclosed) = self.cond_stack.last() {
+        // Validate conditional stack is balanced *for this file only*.
+        // Only conditionals pushed after cond_stack_base are from this
+        // file — any below that belong to a parent that #include'd us
+        // and will be checked when that parent's process_tokens returns.
+        if self.cond_stack.len() > cond_stack_base {
+            let unclosed = &self.cond_stack[cond_stack_base];
             self.diagnostics
                 .error(unclosed.origin_span, "unterminated #if / #ifdef / #ifndef");
+            // Pop all conditionals opened in this file before returning.
+            self.cond_stack.truncate(cond_stack_base);
             return Err(());
         }
 
@@ -791,6 +827,13 @@ impl Preprocessor {
 
     /// Parse the include path from tokens following `#include`.
     /// Returns the include kind and the path string.
+    ///
+    /// For `<...>` system includes, the raw source text is extracted directly
+    /// from the source map using token spans, avoiding token-text reconstruction
+    /// issues (e.g., `64.h` being lexed as a floating-point literal and losing
+    /// the original text). This matches the C standard's requirement that the
+    /// content between `<` and `>` is a "header-name" preprocessing token, not
+    /// a sequence of regular C tokens.
     fn parse_include_path(
         &mut self,
         tokens: &[Token],
@@ -802,20 +845,48 @@ impl Preprocessor {
             return Ok((IncludeKind::User, path_string));
         }
 
-        // Check for `<path>` (system include) — assembled from tokens.
+        // Check for `<path>` (system include) — extract raw source text from
+        // spans to preserve the exact filename. The content between `<` and `>`
+        // can contain characters that the C tokenizer misinterprets (e.g., `64.h`
+        // is lexed as a float literal), so we bypass tokenization entirely.
         if tokens[0].kind == TokenKind::Less {
-            let mut path = String::new();
-            let mut i = 1;
-            while i < tokens.len() {
-                if tokens[i].kind == TokenKind::Greater {
+            // Find the closing `>` token.
+            let close_idx = tokens[1..]
+                .iter()
+                .position(|t| t.kind == TokenKind::Greater)
+                .map(|pos| pos + 1);
+            let close_idx = match close_idx {
+                Some(idx) => idx,
+                None => {
+                    self.diagnostics
+                        .error(span, "missing '>' in #include <...>");
+                    return Err(());
+                }
+            };
+
+            // Try to extract raw source text using spans. All tokens in a
+            // non-macro-expanded #include line originate from the same file,
+            // so the spans are contiguous and valid.
+            let lt_span = tokens[0].span;
+            let gt_span = tokens[close_idx].span;
+            if lt_span.file_id == gt_span.file_id && lt_span.file_id != u32::MAX {
+                let file_id = crate::common::source_map::FileId(lt_span.file_id);
+                let raw = self
+                    .source_map
+                    .get_snippet(file_id, lt_span.end, gt_span.start);
+                let path = raw.trim().to_string();
+                if !path.is_empty() {
                     return Ok((IncludeKind::System, path));
                 }
-                path.push_str(&self.token_text(&tokens[i]));
-                i += 1;
             }
-            self.diagnostics
-                .error(span, "missing '>' in #include <...>");
-            return Err(());
+
+            // Fallback: reconstruct from token text (for macro-expanded includes
+            // or cases where span extraction yields an empty path).
+            let mut path = String::new();
+            for tok in &tokens[1..close_idx] {
+                path.push_str(&self.token_text(tok));
+            }
+            return Ok((IncludeKind::System, path));
         }
 
         self.diagnostics

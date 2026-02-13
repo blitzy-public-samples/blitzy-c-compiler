@@ -10,11 +10,11 @@
 //!
 //! Produces [`TypedExpression`] consumed by IR lowering (Phase 6).
 
-use crate::common::diagnostics::{DiagnosticEngine, Severity, Span};
+use crate::common::diagnostics::{DiagnosticEngine, Span};
 use crate::common::target::{DataModel, Target};
-use crate::common::type_builder::{self, TypeBuilder};
+use crate::common::type_builder;
 use crate::common::types::{
-    self, CType, FieldDef, QualifiedType, TypeQualifiers,
+    self, CType, FieldDef,
 };
 use crate::common::string_interner::Symbol;
 use crate::frontend::parser::ast::{
@@ -24,7 +24,7 @@ use crate::frontend::parser::ast::{
 };
 use crate::frontend::sema::scope::ScopeStack;
 use crate::frontend::sema::symbol_table::{
-    Linkage, StorageClass, SymbolEntry, SymbolId, SymbolTable,
+    StorageClass, SymbolEntry, SymbolTable,
 };
 
 // ===========================================================================
@@ -1576,7 +1576,7 @@ fn check_array_subscript(
     let idx_ty = lvalue_conversion(&typed_index.ty);
 
     // a[b] is equivalent to *(a + b), so either operand can be the pointer.
-    let (ptr_ty, int_ty) = if arr_ty.is_pointer() && idx_ty.is_integer() {
+    let (ptr_ty, _int_ty) = if arr_ty.is_pointer() && idx_ty.is_integer() {
         (arr_ty, idx_ty)
     } else if idx_ty.is_pointer() && arr_ty.is_integer() {
         (idx_ty, arr_ty)

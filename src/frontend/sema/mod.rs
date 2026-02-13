@@ -27,3 +27,4 @@ pub mod attribute_handler;
 pub mod constant_eval;
 pub mod scope;
 pub mod symbol_table;
+pub mod type_checker;

@@ -390,10 +390,9 @@ fn parse_single_attribute(parser: &mut Parser<'_>) -> Result<Attribute, ParseErr
     // known for parsing to succeed), but informs the developer that the
     // attribute will have no effect.
     if !raw_name_string.is_empty() && !is_known_attribute(normalized) {
-        parser.diagnostics.warning(
-            start,
-            &format!("unknown attribute '{}'", raw_name_string),
-        );
+        parser
+            .diagnostics
+            .warning(start, format!("unknown attribute '{}'", raw_name_string));
     }
 
     // Intern the normalised form for the AST node's `name` field.
@@ -435,9 +434,7 @@ fn parse_single_attribute(parser: &mut Parser<'_>) -> Result<Attribute, ParseErr
 ///
 /// If the current token is not a valid attribute name (e.g., a comma
 /// creating an empty slot), returns the empty symbol.
-fn extract_attribute_name(
-    parser: &mut Parser<'_>,
-) -> Result<(Symbol, String), ParseError> {
+fn extract_attribute_name(parser: &mut Parser<'_>) -> Result<(Symbol, String), ParseError> {
     match &parser.current().kind {
         // Standard identifier — covers the vast majority of attribute names
         // (aligned, packed, section, used, unused, weak, noreturn, etc.)
@@ -544,7 +541,7 @@ fn parse_attribute_args(
                 let span = parser.current().span;
                 parser.diagnostics.error(
                     span,
-                    &format!(
+                    format!(
                         "unexpected end of file in arguments for attribute '{}'",
                         normalized_name,
                     ),

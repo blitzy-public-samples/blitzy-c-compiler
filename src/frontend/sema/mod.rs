@@ -24,6 +24,7 @@
 /// [`StorageClass`], and [`SymbolAttributes`] types for tracking all
 /// declared identifiers within a translation unit.
 pub mod attribute_handler;
+pub mod builtin_eval;
 pub mod constant_eval;
 pub mod scope;
 pub mod symbol_table;

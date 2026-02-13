@@ -594,13 +594,17 @@ impl DominatorTree {
 /// operations in the Lengauer-Tarjan algorithm.
 ///
 /// Each node starts as its own tree root. The [`link`](Self::link)
-/// operation merges two trees, and [`eval`](Self::eval) finds the
-/// vertex with minimum semidominator on the path from a given node
-/// to its tree root, applying path compression along the way.
+/// operation merges two trees (always placing the child under the
+/// parent), and [`eval`](Self::eval) finds the vertex with minimum
+/// semidominator on the path from a given node to its tree root,
+/// applying path compression along the way.
 ///
-/// Path compression ensures that amortised operation cost is nearly
-/// constant (inverse Ackermann), giving the Lengauer-Tarjan algorithm
-/// its O(n · α(n)) overall complexity.
+/// This implementation uses the "simple" Lengauer-Tarjan variant:
+/// `link(v, w)` always sets `ancestor[w] = v`, and `eval` applies
+/// iterative path compression. The amortised complexity is
+/// O(n · log n) — practically identical to the theoretically optimal
+/// O(n · α(n)) of the "sophisticated" balanced-link variant for all
+/// realistic CFG sizes.
 struct LinkEvalForest {
     /// Forest parent for each node (indexed by DFS number).
     /// `UNDEF` indicates the node is a tree root.
@@ -610,12 +614,6 @@ struct LinkEvalForest {
     /// `v` to its tree root with the **minimum** semidominator DFS
     /// number. Initialised to `v` itself (identity).
     label: Vec<u32>,
-
-    /// Subtree size for each node, used for size-balanced union in
-    /// the [`link`](Self::link) operation. Size-balanced linking
-    /// combined with path compression achieves the optimal
-    /// O(n · α(n)) amortised bound.
-    size: Vec<u32>,
 }
 
 impl LinkEvalForest {
@@ -628,7 +626,6 @@ impl LinkEvalForest {
         Self {
             ancestor: vec![UNDEF; n],
             label: (0..n as u32).collect(),
-            size: vec![1; n],
         }
     }
 
@@ -708,55 +705,36 @@ impl LinkEvalForest {
 
     /// **LINK(v, w):** Make `w` a child of `v` in the forest.
     ///
-    /// Uses size-balanced linking: the smaller subtree is always
-    /// attached under the larger. When the Lengauer-Tarjan algorithm
-    /// calls `LINK(parent[w], w)`, this ensures that the forest
-    /// tree heights remain O(log n), which combined with path
-    /// compression in [`eval`](Self::eval) yields the O(n · α(n))
-    /// amortised complexity guarantee.
+    /// Uses the "simple" Lengauer-Tarjan linking strategy: `w` is
+    /// always placed directly under `v` by setting `ancestor[w] = v`.
+    /// Combined with the path-compression in [`eval`](Self::eval) /
+    /// [`compress`](Self::compress), this yields an amortised
+    /// O(n · log n) complexity, which is practically
+    /// indistinguishable from the theoretically optimal O(n · α(n))
+    /// of the "sophisticated" balanced-link variant for all realistic
+    /// CFG sizes (even 10 000+ basic blocks).
+    ///
+    /// # Why not balanced linking?
+    ///
+    /// The "sophisticated" balanced variant (Lengauer-Tarjan §4) uses
+    /// size-balanced union in the LINK step: when `size[v] < size[w]`,
+    /// the roles are swapped so `v` becomes a child of `w`, keeping
+    /// tree height O(log n).  However, this requires a significantly
+    /// more complex implementation with additional `child` arrays and
+    /// careful label propagation to preserve the EVAL invariant.
+    ///
+    /// A naïve balanced union that simply reverses `ancestor[v] = w`
+    /// **breaks correctness**: it can make the DFS-tree root (entry
+    /// block) a non-root in the forest, causing `eval()` to return
+    /// stale labels and producing wrong semi-dominators.  The simple
+    /// variant avoids this class of bugs entirely.
     ///
     /// # Arguments
     ///
-    /// * `v` — the node that will become the root (DFS tree parent).
-    /// * `w` — the node to be linked under `v`.
+    /// * `v` — the node that becomes the root (DFS tree parent).
+    /// * `w` — the node placed under `v`.
     fn link(&mut self, v: usize, w: usize) {
-        // Size-balanced union: attach the smaller tree under the
-        // larger tree's root to minimise worst-case path length.
-        //
-        // In the standard L-T algorithm, LINK(v, w) is always called
-        // where v = parent_dfs[w]. We perform balanced union by
-        // checking sizes. If v's tree is at least as large as w's,
-        // w becomes a child of v (the common case). Otherwise, v
-        // becomes a child of w, and we swap labels so that EVAL
-        // still returns the correct minimum-semi vertex.
-        if self.size[v] >= self.size[w] {
-            self.ancestor[w] = v as u32;
-            self.size[v] = self.size[v].saturating_add(self.size[w]);
-        } else {
-            // Smaller root goes under larger root.
-            // v is smaller, so v goes under w.
-            self.ancestor[v] = w as u32;
-            self.size[w] = self.size[w].saturating_add(self.size[v]);
-            // However, the caller expects w to be the child of v
-            // conceptually. Since w is now the root, subsequent
-            // EVAL calls on w will traverse up to w (root) which
-            // is correct. The key invariant is that label[w] is
-            // initialised to w (which it already is from new()),
-            // and any future compress() will propagate labels
-            // correctly through the path.
-            //
-            // Note: In the L-T algorithm, after LINK(parent[w], w),
-            // we immediately process bucket[parent[w]] which calls
-            // EVAL on bucket elements. The elements in the bucket
-            // are in the subtree of parent[w] (= v). Since we just
-            // linked v under w, EVAL on those elements will
-            // correctly traverse to w (the root) and then up.
-            //
-            // This balanced linking preserves correctness because
-            // the EVAL contract is: "return the vertex with minimum
-            // semi on the path to the root", and the root identity
-            // does not matter as long as the semi-labels are correct.
-        }
+        self.ancestor[w] = v as u32;
     }
 }
 
@@ -819,7 +797,7 @@ fn compute_cfg_reverse_postorder(
     num_slots: usize,
 ) -> Vec<BasicBlockId> {
     let entry_id = func.entry_block().id;
-    let mut postorder: Vec<BasicBlockId> = Vec::new();
+    let mut postorder: Vec<BasicBlockId> = Vec::with_capacity(num_slots);
     let mut visited: FxHashSet<BasicBlockId> = fx_hash_set();
 
     // DFS with explicit Enter/Exit actions for postorder recording.

@@ -74,6 +74,12 @@ pub mod module;
 /// functions one instruction at a time with automatic SSA numbering.
 pub mod builder;
 
+/// Memory-to-register promotion (mem2reg) — SSA construction (Phase 7) and
+/// phi-node elimination (Phase 9).  Contains the Lengauer-Tarjan dominator
+/// tree, dominance frontier computation, SSA renaming, and phi elimination
+/// sub-modules.
+pub mod mem2reg;
+
 // ── Convenience re-exports ──────────────────────────────────────────────────
 // Re-export the most commonly used types so that other modules can write
 // `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.

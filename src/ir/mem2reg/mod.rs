@@ -40,6 +40,11 @@ pub mod dominator_tree;
 /// frontier (IDF) worklist algorithm for phi-node placement.
 pub mod dominance_frontier;
 
+/// SSA variable renaming — walks the dominator tree in pre-order to rename
+/// promoted alloca uses to their reaching definitions, fill phi-node operands,
+/// and build def-use chains. This is the final step of Phase 7.
+pub mod ssa_builder;
+
 /// Phase 9 phi-node elimination — converts SSA phi nodes back to copy
 /// operations at predecessor block terminators for consumption by the
 /// register allocator and backend code generator.
@@ -50,3 +55,4 @@ pub mod phi_eliminate;
 pub use dominator_tree::DominatorTree;
 pub use dominance_frontier::DominanceFrontier;
 pub use phi_eliminate::{eliminate_phis, verify_no_phis};
+pub use ssa_builder::{rename_variables, AllocaSlot, SsaRenamer};

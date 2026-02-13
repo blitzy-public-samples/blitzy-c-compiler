@@ -490,7 +490,7 @@ impl RiscV64RelocationHandler {
         offset: usize,
         value: i64,
     ) -> Result<(), RelocationError> {
-        if value < -4096 || value > 4094 || (value & 1) != 0 {
+        if !(-4096..=4094).contains(&value) || (value & 1) != 0 {
             return Err(RelocationError::Overflow {
                 reloc_type: R_RISCV_BRANCH,
                 offset: offset as u64,
@@ -515,7 +515,7 @@ impl RiscV64RelocationHandler {
         offset: usize,
         value: i64,
     ) -> Result<(), RelocationError> {
-        if value < -1_048_576 || value > 1_048_574 || (value & 1) != 0 {
+        if !(-1_048_576..=1_048_574).contains(&value) || (value & 1) != 0 {
             return Err(RelocationError::Overflow {
                 reloc_type: R_RISCV_JAL,
                 offset: offset as u64,
@@ -545,7 +545,7 @@ impl RiscV64RelocationHandler {
         offset: usize,
         value: i64,
     ) -> Result<(), RelocationError> {
-        if value < -2_147_483_648 || value > 2_147_483_647 {
+        if !(-2_147_483_648..=2_147_483_647).contains(&value) {
             return Err(RelocationError::Overflow {
                 reloc_type: R_RISCV_CALL,
                 offset: offset as u64,
@@ -584,7 +584,7 @@ impl RiscV64RelocationHandler {
         offset: usize,
         value: i64,
     ) -> Result<(), RelocationError> {
-        if value < -2_147_483_648 || value > 2_147_483_647 {
+        if !(-2_147_483_648..=2_147_483_647).contains(&value) {
             return Err(RelocationError::Overflow {
                 reloc_type: R_RISCV_PCREL_HI20,
                 offset: offset as u64,
@@ -784,7 +784,7 @@ impl RiscV64RelocationHandler {
         pc: u64,
     ) -> Result<(), RelocationError> {
         let value = (got_entry_addr as i64).wrapping_sub(pc as i64);
-        if value < -2_147_483_648 || value > 2_147_483_647 {
+        if !(-2_147_483_648..=2_147_483_647).contains(&value) {
             return Err(RelocationError::Overflow {
                 reloc_type: R_RISCV_GOT_HI20,
                 offset: offset as u64,
@@ -809,7 +809,7 @@ impl RiscV64RelocationHandler {
         offset: usize,
         value: i64,
     ) -> Result<(), RelocationError> {
-        if value < -256 || value > 254 || (value & 1) != 0 {
+        if !(-256..=254).contains(&value) || (value & 1) != 0 {
             return Err(RelocationError::Overflow {
                 reloc_type: R_RISCV_RVC_BRANCH,
                 offset: offset as u64,
@@ -834,7 +834,7 @@ impl RiscV64RelocationHandler {
         offset: usize,
         value: i64,
     ) -> Result<(), RelocationError> {
-        if value < -2048 || value > 2046 || (value & 1) != 0 {
+        if !(-2048..=2046).contains(&value) || (value & 1) != 0 {
             return Err(RelocationError::Overflow {
                 reloc_type: R_RISCV_RVC_JUMP,
                 offset: offset as u64,
@@ -1134,14 +1134,12 @@ impl RiscV64RelocationHandler {
                     .wrapping_add(reloc.addend)
                     .wrapping_sub(pc as i64);
 
-                if value >= -1_048_576 && value <= 1_048_574 && (value & 1) == 0 {
-                    // Verify we have enough bytes and the first instruction
-                    // is actually an AUIPC
-                    if offset + 8 <= section_data.len() {
-                        let auipc_inst = read_u32_le(section_data, offset);
-                        if (auipc_inst & 0x7F) == OPCODE_AUIPC {
-                            return Some(RelaxationAction::ReplaceCallWithJal { offset });
-                        }
+                if (-1_048_576..=1_048_574).contains(&value) && (value & 1) == 0
+                    && offset + 8 <= section_data.len()
+                {
+                    let auipc_inst = read_u32_le(section_data, offset);
+                    if (auipc_inst & 0x7F) == OPCODE_AUIPC {
+                        return Some(RelaxationAction::ReplaceCallWithJal { offset });
                     }
                 }
                 None
@@ -1154,18 +1152,18 @@ impl RiscV64RelocationHandler {
                     .wrapping_sub(pc as i64);
 
                 // Direct addressing requires the value to fit in 32-bit range
-                if value >= -2_147_483_648 && value <= 2_147_483_647 {
-                    if offset + 8 <= section_data.len() {
-                        let auipc_inst = read_u32_le(section_data, offset);
-                        let next_inst = read_u32_le(section_data, offset + 4);
-                        // AUIPC followed by LD (opcode=0000011, funct3=011)
-                        if (auipc_inst & 0x7F) == OPCODE_AUIPC
-                            && (next_inst & 0x707F) == 0x3003
-                        {
-                            return Some(RelaxationAction::ReplaceAuipcLdWithAuipcAddi {
-                                offset,
-                            });
-                        }
+                if (-2_147_483_648..=2_147_483_647).contains(&value)
+                    && offset + 8 <= section_data.len()
+                {
+                    let auipc_inst = read_u32_le(section_data, offset);
+                    let next_inst = read_u32_le(section_data, offset + 4);
+                    // AUIPC followed by LD (opcode=0000011, funct3=011)
+                    if (auipc_inst & 0x7F) == OPCODE_AUIPC
+                        && (next_inst & 0x707F) == 0x3003
+                    {
+                        return Some(RelaxationAction::ReplaceAuipcLdWithAuipcAddi {
+                            offset,
+                        });
                     }
                 }
                 None

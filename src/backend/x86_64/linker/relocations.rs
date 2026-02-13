@@ -339,6 +339,12 @@ fn check_overflow_u8(
 /// | B | Image base address (carried in `symbol_value` for RELATIVE) |
 pub struct X86_64RelocationHandler;
 
+impl Default for X86_64RelocationHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl X86_64RelocationHandler {
     /// Creates a new x86-64 relocation handler instance.
     ///

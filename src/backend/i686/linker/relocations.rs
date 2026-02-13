@@ -159,6 +159,12 @@ pub const R_386_SIZE32: u32 = 38;
 /// ```
 pub struct I686RelocationHandler;
 
+impl Default for I686RelocationHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl I686RelocationHandler {
     /// Creates a new i686 relocation handler.
     ///
@@ -704,7 +710,7 @@ fn check_unsigned_overflow(
     offset: u64,
 ) -> Result<(), RelocationError> {
     const MAX: i128 = u32::MAX as i128;
-    if value < 0 || value > MAX {
+    if !(0..=MAX).contains(&value) {
         return Err(RelocationError::Overflow {
             reloc_type,
             offset,
@@ -729,7 +735,7 @@ fn check_signed_overflow(
 ) -> Result<(), RelocationError> {
     const MIN: i128 = i32::MIN as i128;
     const MAX: i128 = i32::MAX as i128;
-    if value < MIN || value > MAX {
+    if !(MIN..=MAX).contains(&value) {
         return Err(RelocationError::Overflow {
             reloc_type,
             offset,

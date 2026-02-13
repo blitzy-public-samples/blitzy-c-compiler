@@ -351,6 +351,12 @@ const IMM26_MASK: u32 = 0x03FF_FFFF;
 /// 5. OR the encoded bits with the masked instruction and write back.
 pub struct AArch64RelocationHandler;
 
+impl Default for AArch64RelocationHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AArch64RelocationHandler {
     /// Creates a new AArch64 relocation handler.
     pub fn new() -> Self {

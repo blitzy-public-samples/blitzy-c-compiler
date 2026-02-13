@@ -54,6 +54,13 @@ pub mod instructions;
 /// used during SSA construction (Phase 7, mem2reg).
 pub mod basic_block;
 
+/// IR function representation — [`IrFunction`] is the primary container for
+/// function-level IR in the BCC pipeline. Holds basic blocks (CFG), SSA value
+/// registry, calling convention, linkage, and GCC function attributes. The
+/// entry block is the alloca insertion point for the alloca-then-promote
+/// architecture (Phase 6 lowering → Phase 7 mem2reg).
+pub mod function;
+
 // ── Convenience re-exports ──────────────────────────────────────────────────
 // Re-export the most commonly used types so that other modules can write
 // `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.
@@ -65,3 +72,8 @@ pub use instructions::{BasicBlockId, BinOp, FCmpPredicate, ICmpPredicate, Instru
 
 // Re-export basic block types for convenient access.
 pub use basic_block::BasicBlock;
+
+// Re-export function-layer types for convenient access.
+pub use function::{
+    CallingConvention, FunctionAttributes, IrFunction, Linkage, Parameter, ValueInfo, Visibility,
+};

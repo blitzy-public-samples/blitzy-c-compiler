@@ -2,6 +2,12 @@
 //
 // Compile-time constant expression evaluation for the BCC compiler (Phase 5).
 //
+// Lint allowance: `result_unit_err` is suppressed because this module follows
+// the standard compiler pattern where errors are reported through the
+// diagnostic engine and `Result<_, ()>` is used purely for control flow
+// (propagating "evaluation failed" without carrying redundant error data).
+#![allow(clippy::result_unit_err)]
+//
 // Implements C11 §6.6 constant expression rules for contexts that demand
 // compile-time values: array sizes, case labels, `_Static_assert` conditions,
 // enum values, bitfield widths, and `_Alignas` arguments.
@@ -303,13 +309,16 @@ pub fn is_constant_expression(expr: &Expression) -> bool {
         }
 
         // Unary ops: constant for arithmetic operators, not for inc/dec
-        Expression::UnaryOp { op, operand, .. } => match op {
-            UnaryOperator::Plus
-            | UnaryOperator::Neg
-            | UnaryOperator::BitNot
-            | UnaryOperator::LogNot => is_constant_expression(operand),
-            _ => false,
-        },
+        Expression::UnaryOp {
+            op:
+                UnaryOperator::Plus
+                | UnaryOperator::Neg
+                | UnaryOperator::BitNot
+                | UnaryOperator::LogNot,
+            operand,
+            ..
+        } => is_constant_expression(operand),
+        Expression::UnaryOp { .. } => false,
 
         // Ternary: constant if all branches are constant
         Expression::Conditional {
@@ -1392,8 +1401,7 @@ fn eval_binary_op(
                 diag.warning(span, "shift count is negative or exceeds width of type");
                 0
             } else {
-                let res = truncate_signed(l << (r as u32), bits);
-                res
+                truncate_signed(l << (r as u32), bits)
             }
         }
         BinaryOperator::Shr => {

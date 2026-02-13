@@ -282,7 +282,7 @@ pub fn insert_implicit_conversion(
 /// * `target`      — compilation target for architecture-dependent decisions.
 /// * `diag`        — diagnostic engine for error/warning reporting.
 /// * `return_type` — the return type of the enclosing function, for
-///                   return-statement validation (passed through context).
+///   return-statement validation (passed through context).
 pub fn check_expression(
     expr: &Expression,
     scopes: &ScopeStack,
@@ -330,7 +330,7 @@ pub fn check_statement(
     target: &Target,
     diag: &mut DiagnosticEngine,
     return_type: Option<&CType>,
-) -> () {
+) {
     let mut ctx = TypeCheckContext {
         scopes,
         symbols,
@@ -600,7 +600,7 @@ fn check_identifier(
     let sym_id = match ctx.scopes.lookup(name) {
         Some(id) => id,
         None => {
-            ctx.diag.error(span, format!("use of undeclared identifier"));
+            ctx.diag.error(span, "use of undeclared identifier".to_string());
             return TypedExpression::error(span);
         }
     };
@@ -1094,7 +1094,7 @@ fn check_simple_assignment(
     if !is_modifiable_lvalue(lhs) {
         ctx.diag.error(
             span,
-            format!("expression is not assignable"),
+            "expression is not assignable".to_string(),
         );
         return TypedExpression::error(span);
     }
@@ -1132,7 +1132,7 @@ fn check_compound_assignment(
     if !is_modifiable_lvalue(lhs) {
         ctx.diag.error(
             span,
-            format!("expression is not assignable"),
+            "expression is not assignable".to_string(),
         );
         return TypedExpression::error(span);
     }
@@ -1264,7 +1264,7 @@ fn check_unary_op(
             if !is_modifiable_lvalue(&typed_operand) {
                 ctx.diag.error(
                     span,
-                    format!("operand of increment/decrement must be a modifiable lvalue"),
+                    "operand of increment/decrement must be a modifiable lvalue".to_string(),
                 );
                 return TypedExpression::error(span);
             }
@@ -1306,7 +1306,7 @@ fn check_address_of(
     if !typed_operand.is_lvalue && !typed_operand.ty.is_function() {
         ctx.diag.error(
             span,
-            format!("cannot take the address of an rvalue"),
+            "cannot take the address of an rvalue".to_string(),
         );
         return TypedExpression::error(span);
     }
@@ -1394,9 +1394,9 @@ fn check_conditional(
     // Determine the result type per C11 §6.5.15.
     let result_ty = if then_ty.is_arithmetic() && else_ty.is_arithmetic() {
         usual_arithmetic_conversion(&then_ty, &else_ty, ctx.target)
-    } else if type_builder::types_compatible(then_ty.canonical(), else_ty.canonical()) {
-        then_ty.clone()
-    } else if then_ty.is_pointer() && is_null_pointer_constant(&typed_else) {
+    } else if type_builder::types_compatible(then_ty.canonical(), else_ty.canonical())
+        || (then_ty.is_pointer() && is_null_pointer_constant(&typed_else))
+    {
         then_ty.clone()
     } else if else_ty.is_pointer() && is_null_pointer_constant(&typed_then) {
         else_ty.clone()
@@ -1725,6 +1725,7 @@ fn check_arrow_access(
 /// found in an anonymous struct/union sub-member, recursively resolves.
 ///
 /// Returns `Some(CType)` of the member's type, or `None` if not found.
+#[allow(clippy::only_used_in_recursion)]
 fn resolve_member(
     fields: &[FieldDef],
     member: Symbol,
@@ -2004,7 +2005,7 @@ fn check_comma(
     ctx: &mut TypeCheckContext<'_>,
 ) -> TypedExpression {
     if expressions.is_empty() {
-        ctx.diag.error(span, format!("empty comma expression"));
+        ctx.diag.error(span, "empty comma expression".to_string());
         return TypedExpression::error(span);
     }
 
@@ -2052,7 +2053,7 @@ fn check_generic(
                     if matched.is_some() {
                         ctx.diag.error(
                             span,
-                            format!("more than one compatible type in _Generic association"),
+                            "more than one compatible type in _Generic association".to_string(),
                         );
                     }
                     matched = Some(check_expr_inner(&assoc.expression, ctx));
@@ -2063,7 +2064,7 @@ fn check_generic(
                 if default_expr.is_some() {
                     ctx.diag.error(
                         span,
-                        format!("duplicate default in _Generic expression"),
+                        "duplicate default in _Generic expression".to_string(),
                     );
                 }
                 default_expr = Some(check_expr_inner(&assoc.expression, ctx));
@@ -2145,12 +2146,12 @@ fn validate_pointer_arithmetic_target(
         if p.is_void() {
             ctx.diag.warning(
                 span,
-                format!("pointer arithmetic on a pointer to void is a GNU extension"),
+                "pointer arithmetic on a pointer to void is a GNU extension".to_string(),
             );
         } else if p.is_function() {
             ctx.diag.error(
                 span,
-                format!("arithmetic on a pointer to function type"),
+                "arithmetic on a pointer to function type".to_string(),
             );
         } else if !p.is_complete() {
             ctx.diag.error(
@@ -2297,16 +2298,14 @@ fn resolve_type_name(type_name: &TypeName, ctx: &mut TypeCheckContext<'_>) -> CT
                 // Look up the typedef in the scope.
                 if let Some(sym_id) = ctx.scopes.lookup(*name) {
                     let entry = ctx.symbols.get(sym_id);
-                    if entry.storage_class == StorageClass::Typedef {
-                        resolved_from_typedef = Some(entry.ty.clone());
-                    } else {
-                        resolved_from_typedef = Some(entry.ty.clone());
-                    }
+                    // Whether the symbol is a typedef or another storage class,
+                    // use its type. Non-typedef cases are diagnosed elsewhere.
+                    resolved_from_typedef = Some(entry.ty.clone());
                 } else {
                     // Unknown typedef — emit diagnostic, fall back to int.
                     ctx.diag.error(
                         type_name.span,
-                        format!("unknown type name"),
+                        "unknown type name".to_string(),
                     );
                     resolved_from_typedef = Some(CType::Int { signed: true });
                 }
@@ -2573,7 +2572,7 @@ fn check_stmt_inner(stmt: &Statement, ctx: &mut TypeCheckContext<'_>) {
                     if ret_ty.is_void() {
                         ctx.diag.warning(
                             *span,
-                            format!("'return' with a value, in function returning void"),
+                            "'return' with a value, in function returning void".to_string(),
                         );
                     } else {
                         let is_null = is_null_pointer_constant(&typed_ret);
@@ -2593,7 +2592,7 @@ fn check_stmt_inner(stmt: &Statement, ctx: &mut TypeCheckContext<'_>) {
                     if !ret_ty.is_void() {
                         ctx.diag.warning(
                             *span,
-                            format!("non-void function should return a value"),
+                            "non-void function should return a value".to_string(),
                         );
                     }
                 }
@@ -2612,7 +2611,7 @@ fn check_stmt_inner(stmt: &Statement, ctx: &mut TypeCheckContext<'_>) {
             if !typed_val.is_constant || !typed_val.ty.is_integer() {
                 ctx.diag.error(
                     *span,
-                    format!("case label does not reduce to an integer constant"),
+                    "case label does not reduce to an integer constant".to_string(),
                 );
             }
             check_stmt_inner(body, ctx);
@@ -2630,13 +2629,13 @@ fn check_stmt_inner(stmt: &Statement, ctx: &mut TypeCheckContext<'_>) {
             if !typed_low.is_constant || !typed_low.ty.is_integer() {
                 ctx.diag.error(
                     *span,
-                    format!("case range low value does not reduce to an integer constant"),
+                    "case range low value does not reduce to an integer constant".to_string(),
                 );
             }
             if !typed_high.is_constant || !typed_high.ty.is_integer() {
                 ctx.diag.error(
                     *span,
-                    format!("case range high value does not reduce to an integer constant"),
+                    "case range high value does not reduce to an integer constant".to_string(),
                 );
             }
             check_stmt_inner(body, ctx);

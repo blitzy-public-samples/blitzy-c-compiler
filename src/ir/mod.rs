@@ -68,6 +68,12 @@ pub mod function;
 /// through optimisation passes to Phase 10 (code generation backend).
 pub mod module;
 
+/// IR builder API — [`IrBuilder`] provides typed instruction creation
+/// methods and insertion point tracking for constructing the intermediate
+/// representation.  Used by the AST-to-IR lowering phase to build IR
+/// functions one instruction at a time with automatic SSA numbering.
+pub mod builder;
+
 // ── Convenience re-exports ──────────────────────────────────────────────────
 // Re-export the most commonly used types so that other modules can write
 // `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.
@@ -87,3 +93,6 @@ pub use function::{
 
 // Re-export module-layer types for convenient access.
 pub use module::{Constant, FunctionDecl, GlobalVariable, InlineAsmBlock, IrModule, StringLiteral};
+
+// Re-export builder types for convenient access.
+pub use builder::{InsertPosition, IrBuilder};

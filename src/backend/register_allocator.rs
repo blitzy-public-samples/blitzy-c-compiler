@@ -64,7 +64,7 @@ use std::cmp::{Ordering, Reverse};
 use std::fmt;
 
 use crate::backend::traits::{
-    ArchCodegen, MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand, PhysReg,
+    ArchCodegen, MachineFunction, MachineInstr, MachineOperand, PhysReg,
     RegisterClass,
 };
 use crate::common::fx_hash::{fx_hash_map, fx_hash_set, FxHashMap, FxHashSet};
@@ -420,6 +420,7 @@ impl fmt::Display for RegisterSet {
 /// run allocation with [`allocate`](RegisterAllocator::allocate), and then
 /// apply spill code with
 /// [`generate_spill_code`](RegisterAllocator::generate_spill_code).
+#[allow(dead_code)]
 pub struct RegisterAllocator {
     /// The target architecture — used for stack alignment, pointer width, and
     /// register set construction.
@@ -479,6 +480,7 @@ pub struct RegisterAllocator {
 /// A pending spill or reload edit that is accumulated during the allocation
 /// phase and batch-applied during `generate_spill_code`.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct SpillEdit {
     /// The basic block index in `MachineFunction.blocks`.
     block_idx: usize,
@@ -787,8 +789,14 @@ impl RegisterAllocator {
             }
 
             // --- Step 3: Try to assign a free register ---
+            // Vector, StackPointer, and FramePointer register classes are treated
+            // as general-purpose for allocation purposes — the architecture backend
+            // constrains actual availability through the register sets it provides.
             let free_pool = match cur_class {
-                RegisterClass::GeneralPurpose => &mut free_int,
+                RegisterClass::GeneralPurpose
+                | RegisterClass::Vector
+                | RegisterClass::StackPointer
+                | RegisterClass::FramePointer => &mut free_int,
                 RegisterClass::FloatingPoint => &mut free_float,
             };
 
@@ -1035,7 +1043,10 @@ impl RegisterAllocator {
 
             if let Some(&interval_idx) = self.value_to_interval.get(&vid.0) {
                 let reg = match class {
-                    RegisterClass::GeneralPurpose => {
+                    RegisterClass::GeneralPurpose
+                    | RegisterClass::Vector
+                    | RegisterClass::StackPointer
+                    | RegisterClass::FramePointer => {
                         let r = self.arg_regs_int.get(int_arg_idx).copied();
                         int_arg_idx += 1;
                         r
@@ -1055,7 +1066,10 @@ impl RegisterAllocator {
             } else {
                 // Parameter has no live interval (unused parameter) — skip
                 match class {
-                    RegisterClass::GeneralPurpose => int_arg_idx += 1,
+                    RegisterClass::GeneralPurpose
+                    | RegisterClass::Vector
+                    | RegisterClass::StackPointer
+                    | RegisterClass::FramePointer => int_arg_idx += 1,
                     RegisterClass::FloatingPoint => float_arg_idx += 1,
                 }
             }
@@ -1074,6 +1088,10 @@ impl RegisterAllocator {
     }
 
     /// Return a physical register to the appropriate free pool.
+    ///
+    /// Vector, StackPointer, and FramePointer register classes are routed to the
+    /// integer pool since the architecture backends provide their availability
+    /// constraints through the register sets they expose.
     fn return_reg(
         reg: PhysReg,
         class: RegisterClass,
@@ -1081,7 +1099,10 @@ impl RegisterAllocator {
         free_float: &mut Vec<PhysReg>,
     ) {
         match class {
-            RegisterClass::GeneralPurpose => {
+            RegisterClass::GeneralPurpose
+            | RegisterClass::Vector
+            | RegisterClass::StackPointer
+            | RegisterClass::FramePointer => {
                 if !free_int.contains(&reg) {
                     free_int.push(reg);
                 }
@@ -1103,7 +1124,10 @@ impl RegisterAllocator {
         free_float: &mut Vec<PhysReg>,
     ) {
         let pool = match class {
-            RegisterClass::GeneralPurpose => free_int,
+            RegisterClass::GeneralPurpose
+            | RegisterClass::Vector
+            | RegisterClass::StackPointer
+            | RegisterClass::FramePointer => free_int,
             RegisterClass::FloatingPoint => free_float,
         };
         if let Some(pos) = pool.iter().position(|&r| r == reg) {

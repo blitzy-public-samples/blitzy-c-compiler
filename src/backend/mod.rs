@@ -64,3 +64,9 @@ pub mod aarch64;
 /// instruction selection, built-in assembler, and built-in linker for the
 /// RISC-V 64 target with linker relaxation support.
 pub mod riscv64;
+
+/// Linear scan register allocator — assigns physical machine registers to
+/// SSA virtual registers across all four target architectures. Computes live
+/// intervals, performs greedy allocation with furthest-next-use spilling, and
+/// generates spill/reload pseudo-instructions for the prologue/epilogue pass.
+pub mod register_allocator;

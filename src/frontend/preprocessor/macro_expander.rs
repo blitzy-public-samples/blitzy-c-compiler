@@ -111,6 +111,7 @@ impl TokenStream {
 
     /// Advances the cursor by one position and returns the token at the
     /// previous position, or `None` if at end-of-stream.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<PaintedToken> {
         if self.pos < self.tokens.len() {
             let pt = self.tokens[self.pos].clone();
@@ -194,6 +195,12 @@ impl TokenStream {
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.tokens.len()
+    }
+
+    /// Returns `true` if the token stream contains no tokens.
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
     }
 
     /// Replaces the remaining tokens from the current position with the
@@ -659,7 +666,7 @@ fn handle_gcc_comma_deletion(
                             let is_va = s == va_args_sym
                                 || extended_params
                                     .last()
-                                    .map_or(false, |last| *last == s && s != va_args_sym);
+                                    .is_some_and(|last| *last == s && s != va_args_sym);
                             if is_va {
                                 // Non-empty case: keep comma, skip `##`
                                 // (and interstitial whitespace), keep
@@ -709,7 +716,7 @@ fn handle_gcc_comma_deletion(
                         let is_va = s == va_args_sym
                             || extended_params
                                 .last()
-                                .map_or(false, |last| *last == s && s != va_args_sym);
+                                .is_some_and(|last| *last == s && s != va_args_sym);
                         if is_va {
                             // GCC comma deletion: skip comma, ##, whitespace,
                             // and __VA_ARGS__ entirely.

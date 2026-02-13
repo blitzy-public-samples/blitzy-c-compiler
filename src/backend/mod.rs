@@ -23,6 +23,14 @@
 //! BCC includes its own assembler and linker — no external toolchain components
 //! (`as`, `ld`, `gcc`, `llvm-mc`, `lld`) are invoked during compilation.
 
+/// `ArchCodegen` trait definition — the central polymorphism point that enables
+/// uniform code generation across x86-64, i686, AArch64, and RISC-V 64.
+/// Also defines machine IR types (`MachineFunction`, `MachineBasicBlock`,
+/// `MachineInstr`, `MachineOperand`), ABI classification (`ParamClass`),
+/// register metadata (`PhysReg`, `RegisterClass`, `RegisterInfo`),
+/// relocation descriptors, and code generation configuration.
+pub mod traits;
+
 /// DWARF v4 debug information generation — `.debug_info`, `.debug_abbrev`,
 /// `.debug_line`, and `.debug_str` section builders.
 pub mod dwarf;

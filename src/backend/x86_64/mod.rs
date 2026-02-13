@@ -21,3 +21,8 @@
 /// Built-in x86-64 assembler — instruction encoding, ModR/M, SIB, REX/VEX
 /// prefixes, and ELF relocation recording for the x86-64 target.
 pub mod assembler;
+
+/// Built-in x86-64 ELF linker producing ET_EXEC and ET_DYN binaries
+/// with full GOT/PLT relocation support for PIC code and GOTPCRELX
+/// relaxation optimization.
+pub mod linker;

@@ -353,7 +353,10 @@ impl ArchRelocationHandler for I686RelocationHandler {
         }
 
         // Bounds check: ensure we can read/write 4 bytes at the offset.
-        if offset.checked_add(4).map_or(true, |end| end > output_data.len()) {
+        if offset
+            .checked_add(4)
+            .map_or(true, |end| end > output_data.len())
+        {
             return Err(RelocationError::InvalidOffset {
                 offset: reloc.offset,
                 section_size: output_data.len() as u64,
@@ -728,11 +731,7 @@ fn check_unsigned_overflow(
 /// `-2^31..=2^31 - 1`. Overflow typically indicates that the symbol is too
 /// far from the relocation site for a 32-bit displacement.
 #[inline]
-fn check_signed_overflow(
-    value: i128,
-    reloc_type: u32,
-    offset: u64,
-) -> Result<(), RelocationError> {
+fn check_signed_overflow(value: i128, reloc_type: u32, offset: u64) -> Result<(), RelocationError> {
     const MIN: i128 = i32::MIN as i128;
     const MAX: i128 = i32::MAX as i128;
     if !(MIN..=MAX).contains(&value) {
@@ -755,12 +754,7 @@ mod tests {
     use super::*;
 
     /// Constructs a test RelocationEntry with the given parameters.
-    fn make_reloc(
-        reloc_type: u32,
-        offset: u64,
-        symbol_value: u64,
-        addend: i64,
-    ) -> RelocationEntry {
+    fn make_reloc(reloc_type: u32, offset: u64, symbol_value: u64, addend: i64) -> RelocationEntry {
         RelocationEntry {
             offset,
             reloc_type,
@@ -776,9 +770,7 @@ mod tests {
         let handler = I686RelocationHandler::new();
         let mut data = [0xAA; 8];
         let reloc = make_reloc(R_386_NONE, 2, 0x1000, 0);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         // Data must remain unchanged.
         assert_eq!(data, [0xAA; 8]);
     }
@@ -789,9 +781,7 @@ mod tests {
         let mut data = [0u8; 8];
         // S = 0x0804_8000, A = 0x10 (explicit addend)
         let reloc = make_reloc(R_386_32, 0, 0x0804_8000, 0x10);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         // Expected: 0x0804_8010
         let result = read_le32(&data, 0);
         assert_eq!(result, 0x0804_8010);
@@ -805,9 +795,7 @@ mod tests {
         write_le32(&mut data, 0, 0x20);
         // Explicit addend = 0, so implicit addend (0x20) is used.
         let reloc = make_reloc(R_386_32, 0, 0x1000, 0);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         // S + A = 0x1000 + 0x20 = 0x1020
         assert_eq!(read_le32(&data, 0), 0x1020);
     }
@@ -831,9 +819,7 @@ mod tests {
         // S = 0x100, A = -4, P = 0 (offset in buffer)
         // value = 0x100 + (-4) - 0 = 0xFC = 252
         let reloc = make_reloc(R_386_PC32, 0, 0x100, -4);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         assert_eq!(read_le32(&data, 0), 0xFC);
     }
 
@@ -845,10 +831,7 @@ mod tests {
         // value = 0x3000 + 0 - 0x2000 = 0x1000
         let reloc = make_reloc(R_386_GOTOFF, 0, 0x3000, 0x00);
         // Need non-zero explicit addend to avoid reading implicit from data.
-        let reloc2 = RelocationEntry {
-            addend: 0,
-            ..reloc
-        };
+        let reloc2 = RelocationEntry { addend: 0, ..reloc };
         // Since addend = 0, implicit addend = read_le32(&data, 0) = 0.
         handler
             .apply_relocation(&reloc2, &mut data, 0x2000, 0)
@@ -874,9 +857,7 @@ mod tests {
         let handler = I686RelocationHandler::new();
         let mut data = [0xBB; 8];
         let reloc = make_reloc(R_386_COPY, 0, 0x1234, 0);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         // Data unchanged — COPY is runtime-only.
         assert_eq!(data, [0xBB; 8]);
     }
@@ -1080,9 +1061,7 @@ mod tests {
         let handler = I686RelocationHandler::new();
         let mut data = [0u8; 8];
         let reloc = make_reloc(R_386_GLOB_DAT, 0, 0xCAFE_BABE, 1);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         // GLOB_DAT writes just S (symbol value), addend is not used.
         assert_eq!(read_le32(&data, 0), 0xCAFE_BABE);
     }
@@ -1092,9 +1071,7 @@ mod tests {
         let handler = I686RelocationHandler::new();
         let mut data = [0u8; 8];
         let reloc = make_reloc(R_386_JMP_SLOT, 0, 0xDEAD_BEEF, 1);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         assert_eq!(read_le32(&data, 0), 0xDEAD_BEEF);
     }
 
@@ -1105,9 +1082,7 @@ mod tests {
         // B = symbol_value = 0x0800_0000, A = 0x100
         // value = B + A = 0x0800_0100
         let reloc = make_reloc(R_386_RELATIVE, 0, 0x0800_0000, 0x100);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         assert_eq!(read_le32(&data, 0), 0x0800_0100);
     }
 
@@ -1132,9 +1107,7 @@ mod tests {
         // S (PLT entry address) = 0x4020, A = 0 (implicit, data is zeroed)
         // value = S + A = 0x4020 + 0 = 0x4020
         let reloc = make_reloc(R_386_32PLT, 0, 0x4020, 0);
-        handler
-            .apply_relocation(&reloc, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         assert_eq!(read_le32(&data, 0), 0x4020);
     }
 }

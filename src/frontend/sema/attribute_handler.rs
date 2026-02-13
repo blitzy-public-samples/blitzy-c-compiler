@@ -185,9 +185,10 @@ pub fn canonicalize_name(name: &str) -> &str {
 fn is_valid_target(canonical_name: &str, target: AttributeTargetKind) -> bool {
     match canonical_name {
         // Function-only attributes
-        "noreturn" | "noinline" | "always_inline" | "cold" | "hot" | "format"
-        | "format_arg" | "malloc" | "pure" | "const" | "warn_unused_result"
-        | "constructor" | "destructor" => matches!(target, AttributeTargetKind::Function),
+        "noreturn" | "noinline" | "always_inline" | "cold" | "hot" | "format" | "format_arg"
+        | "malloc" | "pure" | "const" | "warn_unused_result" | "constructor" | "destructor" => {
+            matches!(target, AttributeTargetKind::Function)
+        }
 
         // Function and variable attributes
         "used" | "unused" | "weak" | "section" | "visibility" | "deprecated" => matches!(
@@ -311,9 +312,7 @@ pub fn validate_attributes(
             "malloc" => validate_malloc(&attr.args, attr.span, diagnostics),
             "pure" => validate_pure(&attr.args, attr.span, diagnostics),
             "const" => validate_const_attr(&attr.args, attr.span, diagnostics),
-            "warn_unused_result" => {
-                validate_warn_unused_result(&attr.args, attr.span, diagnostics)
-            }
+            "warn_unused_result" => validate_warn_unused_result(&attr.args, attr.span, diagnostics),
             "fallthrough" => validate_fallthrough(&attr.args, attr.span, diagnostics),
             _ => {
                 diagnostics.warning(
@@ -451,10 +450,7 @@ fn validate_aligned(
             if *n <= 0 {
                 diagnostics.error(
                     span,
-                    format!(
-                        "requested alignment {} is not a positive power of 2",
-                        n
-                    ),
+                    format!("requested alignment {} is not a positive power of 2", n),
                 );
                 return None;
             }
@@ -462,10 +458,7 @@ fn validate_aligned(
             if !is_power_of_two(alignment) {
                 diagnostics.error(
                     span,
-                    format!(
-                        "requested alignment {} is not a power of 2",
-                        alignment
-                    ),
+                    format!("requested alignment {} is not a power of 2", alignment),
                 );
                 return None;
             }
@@ -543,10 +536,7 @@ fn validate_section(
             let name = match std::str::from_utf8(bytes) {
                 Ok(s) => s.to_string(),
                 Err(_) => {
-                    diagnostics.error(
-                        span,
-                        "section name must be a valid UTF-8 string",
-                    );
+                    diagnostics.error(span, "section name must be a valid UTF-8 string");
                     return None;
                 }
             };
@@ -557,10 +547,7 @@ fn validate_section(
             }
 
             if name.contains('\0') {
-                diagnostics.error(
-                    span,
-                    "section name must not contain NUL characters",
-                );
+                diagnostics.error(span, "section name must not contain NUL characters");
                 return None;
             }
 
@@ -740,21 +727,14 @@ fn validate_visibility(
     // The visibility argument can be either a string literal or an identifier
     // depending on parser behavior. Handle both forms.
     let vis_str: String = match &args[0] {
-        AttributeArg::String(bytes) => {
-            match std::str::from_utf8(bytes) {
-                Ok(s) => s.to_string(),
-                Err(_) => {
-                    diagnostics.error(
-                        span,
-                        "visibility argument must be a valid UTF-8 string",
-                    );
-                    return None;
-                }
+        AttributeArg::String(bytes) => match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                diagnostics.error(span, "visibility argument must be a valid UTF-8 string");
+                return None;
             }
-        }
-        AttributeArg::Identifier(sym) => {
-            interner.resolve(*sym).to_string()
-        }
+        },
+        AttributeArg::Identifier(sym) => interner.resolve(*sym).to_string(),
         _ => {
             diagnostics.error(
                 span,
@@ -807,10 +787,7 @@ fn validate_deprecated(
             let msg = match std::str::from_utf8(bytes) {
                 Ok(s) => s.to_string(),
                 Err(_) => {
-                    diagnostics.error(
-                        span,
-                        "deprecation message must be a valid UTF-8 string",
-                    );
+                    diagnostics.error(span, "deprecation message must be a valid UTF-8 string");
                     return None;
                 }
             };
@@ -958,10 +935,7 @@ fn validate_format(
             if *n < 1 {
                 diagnostics.error(
                     span,
-                    format!(
-                        "format string index {} must be a positive integer",
-                        n
-                    ),
+                    format!("format string index {} must be a positive integer", n),
                 );
                 return None;
             }
@@ -1187,9 +1161,7 @@ pub fn propagate_to_symbol(attrs: &[ValidatedAttribute], symbol: &mut SymbolEntr
             }
             ValidatedAttribute::Deprecated(msg) => {
                 // Store the deprecation message; empty string if no message.
-                symbol.attributes.is_deprecated = Some(
-                    msg.as_deref().unwrap_or("").to_string(),
-                );
+                symbol.attributes.is_deprecated = Some(msg.as_deref().unwrap_or("").to_string());
             }
             ValidatedAttribute::Noreturn => {
                 symbol.attributes.is_noreturn = true;
@@ -1316,8 +1288,12 @@ pub fn check_attribute_conflicts(
     span: Span,
     diagnostics: &mut DiagnosticEngine,
 ) {
-    let has_noinline = attrs.iter().any(|a| matches!(a, ValidatedAttribute::Noinline));
-    let has_always_inline = attrs.iter().any(|a| matches!(a, ValidatedAttribute::AlwaysInline));
+    let has_noinline = attrs
+        .iter()
+        .any(|a| matches!(a, ValidatedAttribute::Noinline));
+    let has_always_inline = attrs
+        .iter()
+        .any(|a| matches!(a, ValidatedAttribute::AlwaysInline));
     let has_cold = attrs.iter().any(|a| matches!(a, ValidatedAttribute::Cold));
     let has_hot = attrs.iter().any(|a| matches!(a, ValidatedAttribute::Hot));
     let has_pure = attrs.iter().any(|a| matches!(a, ValidatedAttribute::Pure));

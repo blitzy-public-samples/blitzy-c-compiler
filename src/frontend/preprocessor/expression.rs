@@ -193,7 +193,7 @@ fn resolve_defined_operators(
                 if i < tokens.len() && matches!(tokens[i].kind, TokenKind::LeftParen) {
                     // `defined ( IDENT )`
                     i += 1; // skip '('
-                    // Skip whitespace.
+                            // Skip whitespace.
                     while i < tokens.len() && matches!(tokens[i].kind, TokenKind::Whitespace) {
                         i += 1;
                     }
@@ -202,28 +202,20 @@ fn resolve_defined_operators(
                             let is_def = macros.contains_key(macro_sym);
                             result.push(make_int_token(if is_def { 1 } else { 0 }, span));
                             i += 1; // skip identifier
-                            // Skip whitespace.
+                                    // Skip whitespace.
                             while i < tokens.len()
                                 && matches!(tokens[i].kind, TokenKind::Whitespace)
                             {
                                 i += 1;
                             }
                             // Expect ')'.
-                            if i < tokens.len()
-                                && matches!(tokens[i].kind, TokenKind::RightParen)
-                            {
+                            if i < tokens.len() && matches!(tokens[i].kind, TokenKind::RightParen) {
                                 i += 1; // skip ')'
                             } else {
-                                diag.error(
-                                    span,
-                                    "missing ')' after \"defined\" operator",
-                                );
+                                diag.error(span, "missing ')' after \"defined\" operator");
                             }
                         } else {
-                            diag.error(
-                                tokens[i].span,
-                                "expected identifier after \"defined(\"",
-                            );
+                            diag.error(tokens[i].span, "expected identifier after \"defined(\"");
                             result.push(make_int_token(0, span));
                             i += 1;
                         }
@@ -238,10 +230,7 @@ fn resolve_defined_operators(
                         result.push(make_int_token(if is_def { 1 } else { 0 }, span));
                         i += 1; // skip identifier
                     } else {
-                        diag.error(
-                            tokens[i].span,
-                            "expected identifier after \"defined\"",
-                        );
+                        diag.error(tokens[i].span, "expected identifier after \"defined\"");
                         result.push(make_int_token(0, span));
                     }
                 } else {
@@ -737,10 +726,8 @@ impl<'a> ExprParser<'a> {
             _ => {
                 if !suppress {
                     let span = self.peek_span();
-                    self.diag.error(
-                        span,
-                        "unexpected token in preprocessor expression",
-                    );
+                    self.diag
+                        .error(span, "unexpected token in preprocessor expression");
                 }
                 // Skip the offending token to attempt recovery.
                 self.advance();
@@ -862,7 +849,10 @@ fn apply_shift(
     let shift = b.val;
     // Validate shift amount.
     if !(0..64).contains(&shift) {
-        diag.warning(span, "shift amount out of range for preprocessor expression");
+        diag.warning(
+            span,
+            "shift amount out of range for preprocessor expression",
+        );
         return PPValue {
             val: 0,
             is_unsigned: unsigned,

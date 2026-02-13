@@ -691,12 +691,7 @@ impl IrFunction {
         self.basic_blocks
             .iter()
             .find(|bb| bb.id == id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "BasicBlock {:?} not found in function '{}'",
-                    id, self.name
-                )
-            })
+            .unwrap_or_else(|| panic!("BasicBlock {:?} not found in function '{}'", id, self.name))
     }
 
     /// Returns a mutable reference to the basic block with the given ID.
@@ -709,12 +704,7 @@ impl IrFunction {
         self.basic_blocks
             .iter_mut()
             .find(|bb| bb.id == id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "BasicBlock {:?} not found in function '{}'",
-                    id, func_name
-                )
-            })
+            .unwrap_or_else(|| panic!("BasicBlock {:?} not found in function '{}'", id, func_name))
     }
 
     /// Returns an immutable reference to the entry basic block.
@@ -822,11 +812,7 @@ impl IrFunction {
     pub fn new_value(&mut self, ty: IrType, name: Option<String>) -> ValueId {
         let id = ValueId(self.next_value_id);
         self.next_value_id += 1;
-        self.local_values.push(ValueInfo {
-            id,
-            ty,
-            name,
-        });
+        self.local_values.push(ValueInfo { id, ty, name });
         id
     }
 

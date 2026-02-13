@@ -71,10 +71,7 @@ const BCC_VERSION: &str = "1.0.0";
 /// such as `__STDC__` → `1`, `__SIZEOF_INT__` → `4`, etc.
 #[inline]
 fn int_token(value: u128, suffix: IntegerSuffix) -> Token {
-    Token::new(
-        TokenKind::IntegerLiteral { value, suffix },
-        Span::DUMMY,
-    )
+    Token::new(TokenKind::IntegerLiteral { value, suffix }, Span::DUMMY)
 }
 
 /// Creates a string literal token at a dummy source location.
@@ -567,10 +564,30 @@ fn register_type_limit_macros(pp: &mut Preprocessor, target: &Target) {
 /// | AArch64    | ✓ | ✓ | ✓ | ✓ | LDXR/STXR, LDXP/STXP |
 /// | RISC-V 64  | ✓ | ✓ | ✓ | ✓ | LR/SC instructions |
 fn register_gcc_sync_macros(pp: &mut Preprocessor) {
-    define_int(pp, "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1", 1, IntegerSuffix::None);
-    define_int(pp, "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2", 1, IntegerSuffix::None);
-    define_int(pp, "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4", 1, IntegerSuffix::None);
-    define_int(pp, "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8", 1, IntegerSuffix::None);
+    define_int(
+        pp,
+        "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1",
+        1,
+        IntegerSuffix::None,
+    );
+    define_int(
+        pp,
+        "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2",
+        1,
+        IntegerSuffix::None,
+    );
+    define_int(
+        pp,
+        "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4",
+        1,
+        IntegerSuffix::None,
+    );
+    define_int(
+        pp,
+        "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8",
+        1,
+        IntegerSuffix::None,
+    );
 }
 
 /// Registers compiler version identification macros.
@@ -674,16 +691,14 @@ mod tests {
 
     #[test]
     fn parse_suffix_ll() {
-        let (val, suf) =
-            parse_integer_with_suffix("9223372036854775807LL").unwrap();
+        let (val, suf) = parse_integer_with_suffix("9223372036854775807LL").unwrap();
         assert_eq!(val, 9_223_372_036_854_775_807);
         assert_eq!(suf, IntegerSuffix::LL);
     }
 
     #[test]
     fn parse_suffix_ull() {
-        let (val, suf) =
-            parse_integer_with_suffix("18446744073709551615ULL").unwrap();
+        let (val, suf) = parse_integer_with_suffix("18446744073709551615ULL").unwrap();
         assert_eq!(val, 18_446_744_073_709_551_615);
         assert_eq!(suf, IntegerSuffix::ULL);
     }

@@ -65,23 +65,21 @@ use crate::backend::elf_writer_common::{
     ELFOSABI_NONE, EM_AARCH64, ET_DYN, ET_EXEC, PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO,
     PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_PHDR, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHN_UNDEF,
     SHT_DYNAMIC, SHT_DYNSYM, SHT_HASH, SHT_NOBITS, SHT_NOTE, SHT_NULL, SHT_PROGBITS, SHT_RELA,
-    SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL, STB_WEAK, STV_DEFAULT, STV_HIDDEN,
-    STV_PROTECTED, STT_FUNC, STT_NOTYPE, STT_OBJECT,
+    SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_FUNC, STT_NOTYPE, STT_OBJECT,
+    STV_DEFAULT, STV_HIDDEN, STV_PROTECTED,
 };
 use crate::backend::linker_common::dynamic::{
     DynamicLayout, DynamicRelocation, DynamicSectionBuilder, DynamicSymbolTable, GotBuilder,
     GotEntry, PltBuilder, PltEntry,
 };
 use crate::backend::linker_common::linker_script::{LinkerScript, OutputType, SegmentRule};
-use crate::backend::linker_common::relocation::{
-    RelocationClassification, RelocationProcessor,
-};
+use crate::backend::linker_common::relocation::{RelocationClassification, RelocationProcessor};
 use crate::backend::linker_common::section_merger::{
     InputRelocation, InputSection, OutputSection, SectionMerger,
 };
 use crate::backend::linker_common::symbol_resolver::{
-    InputSymbol, LinkError, ResolvedSymbols, SymbolBinding, SymbolResolver,
-    SymbolType, SymbolVisibility,
+    InputSymbol, LinkError, ResolvedSymbols, SymbolBinding, SymbolResolver, SymbolType,
+    SymbolVisibility,
 };
 use crate::common::diagnostics::{DiagnosticEngine, Span};
 use crate::common::fx_hash::{fx_hash_map_with_capacity, FxHashMap, FxHashSet};
@@ -302,12 +300,7 @@ impl AArch64Linker {
         let mut plt_address: u64 = 0;
 
         if needs_dynamic {
-            self.add_dynamic_sections(
-                &mut merger,
-                &classification,
-                &resolved,
-                &mut diag,
-            );
+            self.add_dynamic_sections(&mut merger, &classification, &resolved, &mut diag);
         }
 
         // Final layout computation: re-assign addresses and file offsets.
@@ -324,11 +317,7 @@ impl AArch64Linker {
             got_address = find_section_addr(merger.output_sections(), ".got").unwrap_or(0);
             plt_address = find_section_addr(merger.output_sections(), ".plt").unwrap_or(0);
 
-            self.populate_dynamic_sections(
-                &mut merger,
-                &classification,
-                &resolved,
-            );
+            self.populate_dynamic_sections(&mut merger, &classification, &resolved);
         }
 
         // =================================================================
@@ -343,7 +332,10 @@ impl AArch64Linker {
             plt_address,
         ) {
             for err in &reloc_errors {
-                diag.error(Span::DUMMY, format!("AArch64 linker: relocation error: {}", err));
+                diag.error(
+                    Span::DUMMY,
+                    format!("AArch64 linker: relocation error: {}", err),
+                );
             }
             // Return the first relocation error wrapped in a LinkError.
             return Err(LinkError::UndefinedSymbol {
@@ -373,7 +365,8 @@ impl AArch64Linker {
         let program_headers = linker_script.compute_segment_layout(final_sections);
 
         // Resolve entry point address.
-        let entry_address = self.resolve_entry_point(&resolved, &linker_script, base_address, &mut diag);
+        let entry_address =
+            self.resolve_entry_point(&resolved, &linker_script, base_address, &mut diag);
 
         // =================================================================
         // Phase 7: Write the final ELF binary
@@ -433,7 +426,10 @@ impl AArch64Linker {
         let undef_syms = resolver.undefined_symbols();
         if !undef_syms.is_empty() {
             for sym_name in &undef_syms {
-                diag.error(Span::DUMMY, format!("AArch64 linker: undefined symbol: `{}`", sym_name));
+                diag.error(
+                    Span::DUMMY,
+                    format!("AArch64 linker: undefined symbol: `{}`", sym_name),
+                );
             }
             resolver.emit_diagnostics(diag);
             return Err(LinkError::UndefinedSymbol {
@@ -483,7 +479,11 @@ impl AArch64Linker {
 
         // Add symbols needing GOT/PLT entries.
         let mut added_symbols: FxHashSet<String> = FxHashSet::default();
-        for sym_name in classification.got_entries.iter().chain(classification.plt_entries.iter()) {
+        for sym_name in classification
+            .got_entries
+            .iter()
+            .chain(classification.plt_entries.iter())
+        {
             if added_symbols.contains(sym_name) {
                 continue;
             }
@@ -712,7 +712,8 @@ impl AArch64Linker {
         for (plt_idx, sym_name) in classification.plt_entries.iter().enumerate() {
             // For lazy binding, the initial GOT entry points back to the PLT
             // push instruction so the dynamic linker is invoked on first call.
-            let plt_stub_addr = plt_addr + (PLT0_SIZE as u64) + (plt_idx as u64) * (PLTN_SIZE as u64);
+            let plt_stub_addr =
+                plt_addr + (PLT0_SIZE as u64) + (plt_idx as u64) * (PLTN_SIZE as u64);
             let got_entry = GotEntry {
                 symbol_name: sym_name.clone(),
                 offset: 0,
@@ -735,8 +736,7 @@ impl AArch64Linker {
         // Every PLT symbol should also be tracked.
         for (sym_name, _plt_addr) in plt_symbol_addrs.iter() {
             debug_assert!(
-                !got_symbol_addrs.contains_key(sym_name)
-                    || got_symbol_addrs.contains_key(sym_name),
+                !got_symbol_addrs.contains_key(sym_name) || got_symbol_addrs.contains_key(sym_name),
                 "PLT/GOT consistency check for symbol '{}'",
                 sym_name,
             );
@@ -748,10 +748,7 @@ impl AArch64Linker {
         let plt_data = plt_builder.build_plt(&Target::AArch64);
 
         // --- Build RELA sections ---
-        let rela_dyn_data = build_rela_dyn(
-            &classification.got_entries,
-            got_addr,
-        );
+        let rela_dyn_data = build_rela_dyn(&classification.got_entries, got_addr);
         let rela_plt_data = build_rela_plt(
             &classification.plt_entries,
             got_plt_addr,
@@ -838,15 +835,21 @@ impl AArch64Linker {
 
         // Fall back to _start.
         if let Some(addr) = resolved.get_symbol_value("_start") {
-            diag.warning(Span::DUMMY, format!(
-                "AArch64 linker: entry symbol '{}' not found, using '_start' at {:#x}",
-                self.config.entry_symbol, addr
-            ));
+            diag.warning(
+                Span::DUMMY,
+                format!(
+                    "AArch64 linker: entry symbol '{}' not found, using '_start' at {:#x}",
+                    self.config.entry_symbol, addr
+                ),
+            );
             return addr;
         }
 
         // Last resort: base address.
-        diag.warning(Span::DUMMY, "AArch64 linker: no entry point symbol found; using base address");
+        diag.warning(
+            Span::DUMMY,
+            "AArch64 linker: no entry point symbol found; using base address",
+        );
         base_address
     }
 
@@ -974,11 +977,7 @@ impl AArch64Linker {
 
         // Build AArch64-specific program headers using the segment rules
         // from the linker script, then add them to the writer.
-        self.build_and_add_program_headers(
-            &mut writer,
-            output_sections,
-            program_headers,
-        );
+        self.build_and_add_program_headers(&mut writer, output_sections, program_headers);
 
         writer.write()
     }
@@ -1053,9 +1052,7 @@ impl AArch64Linker {
             // PT_INTERP: points to the .interp section containing the
             // dynamic linker path (/lib/ld-linux-aarch64.so.1).
             if !has_interp {
-                if let Some(interp_section) =
-                    output_sections.iter().find(|s| s.name == ".interp")
-                {
+                if let Some(interp_section) = output_sections.iter().find(|s| s.name == ".interp") {
                     writer.add_program_header(ProgramHeader {
                         p_type: PT_INTERP,
                         p_flags: PF_R,
@@ -1074,7 +1071,9 @@ impl AArch64Linker {
             if !has_gnu_relro {
                 if let (Some(dyn_section), Some(got_section)) = (
                     output_sections.iter().find(|s| s.name == ".dynamic"),
-                    output_sections.iter().find(|s| s.name == ".got" || s.name == ".got.plt"),
+                    output_sections
+                        .iter()
+                        .find(|s| s.name == ".got" || s.name == ".got.plt"),
                 ) {
                     let relro_start = dyn_section.addr.min(got_section.addr);
                     let relro_end = (dyn_section.addr + dyn_section.size)
@@ -1095,9 +1094,7 @@ impl AArch64Linker {
             }
 
             // PT_DYNAMIC: points to the .dynamic section.
-            if let Some(dyn_section) =
-                output_sections.iter().find(|s| s.name == ".dynamic")
-            {
+            if let Some(dyn_section) = output_sections.iter().find(|s| s.name == ".dynamic") {
                 writer.add_program_header(ProgramHeader {
                     p_type: PT_DYNAMIC,
                     p_flags: PF_R | PF_W,
@@ -1234,11 +1231,7 @@ fn build_rela_dyn(got_symbol_names: &[String], got_addr: u64) -> Vec<u8> {
 ///
 /// Each PLT function entry in `.got.plt` gets an `R_AARCH64_JUMP_SLOT`
 /// relocation for lazy binding by the dynamic linker.
-fn build_rela_plt(
-    plt_symbol_names: &[String],
-    got_plt_addr: u64,
-    got_sym_count: usize,
-) -> Vec<u8> {
+fn build_rela_plt(plt_symbol_names: &[String], got_plt_addr: u64, got_sym_count: usize) -> Vec<u8> {
     let got_plt_reserved = 3u64; // First 3 entries are reserved
     let mut data = Vec::with_capacity(plt_symbol_names.len() * RELA64_ENTRY_SIZE as usize);
     for (idx, _sym_name) in plt_symbol_names.iter().enumerate() {
@@ -1494,7 +1487,11 @@ mod tests {
     /// Verify RELA PLT entry serialization produces correct size.
     #[test]
     fn test_rela_plt_size() {
-        let sym_names = vec!["func1".to_string(), "func2".to_string(), "func3".to_string()];
+        let sym_names = vec![
+            "func1".to_string(),
+            "func2".to_string(),
+            "func3".to_string(),
+        ];
         let data = build_rela_plt(&sym_names, 0x2000, 2);
         // Each RELA entry is 24 bytes, we have 3 entries
         assert_eq!(data.len(), 72);

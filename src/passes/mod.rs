@@ -20,9 +20,9 @@
 // Submodule declarations — each pass is a separate module.
 // The pass manager orchestrates pass execution.
 
-pub mod pass_manager;
 pub mod constant_folding;
 pub mod dead_code_elimination;
+pub mod pass_manager;
 pub mod simplify_cfg;
 
 // Convenience re-exports of the primary public API types.

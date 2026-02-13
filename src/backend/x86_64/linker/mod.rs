@@ -31,8 +31,8 @@ pub mod relocations;
 // ---------------------------------------------------------------------------
 use crate::backend::linker_common::{
     InputRelocation, InputSection, InputSymbol, LinkError, LinkerScript, OutputType,
-    RelocationClassification, RelocationEntry, RelocationProcessor, ResolvedSymbols,
-    SectionMerger, SymbolBinding, SymbolEntry, SymbolResolver, SymbolType, SymbolVisibility,
+    RelocationClassification, RelocationEntry, RelocationProcessor, ResolvedSymbols, SectionMerger,
+    SymbolBinding, SymbolEntry, SymbolResolver, SymbolType, SymbolVisibility,
 };
 
 // Dynamic linking types — GotEntry and PltEntry are not re-exported from
@@ -55,8 +55,8 @@ use crate::backend::elf_writer_common::{
 // ---------------------------------------------------------------------------
 // Imports from x86-64 backend modules
 // ---------------------------------------------------------------------------
-use crate::backend::x86_64::linker::relocations::X86_64RelocationHandler;
 use crate::backend::x86_64::assembler::relocations::X86_64RelocationType;
+use crate::backend::x86_64::linker::relocations::X86_64RelocationHandler;
 
 // ---------------------------------------------------------------------------
 // Imports from common
@@ -236,26 +236,20 @@ impl X86_64Linker {
     /// Returns the raw bytes of the output ELF file on success, or a list of
     /// [`LinkError`]s on failure (undefined symbols, multiple definitions,
     /// relocation overflows, etc.).
-    pub fn link(
-        &mut self,
-        input_objects: Vec<AssembledObject>,
-    ) -> Result<Vec<u8>, Vec<LinkError>> {
+    pub fn link(&mut self, input_objects: Vec<AssembledObject>) -> Result<Vec<u8>, Vec<LinkError>> {
         // ------------------------------------------------------------------
         // Phase 1: Parse input objects — register symbols and sections
         // ------------------------------------------------------------------
         for (obj_idx, obj) in input_objects.iter().enumerate() {
-            self.symbol_resolver
-                .register_object(obj_idx, &obj.name);
+            self.symbol_resolver.register_object(obj_idx, &obj.name);
 
             // Build per-object symbol name list for relocation resolution.
-            let sym_names: Vec<String> =
-                obj.symbols.iter().map(|s| s.name.clone()).collect();
+            let sym_names: Vec<String> = obj.symbols.iter().map(|s| s.name.clone()).collect();
             self.relocation_processor
                 .register_object_symbols(obj_idx, sym_names);
 
             // Collect symbols into the resolver.
-            self.symbol_resolver
-                .collect_symbols(obj_idx, &obj.symbols);
+            self.symbol_resolver.collect_symbols(obj_idx, &obj.symbols);
 
             // Add each section to the merger, and collect its relocations.
             for (sec_idx, sec) in obj.sections.iter().enumerate() {
@@ -304,7 +298,9 @@ impl X86_64Linker {
         // Phase 5: Classify relocations for GOT/PLT needs
         // ------------------------------------------------------------------
         let reloc_handler = X86_64RelocationHandler::new();
-        let classification = self.relocation_processor.classify_relocations(&reloc_handler);
+        let classification = self
+            .relocation_processor
+            .classify_relocations(&reloc_handler);
 
         let needs_dynamic = matches!(self.config.output_type, OutputType::SharedLibrary)
             || self.config.pic
@@ -342,8 +338,8 @@ impl X86_64Linker {
         }
 
         // Add .interp section for dynamically linked executables.
-        let needs_interp = needs_dynamic
-            && matches!(self.config.output_type, OutputType::Executable);
+        let needs_interp =
+            needs_dynamic && matches!(self.config.output_type, OutputType::Executable);
         if needs_interp {
             self.add_interp_section();
         }
@@ -820,11 +816,9 @@ impl X86_64Linker {
         let mut section_index_map: FxHashMap<String, usize> = FxHashMap::default();
 
         for out_sec in sections {
-            let section_data = self.section_merger.collect_section_data(
-                self.section_merger
-                    .find_section(&out_sec.name)
-                    .unwrap_or(0),
-            );
+            let section_data = self
+                .section_merger
+                .collect_section_data(self.section_merger.find_section(&out_sec.name).unwrap_or(0));
 
             let mut elf_sec = ElfSection::new(&out_sec.name, out_sec.section_type);
             elf_sec.flags = out_sec.flags;
@@ -994,15 +988,17 @@ impl X86_64Linker {
         if !symbol.is_defined {
             return false;
         }
-        if !matches!(symbol.visibility, SymbolVisibility::Default | SymbolVisibility::Protected) {
+        if !matches!(
+            symbol.visibility,
+            SymbolVisibility::Default | SymbolVisibility::Protected
+        ) {
             return false;
         }
 
         // Check relocation type is GOTPCRELX or REX_GOTPCRELX.
-        let is_gotpcrelx = reloc.reloc_type
-            == X86_64RelocationType::R_X86_64_GOTPCRELX.elf_value();
-        let is_rex_gotpcrelx = reloc.reloc_type
-            == X86_64RelocationType::R_X86_64_REX_GOTPCRELX.elf_value();
+        let is_gotpcrelx = reloc.reloc_type == X86_64RelocationType::R_X86_64_GOTPCRELX.elf_value();
+        let is_rex_gotpcrelx =
+            reloc.reloc_type == X86_64RelocationType::R_X86_64_REX_GOTPCRELX.elf_value();
 
         if !is_gotpcrelx && !is_rex_gotpcrelx {
             return false;
@@ -1267,7 +1263,7 @@ mod tests {
         let mut code = vec![0x00; 16];
         code[2] = 0x8b; // MOV opcode
         code[3] = 0x05; // ModR/M: mod=00, reg=000 (rax), rm=101 (RIP-relative)
-        // disp32 at offset 4..8
+                        // disp32 at offset 4..8
         code[4] = 0x10;
         code[5] = 0x00;
         code[6] = 0x00;

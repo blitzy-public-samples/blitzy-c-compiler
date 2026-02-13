@@ -246,10 +246,7 @@ fn simplify_phi_nodes(func: &mut IrFunction) -> bool {
 
             // Check if all incoming values are the same (ignoring self-
             // references where the incoming value equals the phi result).
-            let first_non_self = operands
-                .iter()
-                .find(|(v, _)| *v != result)
-                .map(|(v, _)| *v);
+            let first_non_self = operands.iter().find(|(v, _)| *v != result).map(|(v, _)| *v);
 
             if let Some(canonical) = first_non_self {
                 let all_same = operands
@@ -410,11 +407,7 @@ fn eliminate_empty_blocks(func: &mut IrFunction) -> bool {
                 let target = func.get_block(target_id);
                 let inst = &target.instructions()[i];
                 inst.phi_operands()
-                    .and_then(|ops| {
-                        ops.iter()
-                            .find(|(_, b)| *b == empty_id)
-                            .map(|(v, _)| *v)
-                    })
+                    .and_then(|ops| ops.iter().find(|(_, b)| *b == empty_id).map(|(v, _)| *v))
             };
             if let Some(val) = value_from_empty {
                 let target = func.get_block_mut(target_id);
@@ -466,11 +459,7 @@ fn find_empty_block(
         if insts.len() == 1 {
             if let Instruction::Branch { target } = &insts[0] {
                 if *target != block.id {
-                    return Some((
-                        block.id,
-                        *target,
-                        block.predecessors().to_vec(),
-                    ));
+                    return Some((block.id, *target, block.predecessors().to_vec()));
                 }
             }
         }
@@ -879,11 +868,8 @@ fn copy_phi_entries_for_redirect(
         let value_from_source = {
             let target = func.get_block(target_block_id);
             let inst = &target.instructions()[i];
-            inst.phi_operands().and_then(|ops| {
-                ops.iter()
-                    .find(|(_, b)| *b == source_pred)
-                    .map(|(v, _)| *v)
-            })
+            inst.phi_operands()
+                .and_then(|ops| ops.iter().find(|(_, b)| *b == source_pred).map(|(v, _)| *v))
         };
         if let Some(val) = value_from_source {
             let target = func.get_block_mut(target_block_id);
@@ -1056,7 +1042,13 @@ fn thread_branches(func: &mut IrFunction) -> bool {
         let target_block = func.get_block_mut(target);
         // Remove duplicates: the target should have block_id as predecessor
         // only once (since we now have a single unconditional branch).
-        while target_block.predecessors().iter().filter(|&&p| p == block_id).count() > 1 {
+        while target_block
+            .predecessors()
+            .iter()
+            .filter(|&&p| p == block_id)
+            .count()
+            > 1
+        {
             target_block.remove_predecessor(block_id);
         }
 
@@ -1153,8 +1145,7 @@ fn thread_branches(func: &mut IrFunction) -> bool {
                                 _ => None,
                             };
                             if let Some(is_true) = condition_known {
-                                let target =
-                                    if is_true { true_tgt } else { false_tgt };
+                                let target = if is_true { true_tgt } else { false_tgt };
                                 if target != block_id {
                                     decisions.push((pred_id, block_id, target));
                                     break; // One match per predecessor.
@@ -1263,7 +1254,8 @@ fn detect_self_loops(func: &mut IrFunction) -> bool {
                 } else if tt == block_id || ft == block_id {
                     // One target is self-loop, the other is an exit edge.
                     // Check if the block body has side effects.
-                    let has_effects = func.get_block(block_id)
+                    let has_effects = func
+                        .get_block(block_id)
                         .instructions()
                         .iter()
                         .any(|inst| inst.has_side_effects() && !inst.is_terminator());
@@ -1282,7 +1274,8 @@ fn detect_self_loops(func: &mut IrFunction) -> bool {
             Instruction::Branch { target } if *target == block_id => {
                 // Unconditional self-loop. Check for side effects to decide
                 // if this is an intentional infinite loop.
-                let _has_effects = func.get_block(block_id)
+                let _has_effects = func
+                    .get_block(block_id)
                     .instructions()
                     .iter()
                     .any(|inst| inst.has_side_effects() && !inst.is_terminator());

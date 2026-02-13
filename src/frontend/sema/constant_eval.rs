@@ -41,9 +41,9 @@ use crate::common::target::Target;
 use crate::common::types::{self, CType};
 
 use crate::frontend::parser::ast::{
-    AlignofOperand, BinaryOperator, CharPrefix, DerivedDeclarator, Expression,
-    FloatSuffix, IntegerSuffix, SizeofOperand, Span, SpecifierQualifierList,
-    StringPrefix, TypeName, TypeSpecifier, UnaryOperator,
+    AlignofOperand, BinaryOperator, CharPrefix, DerivedDeclarator, Expression, FloatSuffix,
+    IntegerSuffix, SizeofOperand, Span, SpecifierQualifierList, StringPrefix, TypeName,
+    TypeSpecifier, UnaryOperator,
 };
 
 // ===========================================================================
@@ -311,10 +311,7 @@ pub fn is_constant_expression(expr: &Expression) -> bool {
         // Unary ops: constant for arithmetic operators, not for inc/dec
         Expression::UnaryOp {
             op:
-                UnaryOperator::Plus
-                | UnaryOperator::Neg
-                | UnaryOperator::BitNot
-                | UnaryOperator::LogNot,
+                UnaryOperator::Plus | UnaryOperator::Neg | UnaryOperator::BitNot | UnaryOperator::LogNot,
             operand,
             ..
         } => is_constant_expression(operand),
@@ -349,9 +346,7 @@ pub fn is_constant_expression(expr: &Expression) -> bool {
         }
 
         // Comma: constant if all sub-expressions are constant (GCC extension)
-        Expression::Comma { expressions, .. } => {
-            expressions.iter().all(is_constant_expression)
-        }
+        Expression::Comma { expressions, .. } => expressions.iter().all(is_constant_expression),
 
         // Error recovery nodes are not constant
         Expression::Error { .. } => false,
@@ -512,10 +507,7 @@ fn resolve_type_name_to_ctype(
 
 /// Resolves a specifier-qualifier list (e.g., `unsigned long long`) to
 /// a concrete `CType` using C11 §6.7.2 valid specifier combinations.
-fn resolve_specifiers_to_ctype(
-    sqlist: &SpecifierQualifierList,
-    target: &Target,
-) -> Option<CType> {
+fn resolve_specifiers_to_ctype(sqlist: &SpecifierQualifierList, target: &Target) -> Option<CType> {
     let mut has_void = false;
     let mut has_bool = false;
     let mut has_char = false;
@@ -542,12 +534,8 @@ fn resolve_specifiers_to_ctype(
             TypeSpecifier::Unsigned => has_unsigned = true,
             TypeSpecifier::Complex => has_complex = true,
             TypeSpecifier::Atomic(tn) => {
-                return resolve_type_name_to_ctype(
-                    tn,
-                    &mut DiagnosticEngine::new(),
-                    target,
-                )
-                .map(|t| CType::Atomic(Box::new(t)));
+                return resolve_type_name_to_ctype(tn, &mut DiagnosticEngine::new(), target)
+                    .map(|t| CType::Atomic(Box::new(t)));
             }
             // Complex types that require symbol-table resolution
             TypeSpecifier::Struct { .. }
@@ -635,12 +623,10 @@ fn apply_declarator_to_ctype(
             }
             DerivedDeclarator::Array { size, .. } => {
                 let array_size = match size {
-                    Some(expr) => {
-                        match evaluate_integer_constant(expr, diag, target) {
-                            Ok(n) if n >= 0 => Some(n as usize),
-                            _ => return None,
-                        }
-                    }
+                    Some(expr) => match evaluate_integer_constant(expr, diag, target) {
+                        Ok(n) if n >= 0 => Some(n as usize),
+                        _ => return None,
+                    },
                     None => None, // Incomplete array type
                 };
                 ty = CType::Array {
@@ -771,13 +757,12 @@ fn bit_width_of_type(ty: &CType, target: &Target) -> u32 {
 /// types, and `CType.is_integer()` for integer-only contexts. Called
 /// internally by the binary/unary operator evaluators when the operand
 /// type is unexpected.
-fn validate_arithmetic_type(
-    ty: &CType,
-    span: Span,
-    diag: &mut DiagnosticEngine,
-) -> Result<(), ()> {
+fn validate_arithmetic_type(ty: &CType, span: Span, diag: &mut DiagnosticEngine) -> Result<(), ()> {
     if !ty.is_arithmetic() {
-        diag.error(span, "operand of constant expression must have arithmetic type");
+        diag.error(
+            span,
+            "operand of constant expression must have arithmetic type",
+        );
         return Err(());
     }
     Ok(())
@@ -785,11 +770,7 @@ fn validate_arithmetic_type(
 
 /// Validates that a type is an integer type suitable for integer constant
 /// expression evaluation. Uses `CType.is_integer()` and `CType.is_signed()`.
-fn validate_integer_type(
-    ty: &CType,
-    span: Span,
-    diag: &mut DiagnosticEngine,
-) -> Result<(), ()> {
+fn validate_integer_type(ty: &CType, span: Span, diag: &mut DiagnosticEngine) -> Result<(), ()> {
     if !ty.is_integer() && !matches!(ty, CType::Bool) {
         diag.error(span, "operand must have integer type in this context");
         return Err(());
@@ -804,9 +785,7 @@ fn validate_integer_type(
 /// on every supported target.
 fn promote_to_int(ty: &CType) -> CType {
     match ty {
-        CType::Bool | CType::Char { .. } | CType::Short { .. } => {
-            CType::Int { signed: true }
-        }
+        CType::Bool | CType::Char { .. } | CType::Short { .. } => CType::Int { signed: true },
         other => other.clone(),
     }
 }
@@ -947,9 +926,9 @@ fn check_signed_overflow(value: i128, bits: u32) -> bool {
 /// semantic analysis. Used for `sizeof(expr)` in constant contexts.
 fn infer_expr_type(expr: &Expression, target: &Target) -> Option<CType> {
     match expr {
-        Expression::IntegerLiteral {
-            value, suffix, ..
-        } => Some(type_for_integer_literal(*value, suffix, target)),
+        Expression::IntegerLiteral { value, suffix, .. } => {
+            Some(type_for_integer_literal(*value, suffix, target))
+        }
         Expression::CharLiteral { prefix, .. } => Some(type_for_char_literal(prefix)),
         Expression::FloatLiteral { suffix, .. } => Some(match suffix {
             FloatSuffix::None => CType::Double,
@@ -972,9 +951,7 @@ fn infer_expr_type(expr: &Expression, target: &Target) -> Option<CType> {
         Expression::Cast { type_name, .. } => {
             resolve_type_name_to_ctype(type_name, &mut DiagnosticEngine::new(), target)
         }
-        Expression::Sizeof { .. } | Expression::Alignof { .. } => {
-            Some(make_size_t(target))
-        }
+        Expression::Sizeof { .. } | Expression::Alignof { .. } => Some(make_size_t(target)),
         _ => None,
     }
 }
@@ -1055,10 +1032,7 @@ fn eval_expr(
 
         // ----- Unary operations -----
         Expression::UnaryOp {
-            op,
-            operand,
-            span,
-            ..
+            op, operand, span, ..
         } => eval_unary_op(op, operand, *span, diag, target),
 
         // ----- Conditional (ternary) expression -----
@@ -1240,7 +1214,10 @@ fn eval_binary_op(
             BinaryOperator::Mul => l * r,
             BinaryOperator::Div => {
                 if r == 0.0 {
-                    diag.warning(span, "division by zero in floating-point constant expression");
+                    diag.warning(
+                        span,
+                        "division by zero in floating-point constant expression",
+                    );
                     if l == 0.0 {
                         f64::NAN
                     } else if l > 0.0 {
@@ -1254,7 +1231,10 @@ fn eval_binary_op(
             }
             BinaryOperator::Mod => {
                 if r == 0.0 {
-                    diag.warning(span, "division by zero in floating-point constant expression");
+                    diag.warning(
+                        span,
+                        "division by zero in floating-point constant expression",
+                    );
                     f64::NAN
                 } else {
                     l % r
@@ -1623,18 +1603,13 @@ fn eval_sizeof(
     target: &Target,
 ) -> Result<ConstValue, ()> {
     let size = match operand {
-        SizeofOperand::TypeName(tn) => {
-            match resolve_type_name_to_ctype(tn, diag, target) {
-                Some(ty) => types::size_of(&ty, target),
-                None => {
-                    diag.error(
-                        span,
-                        "cannot determine size of type in constant expression",
-                    );
-                    return Err(());
-                }
+        SizeofOperand::TypeName(tn) => match resolve_type_name_to_ctype(tn, diag, target) {
+            Some(ty) => types::size_of(&ty, target),
+            None => {
+                diag.error(span, "cannot determine size of type in constant expression");
+                return Err(());
             }
-        }
+        },
         SizeofOperand::Expression(expr) => {
             // sizeof(expr): need the expression's type, not its value.
             // For simple expressions we can infer the type directly.
@@ -1677,37 +1652,30 @@ fn eval_alignof(
     target: &Target,
 ) -> Result<ConstValue, ()> {
     let alignment = match operand {
-        AlignofOperand::TypeName(tn) => {
-            match resolve_type_name_to_ctype(tn, diag, target) {
-                Some(ty) => types::align_of(&ty, target),
-                None => {
-                    diag.error(
-                        span,
-                        "cannot determine alignment of type in constant expression",
-                    );
-                    return Err(());
-                }
+        AlignofOperand::TypeName(tn) => match resolve_type_name_to_ctype(tn, diag, target) {
+            Some(ty) => types::align_of(&ty, target),
+            None => {
+                diag.error(
+                    span,
+                    "cannot determine alignment of type in constant expression",
+                );
+                return Err(());
             }
-        }
+        },
         AlignofOperand::Expression(expr) => {
             // GCC extension: __alignof__(expr) — alignment of the expression's type
             match infer_expr_type(expr, target) {
                 Some(ty) => types::align_of(&ty, target),
-                None => {
-                    match eval_expr(expr, diag, target) {
-                        Ok(val) => {
-                            let ty = val.get_type();
-                            types::align_of(&ty, target)
-                        }
-                        Err(()) => {
-                            diag.error(
-                                span,
-                                "cannot determine alignment of expression",
-                            );
-                            return Err(());
-                        }
+                None => match eval_expr(expr, diag, target) {
+                    Ok(val) => {
+                        let ty = val.get_type();
+                        types::align_of(&ty, target)
                     }
-                }
+                    Err(()) => {
+                        diag.error(span, "cannot determine alignment of expression");
+                        return Err(());
+                    }
+                },
             }
         }
     };

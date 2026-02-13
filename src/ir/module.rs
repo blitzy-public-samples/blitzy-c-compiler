@@ -699,7 +699,10 @@ impl GlobalVariable {
     /// internal symbols are file-local.
     #[inline]
     pub fn is_externally_visible(&self) -> bool {
-        matches!(self.linkage, Linkage::External | Linkage::Weak | Linkage::Common)
+        matches!(
+            self.linkage,
+            Linkage::External | Linkage::Weak | Linkage::Common
+        )
     }
 
     /// Returns the section name this global should be placed in.
@@ -864,7 +867,11 @@ impl FunctionDecl {
 
 impl fmt::Display for FunctionDecl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "declare {} {} @{}(", self.linkage, self.return_type, self.name)?;
+        write!(
+            f,
+            "declare {} {} @{}(",
+            self.linkage, self.return_type, self.name
+        )?;
         for (i, ty) in self.param_types.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
@@ -1459,12 +1466,7 @@ mod tests {
     fn test_add_and_find_declaration() {
         let mut module = IrModule::new("test.c".into(), Target::AArch64);
 
-        let decl = FunctionDecl::new(
-            "printf".into(),
-            IrType::I32,
-            vec![IrType::Ptr],
-            true,
-        );
+        let decl = FunctionDecl::new("printf".into(), IrType::I32, vec![IrType::Ptr], true);
         module.add_declaration(decl);
 
         assert_eq!(module.declarations.len(), 1);
@@ -1504,10 +1506,7 @@ mod tests {
     fn test_string_literal_raw() {
         let mut module = IrModule::new("test.c".into(), Target::RiscV64);
 
-        let id = module.add_string_literal_with_termination(
-            vec![0x80, 0xFF, 0x00, 0x42],
-            false,
-        );
+        let id = module.add_string_literal_with_termination(vec![0x80, 0xFF, 0x00, 0x42], false);
         assert_eq!(id, 0);
 
         let lit = module.find_string_literal(id).unwrap();
@@ -1548,9 +1547,7 @@ mod tests {
         assert_eq!(c_null.get_type(), IrType::Ptr);
         assert!(c_null.is_zero());
 
-        let c_ref = Constant::GlobalRef {
-            name: "foo".into(),
-        };
+        let c_ref = Constant::GlobalRef { name: "foo".into() };
         assert_eq!(c_ref.get_type(), IrType::Ptr);
         assert!(!c_ref.is_zero());
 
@@ -1740,9 +1737,8 @@ mod tests {
     /// Verify InlineAsmBlock creation.
     #[test]
     fn test_inline_asm_block() {
-        let asm = InlineAsmBlock::new(
-            ".pushsection .note.GNU-stack,\"\",@progbits\n.popsection".into(),
-        );
+        let asm =
+            InlineAsmBlock::new(".pushsection .note.GNU-stack,\"\",@progbits\n.popsection".into());
         assert!(asm.is_volatile);
         assert!(asm.has_side_effects);
         assert!(asm.is_simple());
@@ -1789,10 +1785,7 @@ mod tests {
 
         assert!(Constant::Null { ty: IrType::Ptr }.is_scalar());
 
-        assert!(Constant::GlobalRef {
-            name: "x".into()
-        }
-        .is_scalar());
+        assert!(Constant::GlobalRef { name: "x".into() }.is_scalar());
 
         assert!(Constant::Zero { ty: IrType::I32 }.is_scalar());
 
@@ -1946,12 +1939,7 @@ mod tests {
     /// Verify FunctionDecl Display for variadic function.
     #[test]
     fn test_function_decl_display() {
-        let decl = FunctionDecl::new(
-            "printf".into(),
-            IrType::I32,
-            vec![IrType::Ptr],
-            true,
-        );
+        let decl = FunctionDecl::new("printf".into(), IrType::I32, vec![IrType::Ptr], true);
         let s = format!("{}", decl);
         assert!(s.contains("declare"));
         assert!(s.contains("@printf"));
@@ -1961,32 +1949,19 @@ mod tests {
     /// Verify FunctionDecl with non-default calling convention.
     #[test]
     fn test_function_decl_custom_cc() {
-        let mut decl = FunctionDecl::new(
-            "fast_helper".into(),
-            IrType::Void,
-            vec![IrType::I64],
-            false,
-        );
+        let mut decl =
+            FunctionDecl::new("fast_helper".into(), IrType::Void, vec![IrType::I64], false);
         decl.calling_convention = CallingConvention::Fast;
         let s = format!("{}", decl);
         assert!(s.contains("fastcc"));
 
-        let mut cold_decl = FunctionDecl::new(
-            "error_handler".into(),
-            IrType::Void,
-            vec![],
-            false,
-        );
+        let mut cold_decl = FunctionDecl::new("error_handler".into(), IrType::Void, vec![], false);
         cold_decl.calling_convention = CallingConvention::Cold;
         let s = format!("{}", cold_decl);
         assert!(s.contains("coldcc"));
 
-        let mut custom_decl = FunctionDecl::new(
-            "arch_specific".into(),
-            IrType::Void,
-            vec![],
-            false,
-        );
+        let mut custom_decl =
+            FunctionDecl::new("arch_specific".into(), IrType::Void, vec![], false);
         custom_decl.calling_convention = CallingConvention::Custom;
         let s = format!("{}", custom_decl);
         assert!(s.contains("customcc"));

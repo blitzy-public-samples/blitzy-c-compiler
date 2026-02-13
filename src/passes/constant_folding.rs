@@ -274,12 +274,7 @@ pub fn run_constant_folding(func: &mut IrFunction) -> bool {
                                 constants.insert(result_id, cv);
                                 folded_phi_results.insert(result_id);
                                 // Enqueue users for further folding.
-                                enqueue_users_of(
-                                    func,
-                                    result_id,
-                                    &mut worklist,
-                                    &mut in_worklist,
-                                );
+                                enqueue_users_of(func, result_id, &mut worklist, &mut in_worklist);
                                 phi_changed = true;
                                 changed = true;
                             }
@@ -288,9 +283,7 @@ pub fn run_constant_folding(func: &mut IrFunction) -> bool {
                     // --- Case B: trivial phi — all same ValueId (may not
                     //     be a constant, but the phi is still redundant) ---
                     else if let Some(result_id) = result_id_opt {
-                        if let Some(common_val) =
-                            try_trivial_phi(operands, result_id)
-                        {
+                        if let Some(common_val) = try_trivial_phi(operands, result_id) {
                             // Replace every use of the phi result with the
                             // single incoming value.
                             replace_all_uses(func, result_id, common_val);
@@ -300,12 +293,7 @@ pub fn run_constant_folding(func: &mut IrFunction) -> bool {
                                 constants.insert(result_id, cv);
                             }
                             // Enqueue users for further folding.
-                            enqueue_users_of(
-                                func,
-                                common_val,
-                                &mut worklist,
-                                &mut in_worklist,
-                            );
+                            enqueue_users_of(func, common_val, &mut worklist, &mut in_worklist);
                             phi_changed = true;
                             changed = true;
                         }
@@ -530,8 +518,7 @@ fn fold_binop(
     }
 
     // Case 1b: both operands are known float constants.
-    if let (Some(ConstantValue::Float(l)), Some(ConstantValue::Float(r))) = (lhs_const, rhs_const)
-    {
+    if let (Some(ConstantValue::Float(l)), Some(ConstantValue::Float(r))) = (lhs_const, rhs_const) {
         if let Some(val) = eval_float_binop(op, *l, *r) {
             return FoldResult::Constant(result, ConstantValue::Float(val));
         }
@@ -1091,9 +1078,7 @@ fn fold_int_to_ptr(
     constants: &FxHashMap<ValueId, ConstantValue>,
 ) -> FoldResult {
     match constants.get(&value) {
-        Some(ConstantValue::Int(0)) => {
-            FoldResult::Constant(result, ConstantValue::Null)
-        }
+        Some(ConstantValue::Int(0)) => FoldResult::Constant(result, ConstantValue::Null),
         Some(ConstantValue::Int(v)) => {
             // Non-zero integer → pointer: preserve the address value.
             FoldResult::Constant(result, ConstantValue::Int(*v))
@@ -1113,9 +1098,7 @@ fn fold_ptr_to_int(
     constants: &FxHashMap<ValueId, ConstantValue>,
 ) -> FoldResult {
     match constants.get(&value) {
-        Some(ConstantValue::Null) => {
-            FoldResult::Constant(result, ConstantValue::Int(0))
-        }
+        Some(ConstantValue::Null) => FoldResult::Constant(result, ConstantValue::Int(0)),
         Some(ConstantValue::Int(v)) => {
             // Pointer stored as integer — mask to target width if known.
             if let Some(width) = to_ty.integer_width() {
@@ -1171,10 +1154,7 @@ fn try_fold_phi(
 /// Returns `None` if the phi has no incoming edges, or if incoming
 /// values differ, or if the common value is the phi result itself
 /// (self-referencing cycle — leave for more advanced passes).
-fn try_trivial_phi(
-    incoming: &[(ValueId, BasicBlockId)],
-    result_id: ValueId,
-) -> Option<ValueId> {
+fn try_trivial_phi(incoming: &[(ValueId, BasicBlockId)], result_id: ValueId) -> Option<ValueId> {
     if incoming.is_empty() {
         return None;
     }

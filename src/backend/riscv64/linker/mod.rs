@@ -76,9 +76,9 @@ pub mod relocations;
 // ---------------------------------------------------------------------------
 
 use crate::backend::elf_writer_common::{
-    ElfSection, ElfSymbol, ElfWriter, ProgramHeader, ET_DYN, ET_EXEC, ET_REL, SHT_DYNAMIC,
-    SHT_DYNSYM, SHT_HASH, SHT_NOBITS, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHF_ALLOC,
-    SHF_EXECINSTR, SHF_WRITE, STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_NOTYPE,
+    ElfSection, ElfSymbol, ElfWriter, ProgramHeader, ET_DYN, ET_EXEC, ET_REL, SHF_ALLOC,
+    SHF_EXECINSTR, SHF_WRITE, SHT_DYNAMIC, SHT_DYNSYM, SHT_HASH, SHT_NOBITS, SHT_PROGBITS,
+    SHT_RELA, SHT_STRTAB, STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_NOTYPE,
     STT_OBJECT, STT_SECTION, STV_DEFAULT, STV_HIDDEN, STV_PROTECTED,
 };
 use crate::backend::linker_common::dynamic::{
@@ -93,8 +93,8 @@ use crate::backend::linker_common::section_merger::{
     InputRelocation, InputSection, OutputSection, SectionMerger,
 };
 use crate::backend::linker_common::symbol_resolver::{
-    InputSymbol, LinkError, ResolvedSymbols, SymbolBinding, SymbolResolver,
-    SymbolType, SymbolVisibility,
+    InputSymbol, LinkError, ResolvedSymbols, SymbolBinding, SymbolResolver, SymbolType,
+    SymbolVisibility,
 };
 use crate::common::diagnostics::{DiagnosticEngine, Span};
 use crate::common::fx_hash::FxHashMap;
@@ -375,12 +375,8 @@ impl RiscV64Linker {
         let mut dynamic_sections: Vec<DynSectionInfo> = Vec::new();
 
         if self.config.needs_dynamic() {
-            let (layout, sections) = self.build_dynamic_sections(
-                &resolved,
-                &classification,
-                &merger,
-                &mut diag,
-            );
+            let (layout, sections) =
+                self.build_dynamic_sections(&resolved, &classification, &merger, &mut diag);
             dynamic_layout = layout;
             dynamic_sections = sections;
         }
@@ -388,8 +384,7 @@ impl RiscV64Linker {
         // ---------------------------------------------------------------
         // Phase 8: Apply relocations
         // ---------------------------------------------------------------
-        let mut output_secs: Vec<OutputSection> =
-            merger.output_sections().to_vec();
+        let mut output_secs: Vec<OutputSection> = merger.output_sections().to_vec();
 
         if let Err(errors) = reloc_processor.apply_relocations(
             &reloc_handler,
@@ -415,30 +410,26 @@ impl RiscV64Linker {
         // ---------------------------------------------------------------
         // Phase 9: Compute segment layout
         // ---------------------------------------------------------------
-        let linker_script = LinkerScript::default_for_target(
-            &Target::RiscV64,
-            self.config.output_type,
-        );
+        let linker_script =
+            LinkerScript::default_for_target(&Target::RiscV64, self.config.output_type);
 
         let entry_address = match self.config.output_type {
-            OutputType::Executable => {
-                match linker_script.resolve_entry_address(&resolved) {
-                    Some(addr) => addr,
-                    None => {
-                        if !self.config.entry_symbol.is_empty() {
-                            diag.warning(
-                                Span::DUMMY,
-                                format!(
-                                    "riscv64 linker: entry symbol `{}` not found, \
+            OutputType::Executable => match linker_script.resolve_entry_address(&resolved) {
+                Some(addr) => addr,
+                None => {
+                    if !self.config.entry_symbol.is_empty() {
+                        diag.warning(
+                            Span::DUMMY,
+                            format!(
+                                "riscv64 linker: entry symbol `{}` not found, \
                                      defaulting to base address 0x{:x}",
-                                    self.config.entry_symbol, base_address
-                                ),
-                            );
-                        }
-                        base_address
+                                self.config.entry_symbol, base_address
+                            ),
+                        );
                     }
+                    base_address
                 }
-            }
+            },
             _ => 0,
         };
 
@@ -602,9 +593,7 @@ impl RiscV64Linker {
         // Fallback: match by section name prefix in case sections were merged
         // under a different name (e.g., `.text.foo` → `.text`).
         for (out_idx, out_sec) in merger.output_sections().iter().enumerate() {
-            if section_name.starts_with(&out_sec.name)
-                || out_sec.name.starts_with(section_name)
-            {
+            if section_name.starts_with(&out_sec.name) || out_sec.name.starts_with(section_name) {
                 for merged in &out_sec.input_sections {
                     if merged.input.object_index == object_index {
                         return Some((out_idx, merged.offset_in_output));
@@ -645,25 +634,19 @@ impl RiscV64Linker {
                     for reloc in &merged.input.relocations {
                         // Only attempt relaxation on CALL/CALL_PLT relocations
                         // that are paired with R_RISCV_RELAX.
-                        if reloc.reloc_type != R_RISCV_CALL
-                            && reloc.reloc_type != R_RISCV_CALL_PLT
+                        if reloc.reloc_type != R_RISCV_CALL && reloc.reloc_type != R_RISCV_CALL_PLT
                         {
                             continue;
                         }
 
                         // Compute the relocation address in output space.
-                        let reloc_addr = out_sec.addr
-                            + merged.offset_in_output
-                            + reloc.offset;
+                        let reloc_addr = out_sec.addr + merged.offset_in_output + reloc.offset;
 
                         // Resolve the target symbol. We use the object's
                         // symbol table to look up the name, then query the
                         // resolved symbols for the final address.
-                        let sym_value = self.resolve_reloc_target(
-                            &merged.input,
-                            reloc.symbol_index,
-                            resolved,
-                        );
+                        let sym_value =
+                            self.resolve_reloc_target(&merged.input, reloc.symbol_index, resolved);
 
                         // Construct a RelocationEntry to pass to the
                         // relaxation handler, which expects the full entry
@@ -794,8 +777,7 @@ impl RiscV64Linker {
         for entry in &resolved.symbols {
             let should_export = match entry.visibility {
                 SymbolVisibility::Default | SymbolVisibility::Protected => {
-                    entry.binding == SymbolBinding::Global
-                        || entry.binding == SymbolBinding::Weak
+                    entry.binding == SymbolBinding::Global || entry.binding == SymbolBinding::Weak
                 }
                 SymbolVisibility::Hidden => false,
             };
@@ -851,7 +833,8 @@ impl RiscV64Linker {
         // We need to know dynamic_addr for GotBuilder, but we haven't computed
         // it yet. Use a temporary address that will be updated.
         let estimated_dynamic_addr = got_addr + 4096; // rough estimate
-        let mut got_builder = GotBuilder::new(got_addr, got_addr, estimated_dynamic_addr, &Target::RiscV64);
+        let mut got_builder =
+            GotBuilder::new(got_addr, got_addr, estimated_dynamic_addr, &Target::RiscV64);
 
         // Create GOT entries for symbols that need them.
         let mut got_entry_map: FxHashMap<String, u64> = FxHashMap::default();
@@ -875,7 +858,8 @@ impl RiscV64Linker {
         // GOT.PLT needs 3 reserved entries + 1 per PLT function.
         let ptr_size = 8u64; // RV64
         let got_plt_reserved = 3 * ptr_size;
-        let got_plt_total_size = got_plt_reserved + (classification.plt_entries.len() as u64) * ptr_size;
+        let got_plt_total_size =
+            got_plt_reserved + (classification.plt_entries.len() as u64) * ptr_size;
         next_addr += got_plt_total_size;
         next_addr = align_up(next_addr, 16);
 
@@ -910,19 +894,12 @@ impl RiscV64Linker {
         let got_plt_data = got_builder.build_got_plt();
 
         // ---- Build .rela.dyn and .rela.plt ----
-        let rela_dyn_data = self.build_rela_dyn(
-            classification,
-            resolved,
-            got_addr,
-        );
+        let rela_dyn_data = self.build_rela_dyn(classification, resolved, got_addr);
         let rela_dyn_addr = next_addr;
         next_addr += rela_dyn_data.len() as u64;
         next_addr = align_up(next_addr, 8);
 
-        let rela_plt_data = self.build_rela_plt(
-            classification,
-            got_plt_addr + got_plt_reserved,
-        );
+        let rela_plt_data = self.build_rela_plt(classification, got_plt_addr + got_plt_reserved);
         let rela_plt_addr = next_addr;
         next_addr += rela_plt_data.len() as u64;
         next_addr = align_up(next_addr, 8);
@@ -948,7 +925,11 @@ impl RiscV64Linker {
             dynamic_builder.add_needed(lib);
         }
         if self.config.shared {
-            let soname = self.config.output_path.rsplit('/').next()
+            let soname = self
+                .config
+                .output_path
+                .rsplit('/')
+                .next()
                 .unwrap_or(&self.config.output_path);
             dynamic_builder.set_soname(soname);
         }

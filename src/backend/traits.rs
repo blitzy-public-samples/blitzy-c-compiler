@@ -389,11 +389,7 @@ impl fmt::Display for RelocationType {
             self.name,
             self.value,
             self.size,
-            if self.is_pc_relative {
-                "PC-rel"
-            } else {
-                "abs"
-            }
+            if self.is_pc_relative { "PC-rel" } else { "abs" }
         )
     }
 }
@@ -906,11 +902,7 @@ impl MachineBasicBlock {
     /// This is useful for inserting phi-elimination copies and prologue/
     /// epilogue code without disturbing the block's control flow.
     pub fn insert_before_terminator(&mut self, instr: MachineInstr) {
-        if let Some(pos) = self
-            .instructions
-            .iter()
-            .rposition(|i| !i.is_terminator)
-        {
+        if let Some(pos) = self.instructions.iter().rposition(|i| !i.is_terminator) {
             // Insert after the last non-terminator instruction.
             self.instructions.insert(pos + 1, instr);
         } else if !self.instructions.is_empty() && self.instructions[0].is_terminator {
@@ -924,9 +916,7 @@ impl MachineBasicBlock {
 
     /// Returns `true` if this block has a terminator instruction.
     pub fn has_terminator(&self) -> bool {
-        self.instructions
-            .last()
-            .is_some_and(|i| i.is_terminator)
+        self.instructions.last().is_some_and(|i| i.is_terminator)
     }
 
     /// Returns a reference to the terminator instruction, if present.
@@ -936,9 +926,7 @@ impl MachineBasicBlock {
 
     /// Returns a mutable reference to the terminator instruction, if present.
     pub fn terminator_mut(&mut self) -> Option<&mut MachineInstr> {
-        self.instructions
-            .last_mut()
-            .filter(|i| i.is_terminator)
+        self.instructions.last_mut().filter(|i| i.is_terminator)
     }
 
     /// Returns the number of machine instructions in this block.
@@ -1076,9 +1064,7 @@ impl MachineFunction {
     ///
     /// Panics if the function has no blocks.
     pub fn entry_block(&self) -> &MachineBasicBlock {
-        self.blocks
-            .first()
-            .expect("MachineFunction has no blocks")
+        self.blocks.first().expect("MachineFunction has no blocks")
     }
 
     /// Returns a mutable reference to the entry block.
@@ -1772,11 +1758,7 @@ pub trait ArchCodegen {
     /// # Returns
     ///
     /// A [`MachineOperand`] referencing the loaded symbol address.
-    fn generate_pic_addressing(
-        &self,
-        symbol: &str,
-        mf: &mut MachineFunction,
-    ) -> MachineOperand;
+    fn generate_pic_addressing(&self, symbol: &str, mf: &mut MachineFunction) -> MachineOperand;
 }
 
 // ---------------------------------------------------------------------------
@@ -1877,10 +1859,7 @@ mod tests {
             ParamClass::NoClass.merge(ParamClass::Integer),
             ParamClass::Integer
         );
-        assert_eq!(
-            ParamClass::SSE.merge(ParamClass::NoClass),
-            ParamClass::SSE
-        );
+        assert_eq!(ParamClass::SSE.merge(ParamClass::NoClass), ParamClass::SSE);
     }
 
     #[test]
@@ -1905,14 +1884,8 @@ mod tests {
 
     #[test]
     fn param_class_merge_x87_becomes_memory() {
-        assert_eq!(
-            ParamClass::X87.merge(ParamClass::SSE),
-            ParamClass::Memory
-        );
-        assert_eq!(
-            ParamClass::SSE.merge(ParamClass::X87Up),
-            ParamClass::Memory
-        );
+        assert_eq!(ParamClass::X87.merge(ParamClass::SSE), ParamClass::Memory);
+        assert_eq!(ParamClass::SSE.merge(ParamClass::X87Up), ParamClass::Memory);
     }
 
     #[test]
@@ -2482,12 +2455,30 @@ mod tests {
 
     #[test]
     fn test_ir_type_register_class() {
-        assert_eq!(ir_type_register_class(&IrType::I32), RegisterClass::GeneralPurpose);
-        assert_eq!(ir_type_register_class(&IrType::I64), RegisterClass::GeneralPurpose);
-        assert_eq!(ir_type_register_class(&IrType::Ptr), RegisterClass::GeneralPurpose);
-        assert_eq!(ir_type_register_class(&IrType::F32), RegisterClass::FloatingPoint);
-        assert_eq!(ir_type_register_class(&IrType::F64), RegisterClass::FloatingPoint);
-        assert_eq!(ir_type_register_class(&IrType::F80), RegisterClass::FloatingPoint);
+        assert_eq!(
+            ir_type_register_class(&IrType::I32),
+            RegisterClass::GeneralPurpose
+        );
+        assert_eq!(
+            ir_type_register_class(&IrType::I64),
+            RegisterClass::GeneralPurpose
+        );
+        assert_eq!(
+            ir_type_register_class(&IrType::Ptr),
+            RegisterClass::GeneralPurpose
+        );
+        assert_eq!(
+            ir_type_register_class(&IrType::F32),
+            RegisterClass::FloatingPoint
+        );
+        assert_eq!(
+            ir_type_register_class(&IrType::F64),
+            RegisterClass::FloatingPoint
+        );
+        assert_eq!(
+            ir_type_register_class(&IrType::F80),
+            RegisterClass::FloatingPoint
+        );
     }
 
     #[test]

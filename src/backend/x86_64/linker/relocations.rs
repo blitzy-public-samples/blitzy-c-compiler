@@ -111,11 +111,7 @@ const R_X86_64_REX_GOTPCRELX: u32 = 42;
 ///
 /// Returns [`RelocationError::InvalidOffset`] if the offset is out of bounds.
 #[inline]
-fn write_le_u8(
-    data: &mut [u8],
-    offset: usize,
-    value: u8,
-) -> Result<(), RelocationError> {
+fn write_le_u8(data: &mut [u8], offset: usize, value: u8) -> Result<(), RelocationError> {
     if offset >= data.len() {
         return Err(RelocationError::InvalidOffset {
             offset: offset as u64,
@@ -130,11 +126,7 @@ fn write_le_u8(
 ///
 /// Returns [`RelocationError::InvalidOffset`] if the write extends past the buffer.
 #[inline]
-fn write_le_u16(
-    data: &mut [u8],
-    offset: usize,
-    value: u16,
-) -> Result<(), RelocationError> {
+fn write_le_u16(data: &mut [u8], offset: usize, value: u16) -> Result<(), RelocationError> {
     if offset + 2 > data.len() {
         return Err(RelocationError::InvalidOffset {
             offset: offset as u64,
@@ -151,11 +143,7 @@ fn write_le_u16(
 ///
 /// Returns [`RelocationError::InvalidOffset`] if the write extends past the buffer.
 #[inline]
-fn write_le_u32(
-    data: &mut [u8],
-    offset: usize,
-    value: u32,
-) -> Result<(), RelocationError> {
+fn write_le_u32(data: &mut [u8], offset: usize, value: u32) -> Result<(), RelocationError> {
     if offset + 4 > data.len() {
         return Err(RelocationError::InvalidOffset {
             offset: offset as u64,
@@ -174,11 +162,7 @@ fn write_le_u32(
 ///
 /// Returns [`RelocationError::InvalidOffset`] if the write extends past the buffer.
 #[inline]
-fn write_le_u64(
-    data: &mut [u8],
-    offset: usize,
-    value: u64,
-) -> Result<(), RelocationError> {
+fn write_le_u64(data: &mut [u8], offset: usize, value: u64) -> Result<(), RelocationError> {
     if offset + 8 > data.len() {
         return Err(RelocationError::InvalidOffset {
             offset: offset as u64,
@@ -208,11 +192,7 @@ fn write_le_u64(
 
 /// Verifies that `value` fits in a signed 32-bit integer (i32 range: -2^31 .. 2^31-1).
 #[inline]
-fn check_overflow_i32(
-    value: i64,
-    reloc_type: u32,
-    offset: u64,
-) -> Result<(), RelocationError> {
+fn check_overflow_i32(value: i64, reloc_type: u32, offset: u64) -> Result<(), RelocationError> {
     if value < i64::from(i32::MIN) || value > i64::from(i32::MAX) {
         return Err(RelocationError::Overflow {
             reloc_type,
@@ -226,11 +206,7 @@ fn check_overflow_i32(
 
 /// Verifies that `value` fits in an unsigned 32-bit integer (u32 range: 0 .. 2^32-1).
 #[inline]
-fn check_overflow_u32(
-    value: i64,
-    reloc_type: u32,
-    offset: u64,
-) -> Result<(), RelocationError> {
+fn check_overflow_u32(value: i64, reloc_type: u32, offset: u64) -> Result<(), RelocationError> {
     if value < 0 || value > i64::from(u32::MAX) {
         return Err(RelocationError::Overflow {
             reloc_type,
@@ -244,11 +220,7 @@ fn check_overflow_u32(
 
 /// Verifies that `value` fits in a signed 16-bit integer (i16 range: -2^15 .. 2^15-1).
 #[inline]
-fn check_overflow_i16(
-    value: i64,
-    reloc_type: u32,
-    offset: u64,
-) -> Result<(), RelocationError> {
+fn check_overflow_i16(value: i64, reloc_type: u32, offset: u64) -> Result<(), RelocationError> {
     if value < i64::from(i16::MIN) || value > i64::from(i16::MAX) {
         return Err(RelocationError::Overflow {
             reloc_type,
@@ -262,11 +234,7 @@ fn check_overflow_i16(
 
 /// Verifies that `value` fits in an unsigned 16-bit integer (u16 range: 0 .. 2^16-1).
 #[inline]
-fn check_overflow_u16(
-    value: i64,
-    reloc_type: u32,
-    offset: u64,
-) -> Result<(), RelocationError> {
+fn check_overflow_u16(value: i64, reloc_type: u32, offset: u64) -> Result<(), RelocationError> {
     if value < 0 || value > i64::from(u16::MAX) {
         return Err(RelocationError::Overflow {
             reloc_type,
@@ -280,11 +248,7 @@ fn check_overflow_u16(
 
 /// Verifies that `value` fits in a signed 8-bit integer (i8 range: -128 .. 127).
 #[inline]
-fn check_overflow_i8(
-    value: i64,
-    reloc_type: u32,
-    offset: u64,
-) -> Result<(), RelocationError> {
+fn check_overflow_i8(value: i64, reloc_type: u32, offset: u64) -> Result<(), RelocationError> {
     if value < i64::from(i8::MIN) || value > i64::from(i8::MAX) {
         return Err(RelocationError::Overflow {
             reloc_type,
@@ -298,11 +262,7 @@ fn check_overflow_i8(
 
 /// Verifies that `value` fits in an unsigned 8-bit integer (u8 range: 0 .. 255).
 #[inline]
-fn check_overflow_u8(
-    value: i64,
-    reloc_type: u32,
-    offset: u64,
-) -> Result<(), RelocationError> {
+fn check_overflow_u8(value: i64, reloc_type: u32, offset: u64) -> Result<(), RelocationError> {
     if value < 0 || value > i64::from(u8::MAX) {
         return Err(RelocationError::Overflow {
             reloc_type,
@@ -455,18 +415,14 @@ impl ArchRelocationHandler for X86_64RelocationHandler {
             // Write the resolved symbol address into the GOT entry.
             // Used by the dynamic linker to fill GOT entries at load time.
             // =============================================================
-            R_X86_64_GLOB_DAT => {
-                write_le_u64(output_data, off, s)
-            }
+            R_X86_64_GLOB_DAT => write_le_u64(output_data, off, s),
 
             // =============================================================
             // R_X86_64_JUMP_SLOT (7) — GOT entry for PLT lazy binding: S
             // Write the resolved symbol address into the GOT.PLT entry.
             // The dynamic linker resolves this on the first call.
             // =============================================================
-            R_X86_64_JUMP_SLOT => {
-                write_le_u64(output_data, off, s)
-            }
+            R_X86_64_JUMP_SLOT => write_le_u64(output_data, off, s),
 
             // =============================================================
             // R_X86_64_RELATIVE (8) — Base-relative: B + A
@@ -686,10 +642,7 @@ impl ArchRelocationHandler for X86_64RelocationHandler {
     fn relocation_size(&self, reloc_type: u32) -> u8 {
         match reloc_type {
             // 8-byte (64-bit) relocations
-            R_X86_64_64
-            | R_X86_64_GLOB_DAT
-            | R_X86_64_JUMP_SLOT
-            | R_X86_64_RELATIVE
+            R_X86_64_64 | R_X86_64_GLOB_DAT | R_X86_64_JUMP_SLOT | R_X86_64_RELATIVE
             | R_X86_64_PC64 => 8,
 
             // 4-byte (32-bit) relocations
@@ -723,12 +676,7 @@ mod tests {
     use super::*;
 
     /// Helper to construct a [`RelocationEntry`] for testing.
-    fn make_reloc(
-        reloc_type: u32,
-        offset: u64,
-        symbol_value: u64,
-        addend: i64,
-    ) -> RelocationEntry {
+    fn make_reloc(reloc_type: u32, offset: u64, symbol_value: u64, addend: i64) -> RelocationEntry {
         RelocationEntry {
             offset,
             reloc_type,
@@ -774,8 +722,7 @@ mod tests {
         let reloc = make_reloc(R_X86_64_64, 0, 0x0040_1000, 0x10);
         handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         let result = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]);
         assert_eq!(result, 0x0040_1010);
     }
@@ -787,8 +734,7 @@ mod tests {
         let reloc = make_reloc(R_X86_64_64, 4, 0x0040_1000, -4);
         handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         let result = u64::from_le_bytes([
-            data[4], data[5], data[6], data[7],
-            data[8], data[9], data[10], data[11],
+            data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
         ]);
         assert_eq!(result, 0x0040_0FFC);
     }
@@ -800,8 +746,7 @@ mod tests {
         let reloc = make_reloc(R_X86_64_64, 8, 0xCAFE_BABE, 0);
         handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         let result = u64::from_le_bytes([
-            data[8], data[9], data[10], data[11],
-            data[12], data[13], data[14], data[15],
+            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
         ]);
         assert_eq!(result, 0xCAFE_BABE);
         // Preceding bytes untouched.
@@ -924,8 +869,7 @@ mod tests {
         let reloc = make_reloc(R_X86_64_GLOB_DAT, 0, 0xDEAD_BEEF_CAFE_BABE, 0);
         handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         let result = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]);
         assert_eq!(result, 0xDEAD_BEEF_CAFE_BABE);
     }
@@ -941,8 +885,7 @@ mod tests {
         let reloc = make_reloc(R_X86_64_JUMP_SLOT, 0, 0x0040_3000, 0);
         handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         let result = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]);
         assert_eq!(result, 0x0040_3000);
     }
@@ -959,8 +902,7 @@ mod tests {
         let reloc = make_reloc(R_X86_64_RELATIVE, 0, 0x20_0000, 0x1000);
         handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         let result = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]);
         assert_eq!(result, 0x20_1000);
     }
@@ -1187,8 +1129,7 @@ mod tests {
         let reloc = make_reloc(R_X86_64_PC64, 0, 0x2000, 0);
         handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         let result = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]);
         assert_eq!(result, 0x2000);
     }
@@ -1201,8 +1142,7 @@ mod tests {
         let reloc = make_reloc(R_X86_64_PC64, 8, 0x800_0000_0000, 0);
         handler.apply_relocation(&reloc, &mut data, 0, 0).unwrap();
         let result = u64::from_le_bytes([
-            data[8], data[9], data[10], data[11],
-            data[12], data[13], data[14], data[15],
+            data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
         ]);
         // 0x800_0000_0000 - 8 = 0x7FF_FFFF_FFF8
         assert_eq!(result, 0x800_0000_0000_u64.wrapping_sub(8));

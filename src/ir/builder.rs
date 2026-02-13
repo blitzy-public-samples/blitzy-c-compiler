@@ -150,12 +150,7 @@ impl IrBuilder {
 
     /// Allocate a fresh SSA [`ValueId`] from the owning [`IrFunction`] and
     /// keep the builder's own counter in sync.
-    fn alloc_value(
-        &mut self,
-        func: &mut IrFunction,
-        ty: IrType,
-        name: Option<&str>,
-    ) -> ValueId {
+    fn alloc_value(&mut self, func: &mut IrFunction, ty: IrType, name: Option<&str>) -> ValueId {
         let id = func.new_value(ty, name.map(String::from));
         // Keep local counter in sync so callers can inspect it if needed.
         self.next_value_id = self.next_value_id.max(id.0 + 1);
@@ -175,11 +170,7 @@ impl IrBuilder {
     ///
     /// The insertion point is **not** changed — use [`set_insert_point`] to
     /// switch to the new block.
-    pub fn create_block(
-        &mut self,
-        func: &mut IrFunction,
-        name: Option<&str>,
-    ) -> BasicBlockId {
+    pub fn create_block(&mut self, func: &mut IrFunction, name: Option<&str>) -> BasicBlockId {
         let id = self.new_block_id();
         let block = BasicBlock::new(id, name.map(String::from));
         func.add_basic_block(block);
@@ -190,11 +181,7 @@ impl IrBuilder {
     /// insertion point to the end of that block.
     ///
     /// This is the most common way to start populating a fresh block.
-    pub fn append_block(
-        &mut self,
-        func: &mut IrFunction,
-        name: Option<&str>,
-    ) -> BasicBlockId {
+    pub fn append_block(&mut self, func: &mut IrFunction, name: Option<&str>) -> BasicBlockId {
         let id = self.create_block(func, name);
         self.set_insert_point(id);
         id
@@ -300,12 +287,7 @@ impl IrBuilder {
 
     /// Create a `load` instruction that reads a value of `ty` from the
     /// memory location pointed to by `ptr`.
-    pub fn build_load(
-        &mut self,
-        func: &mut IrFunction,
-        ptr: ValueId,
-        ty: IrType,
-    ) -> ValueId {
+    pub fn build_load(&mut self, func: &mut IrFunction, ptr: ValueId, ty: IrType) -> ValueId {
         let result = self.alloc_value(func, ty.clone(), None);
         let inst = Instruction::Load {
             result,
@@ -321,12 +303,7 @@ impl IrBuilder {
     /// location pointed to by `ptr`.
     ///
     /// Store is a side-effecting instruction with no result value.
-    pub fn build_store(
-        &mut self,
-        func: &mut IrFunction,
-        value: ValueId,
-        ptr: ValueId,
-    ) {
+    pub fn build_store(&mut self, func: &mut IrFunction, value: ValueId, ptr: ValueId) {
         let inst = Instruction::Store {
             value,
             ptr,
@@ -499,11 +476,7 @@ impl IrBuilder {
     /// Incoming `(value, block)` pairs are added later via
     /// [`add_phi_incoming`](Self::add_phi_incoming).  Phi nodes must appear
     /// at the **beginning** of a basic block, before any non-phi instruction.
-    pub fn build_phi(
-        &mut self,
-        func: &mut IrFunction,
-        ty: IrType,
-    ) -> ValueId {
+    pub fn build_phi(&mut self, func: &mut IrFunction, ty: IrType) -> ValueId {
         let result = self.alloc_value(func, ty.clone(), None);
         let inst = Instruction::Phi {
             result,
@@ -604,12 +577,7 @@ impl IrBuilder {
     }
 
     /// Truncate an integer to a narrower integer type.
-    pub fn build_trunc(
-        &mut self,
-        func: &mut IrFunction,
-        value: ValueId,
-        to_ty: IrType,
-    ) -> ValueId {
+    pub fn build_trunc(&mut self, func: &mut IrFunction, value: ValueId, to_ty: IrType) -> ValueId {
         let result = self.alloc_value(func, to_ty.clone(), None);
         let inst = Instruction::Trunc {
             result,
@@ -621,12 +589,7 @@ impl IrBuilder {
     }
 
     /// Zero-extend an integer to a wider integer type.
-    pub fn build_zext(
-        &mut self,
-        func: &mut IrFunction,
-        value: ValueId,
-        to_ty: IrType,
-    ) -> ValueId {
+    pub fn build_zext(&mut self, func: &mut IrFunction, value: ValueId, to_ty: IrType) -> ValueId {
         let result = self.alloc_value(func, to_ty.clone(), None);
         let inst = Instruction::ZExt {
             result,
@@ -638,12 +601,7 @@ impl IrBuilder {
     }
 
     /// Sign-extend an integer to a wider integer type.
-    pub fn build_sext(
-        &mut self,
-        func: &mut IrFunction,
-        value: ValueId,
-        to_ty: IrType,
-    ) -> ValueId {
+    pub fn build_sext(&mut self, func: &mut IrFunction, value: ValueId, to_ty: IrType) -> ValueId {
         let result = self.alloc_value(func, to_ty.clone(), None);
         let inst = Instruction::SExt {
             result,
@@ -757,12 +715,7 @@ impl IrBuilder {
     /// Example: `build_const_int(func, IrType::I32, 42)` yields a value
     /// equivalent to `%N = add i32 0, 42` — the backend is expected to
     /// recognize and materialize this as an immediate.
-    pub fn build_const_int(
-        &mut self,
-        func: &mut IrFunction,
-        ty: IrType,
-        value: i64,
-    ) -> ValueId {
+    pub fn build_const_int(&mut self, func: &mut IrFunction, ty: IrType, value: i64) -> ValueId {
         // Represent the constant as a zero-operand "pseudo-alloca" style
         // entry in the value table.  We create a ConstInt pseudo-instruction
         // using a BinOp(Add, zero, zero) pattern that the backend can
@@ -783,22 +736,13 @@ impl IrBuilder {
     /// See [`build_const_int`](Self::build_const_int) for the representation
     /// strategy.  The constant is encoded in the value name to allow
     /// downstream passes to extract it.
-    pub fn build_const_float(
-        &mut self,
-        func: &mut IrFunction,
-        ty: IrType,
-        value: f64,
-    ) -> ValueId {
+    pub fn build_const_float(&mut self, func: &mut IrFunction, ty: IrType, value: f64) -> ValueId {
         let name = format!("const.float.{}", value);
         self.alloc_value(func, ty, Some(&name))
     }
 
     /// Create a null pointer constant.
-    pub fn build_const_null(
-        &mut self,
-        func: &mut IrFunction,
-        ty: IrType,
-    ) -> ValueId {
+    pub fn build_const_null(&mut self, func: &mut IrFunction, ty: IrType) -> ValueId {
         self.alloc_value(func, ty, Some("const.null"))
     }
 
@@ -806,12 +750,7 @@ impl IrBuilder {
     ///
     /// The returned [`ValueId`] represents the *address* of the global
     /// symbol and carries the pointer type.
-    pub fn build_global_ref(
-        &mut self,
-        func: &mut IrFunction,
-        name: &str,
-        ty: IrType,
-    ) -> ValueId {
+    pub fn build_global_ref(&mut self, func: &mut IrFunction, name: &str, ty: IrType) -> ValueId {
         let ref_name = format!("global.{}", name);
         self.alloc_value(func, ty, Some(&ref_name))
     }
@@ -834,15 +773,11 @@ impl Default for IrBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::instructions::{BinOp, ICmpPredicate, FCmpPredicate};
+    use crate::ir::instructions::{BinOp, FCmpPredicate, ICmpPredicate};
 
     /// Helper: create a minimal function for testing.
     fn make_func() -> IrFunction {
-        IrFunction::new(
-            "test_func".into(),
-            IrType::I32,
-            vec![],
-        )
+        IrFunction::new("test_func".into(), IrType::I32, vec![])
     }
 
     #[test]
@@ -971,12 +906,7 @@ mod tests {
         let _entry = builder.append_block(&mut func, Some("entry"));
 
         let val = builder.build_const_int(&mut func, IrType::I32, 0);
-        builder.build_switch(
-            &mut func,
-            val,
-            default,
-            vec![(1, case1), (2, case2)],
-        );
+        builder.build_switch(&mut func, val, default, vec![(1, case1), (2, case2)]);
     }
 
     #[test]
@@ -1035,10 +965,14 @@ mod tests {
         let mut builder = IrBuilder::new();
         let _entry = builder.append_block(&mut func, Some("entry"));
 
-        let base = builder.build_alloca(&mut func, IrType::Array {
-            element: Box::new(IrType::I32),
-            count: 10,
-        }, Some("arr"));
+        let base = builder.build_alloca(
+            &mut func,
+            IrType::Array {
+                element: Box::new(IrType::I32),
+                count: 10,
+            },
+            Some("arr"),
+        );
         let idx = builder.build_const_int(&mut func, IrType::I64, 3);
         let elem_ptr = builder.build_gep(&mut func, base, vec![idx], IrType::I32, true);
         assert_ne!(elem_ptr, base);

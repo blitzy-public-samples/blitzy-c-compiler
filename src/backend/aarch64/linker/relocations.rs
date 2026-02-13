@@ -257,7 +257,7 @@ pub fn sign_extend(value: u64, bits: u32) -> i64 {
 #[inline]
 pub fn encode_adrp_immhi_immlo(value: i64) -> u32 {
     let v = value as u32;
-    let immlo = (v & 0x3) << 29;           // bits [1:0] → instruction [30:29]
+    let immlo = (v & 0x3) << 29; // bits [1:0] → instruction [30:29]
     let immhi = ((v >> 2) & 0x7FFFF) << 5; // bits [20:2] → instruction [23:5]
     immlo | immhi
 }
@@ -814,8 +814,7 @@ impl AArch64RelocationHandler {
                 section_size: data.len() as u64,
             });
         }
-        let page_delta =
-            (page(got_entry_addr) as i64).wrapping_sub(page(pc) as i64) >> 12;
+        let page_delta = (page(got_entry_addr) as i64).wrapping_sub(page(pc) as i64) >> 12;
         // Range check: signed 21-bit
         let max = (1_i64 << 20) - 1;
         let min = -(1_i64 << 20);
@@ -937,15 +936,13 @@ impl ArchRelocationHandler for AArch64RelocationHandler {
             // ---------------------------------------------------------------
             R_AARCH64_ADR_PREL_PG_HI21 => {
                 let target_addr = s.wrapping_add(a as u64);
-                let page_delta =
-                    (page(target_addr) as i64).wrapping_sub(page(p) as i64) >> 12;
+                let page_delta = (page(target_addr) as i64).wrapping_sub(page(p) as i64) >> 12;
                 self.apply_adr_prel_pg_hi21(output_data, offset, page_delta)
             }
             R_AARCH64_ADR_PREL_PG_HI21_NC => {
                 // Same as HI21 but without overflow check
                 let target_addr = s.wrapping_add(a as u64);
-                let page_delta =
-                    (page(target_addr) as i64).wrapping_sub(page(p) as i64) >> 12;
+                let page_delta = (page(target_addr) as i64).wrapping_sub(page(p) as i64) >> 12;
                 if offset + 4 > output_data.len() {
                     return Err(RelocationError::InvalidOffset {
                         offset: p,
@@ -953,8 +950,7 @@ impl ArchRelocationHandler for AArch64RelocationHandler {
                     });
                 }
                 let insn = read_u32_le(output_data, offset);
-                let patched =
-                    (insn & !ADRP_IMM_MASK) | encode_adrp_immhi_immlo(page_delta);
+                let patched = (insn & !ADRP_IMM_MASK) | encode_adrp_immhi_immlo(page_delta);
                 write_u32_le(output_data, offset, patched);
                 Ok(())
             }
@@ -1132,8 +1128,7 @@ impl ArchRelocationHandler for AArch64RelocationHandler {
             R_AARCH64_TLSGD_ADR_PAGE21 => {
                 // TLS GD: ADRP to the GOT TLS descriptor page
                 let target_addr = got_address.wrapping_add(a as u64);
-                let page_delta =
-                    (page(target_addr) as i64).wrapping_sub(page(p) as i64) >> 12;
+                let page_delta = (page(target_addr) as i64).wrapping_sub(page(p) as i64) >> 12;
                 self.apply_adr_prel_pg_hi21(output_data, offset, page_delta)
             }
             R_AARCH64_TLSGD_ADD_LO12_NC => {
@@ -1144,8 +1139,7 @@ impl ArchRelocationHandler for AArch64RelocationHandler {
             R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => {
                 // TLS IE: ADRP to GOT TP offset page
                 let target_addr = got_address.wrapping_add(a as u64);
-                let page_delta =
-                    (page(target_addr) as i64).wrapping_sub(page(p) as i64) >> 12;
+                let page_delta = (page(target_addr) as i64).wrapping_sub(page(p) as i64) >> 12;
                 self.apply_adr_prel_pg_hi21(output_data, offset, page_delta)
             }
             R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC => {
@@ -1310,10 +1304,7 @@ impl ArchRelocationHandler for AArch64RelocationHandler {
     /// framework determines preemptibility; this function reports the
     /// relocation types that *may* need PLT entries.
     fn needs_plt_entry(&self, reloc_type: u32) -> bool {
-        matches!(
-            reloc_type,
-            R_AARCH64_CALL26 | R_AARCH64_JUMP26
-        )
+        matches!(reloc_type, R_AARCH64_CALL26 | R_AARCH64_JUMP26)
     }
 
     /// Returns `true` if the relocation type computes a PC-relative value.
@@ -1475,7 +1466,10 @@ mod tests {
     #[test]
     fn test_handler_creation() {
         let handler = AArch64RelocationHandler::new();
-        assert_eq!(handler.relocation_name(R_AARCH64_CALL26), "R_AARCH64_CALL26");
+        assert_eq!(
+            handler.relocation_name(R_AARCH64_CALL26),
+            "R_AARCH64_CALL26"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1495,9 +1489,18 @@ mod tests {
             handler.relocation_name(R_AARCH64_ADD_ABS_LO12_NC),
             "R_AARCH64_ADD_ABS_LO12_NC"
         );
-        assert_eq!(handler.relocation_name(R_AARCH64_CALL26), "R_AARCH64_CALL26");
-        assert_eq!(handler.relocation_name(R_AARCH64_JUMP26), "R_AARCH64_JUMP26");
-        assert_eq!(handler.relocation_name(R_AARCH64_GLOB_DAT), "R_AARCH64_GLOB_DAT");
+        assert_eq!(
+            handler.relocation_name(R_AARCH64_CALL26),
+            "R_AARCH64_CALL26"
+        );
+        assert_eq!(
+            handler.relocation_name(R_AARCH64_JUMP26),
+            "R_AARCH64_JUMP26"
+        );
+        assert_eq!(
+            handler.relocation_name(R_AARCH64_GLOB_DAT),
+            "R_AARCH64_GLOB_DAT"
+        );
         assert_eq!(handler.relocation_name(9999), "R_AARCH64_UNKNOWN");
     }
 
@@ -1650,7 +1653,7 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0x9000_0000); // ADRP X0, #0
-        // page_delta = 1 (one page forward)
+                                                 // page_delta = 1 (one page forward)
         handler.apply_adr_prel_pg_hi21(&mut data, 0, 1).unwrap();
         let insn = read_u32_le(&data, 0);
         // immlo = 1 << 29
@@ -1691,7 +1694,7 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0xF940_0000); // LDR X0, [X0, #0]
-        // Address 0x1F8: low 12 = 0x1F8, shifted by 3 = 0x3F
+                                                 // Address 0x1F8: low 12 = 0x1F8, shifted by 3 = 0x3F
         handler.apply_ldst_lo12(&mut data, 0, 0x1F8, 3).unwrap();
         let insn = read_u32_le(&data, 0);
         let imm12 = (insn & IMM12_MASK) >> 10;
@@ -1703,7 +1706,7 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0xB940_0000); // LDR W0, [X0, #0]
-        // Address 0x100: low 12 = 0x100, shifted by 2 = 0x40
+                                                 // Address 0x100: low 12 = 0x100, shifted by 2 = 0x40
         handler.apply_ldst_lo12(&mut data, 0, 0x100, 2).unwrap();
         let insn = read_u32_le(&data, 0);
         let imm12 = (insn & IMM12_MASK) >> 10;
@@ -1719,7 +1722,7 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0x9400_0000); // BL #0
-        // Forward branch by 256 bytes (64 instructions)
+                                                 // Forward branch by 256 bytes (64 instructions)
         handler.apply_call26(&mut data, 0, 256).unwrap();
         let insn = read_u32_le(&data, 0);
         let imm26 = insn & IMM26_MASK;
@@ -1731,7 +1734,7 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0x9400_0000); // BL #0
-        // Backward branch by 256 bytes
+                                                 // Backward branch by 256 bytes
         handler.apply_call26(&mut data, 0, -256).unwrap();
         let insn = read_u32_le(&data, 0);
         let imm26 = insn & IMM26_MASK;
@@ -1822,9 +1825,7 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0xD2A0_0000); // MOVZ X0, #0, LSL #16
-        handler
-            .apply_movw(&mut data, 0, 0x1234_0000, 16)
-            .unwrap();
+        handler.apply_movw(&mut data, 0, 0x1234_0000, 16).unwrap();
         let insn = read_u32_le(&data, 0);
         let imm16 = (insn & IMM16_MASK) >> 5;
         assert_eq!(imm16, 0x1234);
@@ -1839,8 +1840,8 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0x9000_0000); // ADRP X0, #0
-        // GOT entry at page 0x2000, PC at page 0x1000
-        // page_delta = (0x2000 - 0x1000) >> 12 = 1
+                                                 // GOT entry at page 0x2000, PC at page 0x1000
+                                                 // page_delta = (0x2000 - 0x1000) >> 12 = 1
         handler
             .apply_adr_got_page(&mut data, 0, 0x2010, 0x1004)
             .unwrap();
@@ -1854,7 +1855,7 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0xF940_0000); // LDR X0, [X0, #0]
-        // GOT entry at address 0x2018 → low 12 = 0x018, >> 3 = 3
+                                                 // GOT entry at address 0x2018 → low 12 = 0x018, >> 3 = 3
         handler
             .apply_ld64_got_lo12_nc(&mut data, 0, 0x2018)
             .unwrap();
@@ -1904,9 +1905,7 @@ mod tests {
             addend: 0x100,
             output_section: 0,
         };
-        handler
-            .apply_relocation(&entry, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&entry, &mut data, 0, 0).unwrap();
         assert_eq!(read_u64_le(&data, 0), 0x1100);
     }
 
@@ -1915,20 +1914,18 @@ mod tests {
         let handler = AArch64RelocationHandler::new();
         let mut data = vec![0u8; 4];
         write_u32_le(&mut data, 0, 0x9400_0000); // BL #0
-        // Use offset=0 so the byte index into the buffer is valid.
-        // P = 0, S = 0x100 → S + A - P = 0x100 (256 bytes, 64 instructions)
+                                                 // Use offset=0 so the byte index into the buffer is valid.
+                                                 // P = 0, S = 0x100 → S + A - P = 0x100 (256 bytes, 64 instructions)
         let entry = RelocationEntry {
-            offset: 0,              // P = 0 (byte index into buffer)
+            offset: 0, // P = 0 (byte index into buffer)
             reloc_type: R_AARCH64_CALL26,
             symbol_name: "target".to_string(),
-            symbol_value: 0x100,    // S = 0x100
-            addend: 0,              // A = 0
+            symbol_value: 0x100, // S = 0x100
+            addend: 0,           // A = 0
             output_section: 0,
         };
         // S + A - P = 0x100 - 0x0 = 0x100 (256 bytes, 64 instructions)
-        handler
-            .apply_relocation(&entry, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&entry, &mut data, 0, 0).unwrap();
         let insn = read_u32_le(&data, 0);
         let imm26 = insn & IMM26_MASK;
         assert_eq!(imm26, 64);
@@ -2002,9 +1999,7 @@ mod tests {
             addend: 0,
             output_section: 0,
         };
-        handler
-            .apply_relocation(&entry, &mut data, 0, 0)
-            .unwrap();
+        handler.apply_relocation(&entry, &mut data, 0, 0).unwrap();
         // Data should be unchanged
         assert_eq!(data, vec![0u8; 4]);
     }

@@ -538,10 +538,7 @@ fn make_runtime_call_single(
 
 /// Creates a `BuiltinResult::RuntimeCall` from a list of (Expression, CType)
 /// pairs.
-fn make_runtime_call(
-    return_type: CType,
-    arg_pairs: Vec<(&Expression, CType)>,
-) -> BuiltinResult {
+fn make_runtime_call(return_type: CType, arg_pairs: Vec<(&Expression, CType)>) -> BuiltinResult {
     let checked_args = arg_pairs
         .into_iter()
         .map(|(expr, expected_ty)| CheckedExpression {
@@ -806,7 +803,11 @@ fn check_clz(
 
     let expected_arg_ty = width.to_unsigned_type();
     let return_ty = CType::Int { signed: true };
-    Ok(make_runtime_call_single(return_ty, &args[0], expected_arg_ty))
+    Ok(make_runtime_call_single(
+        return_ty,
+        &args[0],
+        expected_arg_ty,
+    ))
 }
 
 /// Type-checks `__builtin_ctz` / `__builtin_ctzl` / `__builtin_ctzll`.
@@ -828,7 +829,11 @@ fn check_ctz(
 
     let expected_arg_ty = width.to_unsigned_type();
     let return_ty = CType::Int { signed: true };
-    Ok(make_runtime_call_single(return_ty, &args[0], expected_arg_ty))
+    Ok(make_runtime_call_single(
+        return_ty,
+        &args[0],
+        expected_arg_ty,
+    ))
 }
 
 /// Type-checks `__builtin_popcount` / `__builtin_popcountl` /
@@ -851,7 +856,11 @@ fn check_popcount(
 
     let expected_arg_ty = width.to_unsigned_type();
     let return_ty = CType::Int { signed: true };
-    Ok(make_runtime_call_single(return_ty, &args[0], expected_arg_ty))
+    Ok(make_runtime_call_single(
+        return_ty,
+        &args[0],
+        expected_arg_ty,
+    ))
 }
 
 /// Type-checks `__builtin_bswap16` / `__builtin_bswap32` / `__builtin_bswap64`.
@@ -904,7 +913,11 @@ fn check_ffs(
 
     let expected_arg_ty = width.to_signed_type();
     let return_ty = CType::Int { signed: true };
-    Ok(make_runtime_call_single(return_ty, &args[0], expected_arg_ty))
+    Ok(make_runtime_call_single(
+        return_ty,
+        &args[0],
+        expected_arg_ty,
+    ))
 }
 
 // ===========================================================================
@@ -994,10 +1007,8 @@ fn check_assume_aligned(
     let void_ptr = CType::Pointer(Box::new(CType::Void));
     let size_t = CType::Long { signed: false };
 
-    let mut arg_pairs: Vec<(&Expression, CType)> = vec![
-        (&args[0], void_ptr.clone()),
-        (&args[1], size_t),
-    ];
+    let mut arg_pairs: Vec<(&Expression, CType)> =
+        vec![(&args[0], void_ptr.clone()), (&args[1], size_t)];
     if args.len() == 3 {
         arg_pairs.push((&args[2], CType::Long { signed: true }));
     }
@@ -1437,9 +1448,7 @@ fn apply_abstract_declarator(base: CType, type_name: &TypeName) -> Option<CType>
                     crate::frontend::parser::ast::DerivedDeclarator::Array { size, .. } => {
                         let array_size = match size {
                             Some(expr) => match expr.as_ref() {
-                                Expression::IntegerLiteral { value, .. } => {
-                                    Some(*value as usize)
-                                }
+                                Expression::IntegerLiteral { value, .. } => Some(*value as usize),
                                 _ => None,
                             },
                             None => None,

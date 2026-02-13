@@ -107,9 +107,7 @@ fn skip_ws(tokens: &[Token]) -> &[Token] {
 fn token_text(tok: &Token, interner: &Interner) -> String {
     match &tok.kind {
         TokenKind::Identifier(sym) => interner.resolve(*sym).to_string(),
-        TokenKind::StringLiteral { ref value, .. } => {
-            String::from_utf8_lossy(value).into_owned()
-        }
+        TokenKind::StringLiteral { ref value, .. } => String::from_utf8_lossy(value).into_owned(),
         TokenKind::IntegerLiteral { value, .. } => value.to_string(),
         other => format!("{}", other),
     }
@@ -328,10 +326,7 @@ fn handle_define(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directi
             if !existing.is_predefined {
                 pp.diagnostics.warning(
                     span,
-                    format!(
-                        "'{}' macro redefined",
-                        pp.interner.resolve(name_sym)
-                    ),
+                    format!("'{}' macro redefined", pp.interner.resolve(name_sym)),
                 );
             }
         }
@@ -347,10 +342,7 @@ fn handle_define(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directi
             if !existing.is_predefined {
                 pp.diagnostics.warning(
                     span,
-                    format!(
-                        "'{}' macro redefined",
-                        pp.interner.resolve(name_sym)
-                    ),
+                    format!("'{}' macro redefined", pp.interner.resolve(name_sym)),
                 );
             }
         }
@@ -387,10 +379,7 @@ fn handle_undef(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directiv
                 if existing.is_predefined {
                     pp.diagnostics.warning(
                         tokens[0].span,
-                        format!(
-                            "undefining predefined macro '{}'",
-                            pp.interner.resolve(sym)
-                        ),
+                        format!("undefining predefined macro '{}'", pp.interner.resolve(sym)),
                     );
                 }
             }
@@ -453,8 +442,7 @@ fn parse_include_path(
         let close_idx = match close_idx {
             Some(idx) => idx,
             None => {
-                pp.diagnostics
-                    .error(span, "missing '>' in #include <...>");
+                pp.diagnostics.error(span, "missing '>' in #include <...>");
                 return None;
             }
         };
@@ -466,7 +454,9 @@ fn parse_include_path(
         let gt_span = tokens[close_idx].span;
         if lt_span.file_id == gt_span.file_id && lt_span.file_id != u32::MAX {
             let file_id = FileId(lt_span.file_id);
-            let raw = pp.source_map.get_snippet(file_id, lt_span.end, gt_span.start);
+            let raw = pp
+                .source_map
+                .get_snippet(file_id, lt_span.end, gt_span.start);
             let path = raw.trim().to_string();
             if !path.is_empty() {
                 return Some((IncludeKind::System, path));
@@ -517,7 +507,9 @@ fn parse_include_path(
         let gt_span = expanded[close_idx].span;
         if lt_span.file_id == gt_span.file_id && lt_span.file_id != u32::MAX {
             let file_id = FileId(lt_span.file_id);
-            let raw = pp.source_map.get_snippet(file_id, lt_span.end, gt_span.start);
+            let raw = pp
+                .source_map
+                .get_snippet(file_id, lt_span.end, gt_span.start);
             let path = raw.trim().to_string();
             if !path.is_empty() {
                 return Some((IncludeKind::System, path));
@@ -587,10 +579,8 @@ fn handle_include(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Direct
 
     // Check for circular includes.
     if let Err(circ) = pp.include_handler.push_include(&resolved) {
-        pp.diagnostics.error(
-            span,
-            format!("circular #include dependency: {:?}", circ),
-        );
+        pp.diagnostics
+            .error(span, format!("circular #include dependency: {:?}", circ));
         return DirectiveResult::Error;
     }
 
@@ -602,10 +592,8 @@ fn handle_include(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Direct
     let (file_id, content) = match load_result {
         Ok(result) => result,
         Err(e) => {
-            pp.diagnostics.error(
-                span,
-                format!("cannot read '{}': {}", resolved.display(), e),
-            );
+            pp.diagnostics
+                .error(span, format!("cannot read '{}': {}", resolved.display(), e));
             pp.include_handler.pop_include();
             pp.recursion_depth -= 1;
             return DirectiveResult::Error;
@@ -652,12 +640,7 @@ fn handle_if(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> DirectiveRe
     }
 
     // Evaluate the condition using the expression evaluator.
-    let result = evaluate_expression(
-        tokens,
-        &pp.macros,
-        &mut pp.interner,
-        &mut pp.diagnostics,
-    );
+    let result = evaluate_expression(tokens, &pp.macros, &mut pp.interner, &mut pp.diagnostics);
 
     match result {
         Ok(val) => {
@@ -734,8 +717,7 @@ fn handle_ifndef(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directi
     match tokens[0].kind {
         TokenKind::Identifier(sym) => {
             let not_defined = !pp.macros.contains_key(&sym);
-            pp.cond_stack
-                .push(super::CondState::new(not_defined, span));
+            pp.cond_stack.push(super::CondState::new(not_defined, span));
             if not_defined {
                 DirectiveResult::Continue
             } else {
@@ -775,12 +757,7 @@ fn handle_elif(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directive
 
     // Evaluate the condition.
     let tokens = skip_ws(tokens);
-    let result = evaluate_expression(
-        tokens,
-        &pp.macros,
-        &mut pp.interner,
-        &mut pp.diagnostics,
-    );
+    let result = evaluate_expression(tokens, &pp.macros, &mut pp.interner, &mut pp.diagnostics);
 
     match result {
         Ok(val) => {
@@ -883,25 +860,18 @@ fn handle_pragma(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directi
         "once" => {
             // Register the current file as include-once.
             let current_dir = pp.current_file_dir.clone();
-            pp.include_handler
-                .register_pragma_once(&current_dir);
+            pp.include_handler.register_pragma_once(&current_dir);
             DirectiveResult::Continue
         }
 
-        "pack" => {
-            handle_pragma_pack(pp, rest, span)
-        }
+        "pack" => handle_pragma_pack(pp, rest, span),
 
-        "GCC" => {
-            handle_pragma_gcc(pp, rest, span)
-        }
+        "GCC" => handle_pragma_gcc(pp, rest, span),
 
         _ => {
             // Unknown pragma — emit warning per C standard.
-            pp.diagnostics.warning(
-                span,
-                format!("unknown pragma '{}' ignored", pragma_name),
-            );
+            pp.diagnostics
+                .warning(span, format!("unknown pragma '{}' ignored", pragma_name));
             DirectiveResult::Continue
         }
     }
@@ -915,11 +885,7 @@ fn handle_pragma(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directi
 ///   - `#pragma pack(push, N)` — push and set new packing.
 ///   - `#pragma pack(pop)` — restore previous packing.
 ///   - `#pragma pack()` — reset to default packing.
-fn handle_pragma_pack(
-    pp: &mut Preprocessor,
-    tokens: &[Token],
-    span: Span,
-) -> DirectiveResult {
+fn handle_pragma_pack(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> DirectiveResult {
     // Expect `(`.
     let tokens = skip_ws(tokens);
     if tokens.is_empty() || tokens[0].kind != TokenKind::LeftParen {
@@ -991,11 +957,7 @@ fn handle_pragma_pack(
 /// Supports:
 ///   - `#pragma GCC visibility push(default|hidden|protected)` / `pop`
 ///   - `#pragma GCC diagnostic push` / `pop` / `ignored "-Wname"` / `warning` / `error`
-fn handle_pragma_gcc(
-    pp: &mut Preprocessor,
-    tokens: &[Token],
-    span: Span,
-) -> DirectiveResult {
+fn handle_pragma_gcc(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> DirectiveResult {
     let tokens = skip_ws(tokens);
     if tokens.is_empty() {
         pp.diagnostics
@@ -1007,17 +969,11 @@ fn handle_pragma_gcc(
     let rest = skip_ws(&tokens[1..]);
 
     match gcc_pragma.as_str() {
-        "visibility" => {
-            handle_pragma_gcc_visibility(pp, rest, span)
-        }
-        "diagnostic" => {
-            handle_pragma_gcc_diagnostic(pp, rest, span)
-        }
+        "visibility" => handle_pragma_gcc_visibility(pp, rest, span),
+        "diagnostic" => handle_pragma_gcc_diagnostic(pp, rest, span),
         _ => {
-            pp.diagnostics.warning(
-                span,
-                format!("unknown #pragma GCC {} ignored", gcc_pragma),
-            );
+            pp.diagnostics
+                .warning(span, format!("unknown #pragma GCC {} ignored", gcc_pragma));
             DirectiveResult::Continue
         }
     }
@@ -1031,8 +987,10 @@ fn handle_pragma_gcc_visibility(
 ) -> DirectiveResult {
     let tokens = skip_ws(tokens);
     if tokens.is_empty() {
-        pp.diagnostics
-            .warning(span, "expected 'push' or 'pop' after #pragma GCC visibility");
+        pp.diagnostics.warning(
+            span,
+            "expected 'push' or 'pop' after #pragma GCC visibility",
+        );
         return DirectiveResult::Continue;
     }
 
@@ -1042,10 +1000,8 @@ fn handle_pragma_gcc_visibility(
             // Parse `(default|hidden|protected)`.
             let rest = skip_ws(&tokens[1..]);
             if rest.is_empty() || rest[0].kind != TokenKind::LeftParen {
-                pp.diagnostics.warning(
-                    span,
-                    "expected '(' after #pragma GCC visibility push",
-                );
+                pp.diagnostics
+                    .warning(span, "expected '(' after #pragma GCC visibility push");
                 return DirectiveResult::Continue;
             }
             let inner = skip_ws(&rest[1..]);
@@ -1109,10 +1065,7 @@ fn handle_pragma_gcc_diagnostic(
         _ => {
             pp.diagnostics.warning(
                 span,
-                format!(
-                    "unknown #pragma GCC diagnostic action '{}'",
-                    action
-                ),
+                format!("unknown #pragma GCC diagnostic action '{}'", action),
             );
             DirectiveResult::Continue
         }
@@ -1129,8 +1082,7 @@ fn handle_pragma_gcc_diagnostic(
 /// Returns `Error` to halt preprocessing (per C11 §6.10.5).
 fn handle_error(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> DirectiveResult {
     let msg = concat_token_text(tokens, &pp.interner);
-    pp.diagnostics
-        .error(span, format!("#error {}", msg.trim()));
+    pp.diagnostics.error(span, format!("#error {}", msg.trim()));
     DirectiveResult::Error
 }
 
@@ -1217,11 +1169,7 @@ fn handle_line(pp: &mut Preprocessor, tokens: &[Token], span: Span) -> Directive
 pub fn check_unterminated_conditionals(pp: &mut Preprocessor) {
     // Collect spans first to avoid borrowing conflicts between
     // pp.cond_stack (immutable) and pp.diagnostics (mutable).
-    let unclosed_spans: Vec<Span> = pp
-        .cond_stack
-        .iter()
-        .map(|c| c.origin_span)
-        .collect();
+    let unclosed_spans: Vec<Span> = pp.cond_stack.iter().map(|c| c.origin_span).collect();
 
     for origin_span in unclosed_spans {
         pp.diagnostics.error(

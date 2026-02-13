@@ -60,7 +60,7 @@
 //! - [`eliminate_phis`] — the main driver (mutates the function in-place)
 //! - [`verify_no_phis`] — post-condition check for validation
 
-use crate::common::fx_hash::{FxHashMap, FxHashSet, fx_hash_map, fx_hash_set};
+use crate::common::fx_hash::{fx_hash_map, fx_hash_set, FxHashMap, FxHashSet};
 use crate::ir::basic_block::BasicBlock;
 use crate::ir::function::IrFunction;
 use crate::ir::instructions::{BasicBlockId, Instruction, ValueId};
@@ -391,12 +391,7 @@ fn find_critical_edges(func: &IrFunction) -> Vec<(BasicBlockId, BasicBlockId)> {
 
 /// Computes a block ID guaranteed to be greater than every existing ID.
 fn compute_next_block_id(func: &IrFunction) -> u32 {
-    func.blocks()
-        .iter()
-        .map(|bb| bb.id.0)
-        .max()
-        .unwrap_or(0)
-        + 1
+    func.blocks().iter().map(|bb| bb.id.0).max().unwrap_or(0) + 1
 }
 
 /// Rewrites all occurrences of `old_target` → `new_target` in the terminator
@@ -577,10 +572,7 @@ fn insert_sequentialised_copies(
 /// Parallel:   { a ← b,  b ← a }          (swap)
 /// Sequential: { tmp ← a,  a ← b,  b ← tmp }
 /// ```
-fn sequentialise_copies(
-    parallel: &[ParallelCopy],
-    func: &mut IrFunction,
-) -> Vec<ParallelCopy> {
+fn sequentialise_copies(parallel: &[ParallelCopy], func: &mut IrFunction) -> Vec<ParallelCopy> {
     if parallel.is_empty() {
         return Vec::new();
     }
@@ -608,9 +600,9 @@ fn sequentialise_copies(
         // pending copy.  Such a copy is safe to emit because its
         // destination will not overwrite a value still needed by another
         // pending copy.
-        let ready_idx = pending.iter().position(|(dest, _, _)| {
-            !src_set.contains(dest)
-        });
+        let ready_idx = pending
+            .iter()
+            .position(|(dest, _, _)| !src_set.contains(dest));
 
         match ready_idx {
             Some(idx) => {
@@ -873,10 +865,7 @@ mod tests {
         let mut func = make_empty_func();
         let a = ValueId(10);
         let b = ValueId(11);
-        let copies = vec![
-            (a, b, IrType::I32),
-            (b, a, IrType::I32),
-        ];
+        let copies = vec![(a, b, IrType::I32), (b, a, IrType::I32)];
         let seq = sequentialise_copies(&copies, &mut func);
         // Should introduce a temporary: 3 instructions.
         assert_eq!(seq.len(), 3, "swap requires 3 sequential copies");
@@ -893,8 +882,16 @@ mod tests {
             vals.insert(*dest, v);
         }
 
-        assert_eq!(*vals.get(&a).unwrap(), 200, "a should contain B's original value");
-        assert_eq!(*vals.get(&b).unwrap(), 100, "b should contain A's original value");
+        assert_eq!(
+            *vals.get(&a).unwrap(),
+            200,
+            "a should contain B's original value"
+        );
+        assert_eq!(
+            *vals.get(&b).unwrap(),
+            100,
+            "b should contain A's original value"
+        );
     }
 
     #[test]
@@ -957,13 +954,11 @@ mod tests {
         //     %v5 = phi i32 [%v0, entry], [%v1, bb_other]
         //     ret i32 %v5
 
-        let params = vec![
-            Parameter {
-                name: Some("x".into()),
-                ty: IrType::I32,
-                id: ValueId(0),
-            },
-        ];
+        let params = vec![Parameter {
+            name: Some("x".into()),
+            ty: IrType::I32,
+            id: ValueId(0),
+        }];
         let mut func = IrFunction::new("test".into(), IrType::I32, params);
         let v1 = func.new_value(IrType::I32, Some("y".into()));
         let v5 = func.new_value(IrType::I32, Some("phi_res".into()));
@@ -993,14 +988,9 @@ mod tests {
             merge.add_instruction(Instruction::Phi {
                 result: v5,
                 ty: IrType::I32,
-                incoming: vec![
-                    (ValueId(0), BasicBlockId(0)),
-                    (v1, bb_other),
-                ],
+                incoming: vec![(ValueId(0), BasicBlockId(0)), (v1, bb_other)],
             });
-            merge.add_instruction(Instruction::Return {
-                value: Some(v5),
-            });
+            merge.add_instruction(Instruction::Return { value: Some(v5) });
         }
 
         // Run elimination.

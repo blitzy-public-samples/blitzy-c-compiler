@@ -40,9 +40,7 @@ use crate::common::diagnostics::Span;
 use crate::common::string_interner::Symbol;
 use crate::frontend::lexer::token::{Token, TokenKind};
 
-use super::paint_marker::{
-    is_painted, is_painted_for, merge_paint, paint_tokens, PaintedToken,
-};
+use super::paint_marker::{is_painted, is_painted_for, merge_paint, paint_tokens, PaintedToken};
 use super::token_paster::{apply_paste_operators, apply_stringify_operators};
 use super::{MacroDef, Preprocessor};
 
@@ -387,8 +385,7 @@ fn expand_painted(pp: &mut Preprocessor, mut tokens: Vec<PaintedToken>) -> Vec<P
                     match collect_arguments(pp, &tokens, paren_idx + 1, &def, invocation_span) {
                         Ok((raw_args, end_idx)) => {
                             // Validate argument count.
-                            let param_count =
-                                def.params.as_ref().map_or(0, |p| p.len());
+                            let param_count = def.params.as_ref().map_or(0, |p| p.len());
                             let actual_args = raw_args.len();
 
                             // For non-variadic: exact match (allow 0 for 0-param macros).
@@ -397,9 +394,7 @@ fn expand_painted(pp: &mut Preprocessor, mut tokens: Vec<PaintedToken>) -> Vec<P
                                 // Special case: FOO() with 0 params counts as 0 args,
                                 // but collect_arguments returns 1 empty arg.
                                 let is_zero_arg_call =
-                                    param_count == 0
-                                        && actual_args == 1
-                                        && raw_args[0].is_empty();
+                                    param_count == 0 && actual_args == 1 && raw_args[0].is_empty();
                                 if !is_zero_arg_call {
                                     pp.diagnostics.error(
                                         invocation_span,
@@ -420,8 +415,7 @@ fn expand_painted(pp: &mut Preprocessor, mut tokens: Vec<PaintedToken>) -> Vec<P
                             }
 
                             // Perform argument substitution into the macro body.
-                            let replacement =
-                                substitute_body(pp, &def, &raw_args, invocation_span);
+                            let replacement = substitute_body(pp, &def, &raw_args, invocation_span);
 
                             // Wrap replacement tokens as painted for this macro.
                             let mut expanded_painted: Vec<PaintedToken> =
@@ -434,8 +428,7 @@ fn expand_painted(pp: &mut Preprocessor, mut tokens: Vec<PaintedToken>) -> Vec<P
                             if is_painted(&tokens[i]) {
                                 let invocation_paint = &tokens[i].paint;
                                 for pt in &mut expanded_painted {
-                                    pt.paint =
-                                        merge_paint(&pt.paint, invocation_paint);
+                                    pt.paint = merge_paint(&pt.paint, invocation_paint);
                                 }
                             }
 
@@ -572,10 +565,8 @@ fn substitute_body(
     // Step 4: Pre-expand arguments for regular substitution positions.
     // Arguments used with # or ## have already been consumed by steps 2–3,
     // so the remaining parameter names will get pre-expanded substitutions.
-    let expanded_args: Vec<Vec<Token>> = raw_args
-        .iter()
-        .map(|arg| expand_macros(pp, arg))
-        .collect();
+    let expanded_args: Vec<Vec<Token>> =
+        raw_args.iter().map(|arg| expand_macros(pp, arg)).collect();
 
     // Step 5: Substitute remaining parameter identifiers with pre-expanded args.
     substitute_remaining_params(
@@ -673,7 +664,7 @@ fn handle_gcc_comma_deletion(
                                 // `__VA_ARGS__` for normal substitution.
                                 result.push(body[i].clone()); // push comma
                                 i = k; // advance to __VA_ARGS__; will be
-                                        // pushed on the next iteration
+                                       // pushed on the next iteration
                                 continue;
                             }
                         }
@@ -842,7 +833,8 @@ fn collect_arguments(
             }
             TokenKind::Eof => {
                 // Unexpected end of file inside macro arguments.
-                pp.diagnostics.error(invocation_span, "unterminated macro argument list");
+                pp.diagnostics
+                    .error(invocation_span, "unterminated macro argument list");
                 return Err(());
             }
             _ => {

@@ -47,7 +47,7 @@
 //! T. Lengauer and R. E. Tarjan, "A Fast Algorithm for Finding Dominators
 //! in a Flowgraph," *ACM TOPLAS*, 1(1):121–141, 1979.
 
-use crate::common::fx_hash::{FxHashMap, FxHashSet, fx_hash_map, fx_hash_set};
+use crate::common::fx_hash::{fx_hash_map, fx_hash_set, FxHashMap, FxHashSet};
 use crate::ir::basic_block::{BasicBlock, BasicBlockId};
 use crate::ir::function::IrFunction;
 
@@ -319,8 +319,7 @@ impl DominatorTree {
         let preorder = compute_dom_tree_preorder(entry_id, &children_result);
 
         // Compute CFG reverse postorder.
-        let postorder =
-            compute_cfg_reverse_postorder(func, &block_to_dfs, num_slots);
+        let postorder = compute_cfg_reverse_postorder(func, &block_to_dfs, num_slots);
 
         // Compute DFS timestamps on the dominator tree for O(1) dominance.
         let (pre_time, post_time) =
@@ -445,8 +444,7 @@ impl DominatorTree {
         if !self.reachable.contains(&a) || !self.reachable.contains(&b) {
             return false;
         }
-        self.pre_time[ai] <= self.pre_time[bi]
-            && self.post_time[ai] >= self.post_time[bi]
+        self.pre_time[ai] <= self.pre_time[bi] && self.post_time[ai] >= self.post_time[bi]
     }
 
     /// Returns `true` if `a` *strictly* dominates `b`, i.e.
@@ -690,9 +688,7 @@ impl LinkEvalForest {
             let parent_on_path = path[i + 1];
 
             // Propagate minimum-semi label from parent to node.
-            if semi[self.label[parent_on_path] as usize]
-                < semi[self.label[node] as usize]
-            {
+            if semi[self.label[parent_on_path] as usize] < semi[self.label[node] as usize] {
                 self.label[node] = self.label[parent_on_path];
             }
 

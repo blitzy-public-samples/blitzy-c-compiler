@@ -197,10 +197,7 @@ pub fn zero_init_for_type(ty: &CType) -> CheckedInitializer {
         // For scalar types: ZeroInit is the all-zero-bits representation,
         // which is `0` for integers, `+0.0` for IEEE 754 floats, and NULL
         // for pointers.
-        _ if canonical.is_integer()
-            || canonical.is_floating()
-            || canonical.is_pointer() =>
-        {
+        _ if canonical.is_integer() || canonical.is_floating() || canonical.is_pointer() => {
             CheckedInitializer::ZeroInit
         }
 
@@ -253,15 +250,12 @@ fn analyze_init_inner(
             match canonical {
                 CType::Struct { .. } => {
                     let mut pos = 0;
-                    let result = analyze_struct_from_items(
-                        items, &mut pos, canonical, *span, true, ctx,
-                    )?;
+                    let result =
+                        analyze_struct_from_items(items, &mut pos, canonical, *span, true, ctx)?;
                     warn_excess_items(items, pos, "struct initializer", ctx);
                     Ok(result)
                 }
-                CType::Union { .. } => {
-                    analyze_union_init(items, canonical, *span, ctx)
-                }
+                CType::Union { .. } => analyze_union_init(items, canonical, *span, ctx),
                 CType::Array { element, .. } => {
                     // Special case: braced string literal for char array,
                     // e.g. `char s[] = { "hello" };`
@@ -276,27 +270,22 @@ fn analyze_init_inner(
                         }
                     }
                     let mut pos = 0;
-                    let result = analyze_array_from_items(
-                        items, &mut pos, canonical, *span, true, ctx,
-                    )?;
+                    let result =
+                        analyze_array_from_items(items, &mut pos, canonical, *span, true, ctx)?;
                     warn_excess_items(items, pos, "array initializer", ctx);
                     Ok(result)
                 }
                 _ if canonical.is_scalar() => {
                     // Scalar with braced init: `int x = { 5 };`
                     if items.len() > 1 {
-                        ctx.diagnostics.warning(
-                            items[1].span,
-                            "excess elements in scalar initializer",
-                        );
+                        ctx.diagnostics
+                            .warning(items[1].span, "excess elements in scalar initializer");
                     }
                     if items[0].designators.is_empty() {
                         analyze_init_inner(&items[0].initializer, target_type, ctx)
                     } else {
-                        ctx.diagnostics.error(
-                            items[0].span,
-                            "designator in initializer for scalar type",
-                        );
+                        ctx.diagnostics
+                            .error(items[0].span, "designator in initializer for scalar type");
                         Err(())
                     }
                 }
@@ -420,12 +409,8 @@ fn analyze_struct_from_items(
             }
 
             // --- Designated initializer ---
-            let field_idx = resolve_first_field_designator(
-                &item.designators[0],
-                fields,
-                item.span,
-                ctx,
-            )?;
+            let field_idx =
+                resolve_first_field_designator(&item.designators[0], fields, item.span, ctx)?;
 
             // Warn on duplicate initialization (C11 allows it; last wins).
             if initialized.contains(&field_idx) {
@@ -450,11 +435,7 @@ fn analyze_struct_from_items(
             } else {
                 // Single-level designation: analyze the initializer directly.
                 *pos += 1;
-                let value = analyze_init_inner(
-                    &item.initializer,
-                    &fields[field_idx].ty,
-                    ctx,
-                )?;
+                let value = analyze_init_inner(&item.initializer, &fields[field_idx].ty, ctx)?;
                 field_inits[field_idx] = Some(FieldInitState::Direct(value));
             }
 
@@ -480,9 +461,7 @@ fn analyze_struct_from_items(
 
             // Consume one logical initializer for this field's type,
             // handling brace elision for nested aggregates.
-            let value = consume_init_for_type(
-                items, pos, field_type, false, span, ctx,
-            )?;
+            let value = consume_init_for_type(items, pos, field_type, false, span, ctx)?;
 
             if initialized.contains(&current_field) {
                 ctx.diagnostics.warning(
@@ -534,7 +513,7 @@ fn analyze_union_init(
     // of all member sizes, rounded to the union alignment.
     let union_layout = compute_union_layout(fields, ctx.target);
     let _ = union_layout.total_size; // Union size used for IR allocation.
-    let _ = union_layout.alignment;  // Union alignment used for IR allocation.
+    let _ = union_layout.alignment; // Union alignment used for IR allocation.
 
     // Determine which member to initialize.
     let first_item = &items[0];
@@ -638,12 +617,8 @@ fn analyze_array_from_items(
             }
 
             // --- Array index designator: [N] = val ---
-            let (idx, remaining) = resolve_first_array_designator(
-                &item.designators,
-                array_size,
-                item.span,
-                ctx,
-            )?;
+            let (idx, remaining) =
+                resolve_first_array_designator(&item.designators, array_size, item.span, ctx)?;
 
             // Validate index against declared array bounds.
             if let Some(max) = array_size {
@@ -718,9 +693,7 @@ fn analyze_array_from_items(
                 );
             }
 
-            let value = consume_init_for_type(
-                items, pos, element_type, false, span, ctx,
-            )?;
+            let value = consume_init_for_type(items, pos, element_type, false, span, ctx)?;
 
             initialized.insert(current_index);
             element_inits.push((current_index, value));
@@ -736,8 +709,7 @@ fn analyze_array_from_items(
     let effective_size = array_size.unwrap_or(max_index_seen);
 
     // Build a dense map of initialized elements for O(1) lookup.
-    let mut init_map: Vec<Option<CheckedInitializer>> =
-        (0..effective_size).map(|_| None).collect();
+    let mut init_map: Vec<Option<CheckedInitializer>> = (0..effective_size).map(|_| None).collect();
     for (idx, value) in element_inits {
         if idx < effective_size {
             init_map[idx] = Some(value);
@@ -909,7 +881,12 @@ fn consume_init_for_type(
                 if !fields.is_empty() {
                     let first_member_type = &fields[0].ty;
                     let value = consume_init_for_type(
-                        items, pos, first_member_type, false, parent_span, ctx,
+                        items,
+                        pos,
+                        first_member_type,
+                        false,
+                        parent_span,
+                        ctx,
                     )?;
                     return Ok(CheckedInitializer::Aggregate {
                         fields: vec![FieldInit {
@@ -983,11 +960,8 @@ fn resolve_first_array_designator(
     match &designators[0] {
         Designator::Index(index_expr) => {
             // Evaluate the index as a compile-time integer constant.
-            let index_val = constant_eval::evaluate_integer_constant(
-                index_expr,
-                ctx.diagnostics,
-                ctx.target,
-            )?;
+            let index_val =
+                constant_eval::evaluate_integer_constant(index_expr, ctx.diagnostics, ctx.target)?;
 
             if index_val < 0 {
                 ctx.diagnostics.error(
@@ -1105,8 +1079,8 @@ fn build_aggregate_result(
     ctx: &mut InitContext<'_>,
 ) -> Result<CheckedInitializer, ()> {
     let field_count = fields.len();
-    let _struct_size = layout.total_size;    // Total struct size for IR.
-    let _struct_align = layout.alignment;    // Struct alignment for IR.
+    let _struct_size = layout.total_size; // Total struct size for IR.
+    let _struct_align = layout.alignment; // Struct alignment for IR.
 
     let mut result_fields: Vec<FieldInit> = Vec::with_capacity(field_count);
     let mut any_zero_filled = false;

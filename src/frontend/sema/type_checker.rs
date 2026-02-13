@@ -11,21 +11,17 @@
 //! Produces [`TypedExpression`] consumed by IR lowering (Phase 6).
 
 use crate::common::diagnostics::{DiagnosticEngine, Span};
+use crate::common::string_interner::Symbol;
 use crate::common::target::{DataModel, Target};
 use crate::common::type_builder;
-use crate::common::types::{
-    self, CType, FieldDef,
-};
-use crate::common::string_interner::Symbol;
+use crate::common::types::{self, CType, FieldDef};
 use crate::frontend::parser::ast::{
-    AlignofOperand, BinaryOperator, BlockItem, CharPrefix, Expression, ForInit,
-    FloatSuffix, GenericAssociation, IntegerSuffix, SizeofOperand, Statement,
-    StringPrefix, TypeName, UnaryOperator,
+    AlignofOperand, BinaryOperator, BlockItem, CharPrefix, Expression, FloatSuffix, ForInit,
+    GenericAssociation, IntegerSuffix, SizeofOperand, Statement, StringPrefix, TypeName,
+    UnaryOperator,
 };
 use crate::frontend::sema::scope::ScopeStack;
-use crate::frontend::sema::symbol_table::{
-    StorageClass, SymbolEntry, SymbolTable,
-};
+use crate::frontend::sema::symbol_table::{StorageClass, SymbolEntry, SymbolTable};
 
 // ===========================================================================
 // TypedExpression — type-annotated expression output
@@ -407,18 +403,14 @@ fn check_expr_inner(expr: &Expression, ctx: &mut TypeCheckContext<'_>) -> TypedE
         } => check_conditional(condition, then_expr.as_deref(), else_expr, *span, expr, ctx),
 
         // ----- Function call -----
-        Expression::FunctionCall {
-            callee,
-            args,
-            span,
-        } => check_function_call(callee, args, *span, expr, ctx),
+        Expression::FunctionCall { callee, args, span } => {
+            check_function_call(callee, args, *span, expr, ctx)
+        }
 
         // ----- Array subscript -----
-        Expression::ArraySubscript {
-            array,
-            index,
-            span,
-        } => check_array_subscript(array, index, *span, expr, ctx),
+        Expression::ArraySubscript { array, index, span } => {
+            check_array_subscript(array, index, *span, expr, ctx)
+        }
 
         // ----- Member access (.) -----
         Expression::MemberAccess {
@@ -458,7 +450,13 @@ fn check_expr_inner(expr: &Expression, ctx: &mut TypeCheckContext<'_>) -> TypedE
             // Here we produce a typed expression with the declared type as Int
             // (the actual type resolution is deferred to the declaration handler
             // which resolves TypeName to CType).
-            TypedExpression::new(expr.clone(), CType::Int { signed: true }, true, false, *span)
+            TypedExpression::new(
+                expr.clone(),
+                CType::Int { signed: true },
+                true,
+                false,
+                *span,
+            )
         }
 
         // ----- Comma expression -----
@@ -472,9 +470,7 @@ fn check_expr_inner(expr: &Expression, ctx: &mut TypeCheckContext<'_>) -> TypedE
         } => check_generic(controlling, associations, *span, expr, ctx),
 
         // ----- Statement expression GCC extension -----
-        Expression::StatementExpression { body, span } => {
-            check_stmt_expr(body, *span, expr, ctx)
-        }
+        Expression::StatementExpression { body, span } => check_stmt_expr(body, *span, expr, ctx),
 
         // ----- Label address (&&label) -----
         Expression::LabelAddress { label: _, span } => {
@@ -563,7 +559,7 @@ fn check_string_literal(
         StringPrefix::None | StringPrefix::U8 => (CType::Char { signed: true }, 1),
         StringPrefix::L => (CType::Int { signed: true }, 4), // wchar_t = int on Linux
         StringPrefix::SmallU => (CType::Short { signed: false }, 2), // char16_t
-        StringPrefix::BigU => (CType::Int { signed: false }, 4),     // char32_t
+        StringPrefix::BigU => (CType::Int { signed: false }, 4), // char32_t
     };
     // +1 for the null terminator.
     let len = (value.len() / char_size) + 1;
@@ -579,10 +575,10 @@ fn check_string_literal(
 /// Ordinary character constants have type `int` per C11 §6.4.4.4.
 fn check_char_literal(prefix: CharPrefix, span: Span, expr: &Expression) -> TypedExpression {
     let ty = match prefix {
-        CharPrefix::None => CType::Int { signed: true },      // int
-        CharPrefix::L => CType::Int { signed: true },          // wchar_t = int
-        CharPrefix::SmallU => CType::Short { signed: false },  // char16_t
-        CharPrefix::BigU => CType::Int { signed: false },      // char32_t
+        CharPrefix::None => CType::Int { signed: true }, // int
+        CharPrefix::L => CType::Int { signed: true },    // wchar_t = int
+        CharPrefix::SmallU => CType::Short { signed: false }, // char16_t
+        CharPrefix::BigU => CType::Int { signed: false }, // char32_t
     };
     TypedExpression::new(expr.clone(), ty, false, true, span)
 }
@@ -592,15 +588,12 @@ fn check_char_literal(prefix: CharPrefix, span: Span, expr: &Expression) -> Type
 // ===========================================================================
 
 /// Resolves an identifier to its declared type via scope and symbol table.
-fn check_identifier(
-    name: Symbol,
-    span: Span,
-    ctx: &mut TypeCheckContext<'_>,
-) -> TypedExpression {
+fn check_identifier(name: Symbol, span: Span, ctx: &mut TypeCheckContext<'_>) -> TypedExpression {
     let sym_id = match ctx.scopes.lookup(name) {
         Some(id) => id,
         None => {
-            ctx.diag.error(span, "use of undeclared identifier".to_string());
+            ctx.diag
+                .error(span, "use of undeclared identifier".to_string());
             return TypedExpression::error(span);
         }
     };
@@ -613,8 +606,8 @@ fn check_identifier(
     let is_lvalue = !ty.is_function() && entry.storage_class != StorageClass::Typedef;
 
     // Enum constants are compile-time constant expressions.
-    let is_constant = matches!(ty.canonical(), CType::Enum { .. })
-        && entry.storage_class != StorageClass::Static;
+    let is_constant =
+        matches!(ty.canonical(), CType::Enum { .. }) && entry.storage_class != StorageClass::Static;
 
     TypedExpression::new(
         Expression::Identifier { name, span },
@@ -735,15 +728,12 @@ fn check_binary_op(
         }
 
         // --- Relational operators ---
-        BinaryOperator::Lt
-        | BinaryOperator::Gt
-        | BinaryOperator::Le
-        | BinaryOperator::Ge => check_relational_op(&lhs, &rhs, span, expr, ctx),
+        BinaryOperator::Lt | BinaryOperator::Gt | BinaryOperator::Le | BinaryOperator::Ge => {
+            check_relational_op(&lhs, &rhs, span, expr, ctx)
+        }
 
         // --- Equality operators ---
-        BinaryOperator::Eq | BinaryOperator::Ne => {
-            check_equality_op(&lhs, &rhs, span, expr, ctx)
-        }
+        BinaryOperator::Eq | BinaryOperator::Ne => check_equality_op(&lhs, &rhs, span, expr, ctx),
 
         // --- Simple assignment ---
         BinaryOperator::Assign => check_simple_assignment(&lhs, &rhs, span, expr, ctx),
@@ -758,9 +748,7 @@ fn check_binary_op(
         | BinaryOperator::BitOrAssign
         | BinaryOperator::BitXorAssign
         | BinaryOperator::ShlAssign
-        | BinaryOperator::ShrAssign => {
-            check_compound_assignment(op, &lhs, &rhs, span, expr, ctx)
-        }
+        | BinaryOperator::ShrAssign => check_compound_assignment(op, &lhs, &rhs, span, expr, ctx),
     }
 }
 
@@ -974,7 +962,13 @@ fn check_logical_op(
     }
 
     let is_const = lhs.is_constant && rhs.is_constant;
-    TypedExpression::new(expr.clone(), CType::Int { signed: true }, false, is_const, span)
+    TypedExpression::new(
+        expr.clone(),
+        CType::Int { signed: true },
+        false,
+        is_const,
+        span,
+    )
 }
 
 /// Checks relational operators: `<`, `>`, `<=`, `>=`.
@@ -1021,7 +1015,13 @@ fn check_relational_op(
     }
 
     let is_const = lhs.is_constant && rhs.is_constant;
-    TypedExpression::new(expr.clone(), CType::Int { signed: true }, false, is_const, span)
+    TypedExpression::new(
+        expr.clone(),
+        CType::Int { signed: true },
+        false,
+        is_const,
+        span,
+    )
 }
 
 /// Checks equality operators: `==`, `!=`.
@@ -1079,7 +1079,13 @@ fn check_equality_op(
     }
 
     let is_const = lhs.is_constant && rhs.is_constant;
-    TypedExpression::new(expr.clone(), CType::Int { signed: true }, false, is_const, span)
+    TypedExpression::new(
+        expr.clone(),
+        CType::Int { signed: true },
+        false,
+        is_const,
+        span,
+    )
 }
 
 /// Checks simple assignment: `lhs = rhs`.
@@ -1092,10 +1098,8 @@ fn check_simple_assignment(
 ) -> TypedExpression {
     // LHS must be a modifiable lvalue.
     if !is_modifiable_lvalue(lhs) {
-        ctx.diag.error(
-            span,
-            "expression is not assignable".to_string(),
-        );
+        ctx.diag
+            .error(span, "expression is not assignable".to_string());
         return TypedExpression::error(span);
     }
 
@@ -1106,10 +1110,7 @@ fn check_simple_assignment(
     if !is_assignment_compatible(lty, &rty, rhs_is_null, span, ctx.diag) {
         ctx.diag.error(
             span,
-            format!(
-                "assigning to '{}' from incompatible type '{}'",
-                lty, rty
-            ),
+            format!("assigning to '{}' from incompatible type '{}'", lty, rty),
         );
     }
 
@@ -1130,10 +1131,8 @@ fn check_compound_assignment(
 ) -> TypedExpression {
     // LHS must be a modifiable lvalue.
     if !is_modifiable_lvalue(lhs) {
-        ctx.diag.error(
-            span,
-            "expression is not assignable".to_string(),
-        );
+        ctx.diag
+            .error(span, "expression is not assignable".to_string());
         return TypedExpression::error(span);
     }
 
@@ -1217,7 +1216,13 @@ fn check_unary_op(
                 return TypedExpression::error(span);
             }
             let promoted = integer_promote(&ty, ctx.target);
-            TypedExpression::new(expr.clone(), promoted, false, typed_operand.is_constant, span)
+            TypedExpression::new(
+                expr.clone(),
+                promoted,
+                false,
+                typed_operand.is_constant,
+                span,
+            )
         }
 
         UnaryOperator::BitNot => {
@@ -1233,7 +1238,13 @@ fn check_unary_op(
                 return TypedExpression::error(span);
             }
             let promoted = integer_promote(&ty, ctx.target);
-            TypedExpression::new(expr.clone(), promoted, false, typed_operand.is_constant, span)
+            TypedExpression::new(
+                expr.clone(),
+                promoted,
+                false,
+                typed_operand.is_constant,
+                span,
+            )
         }
 
         UnaryOperator::LogNot => {
@@ -1304,10 +1315,8 @@ fn check_address_of(
 
     // The operand must be an lvalue or a function designator.
     if !typed_operand.is_lvalue && !typed_operand.ty.is_function() {
-        ctx.diag.error(
-            span,
-            "cannot take the address of an rvalue".to_string(),
-        );
+        ctx.diag
+            .error(span, "cannot take the address of an rvalue".to_string());
         return TypedExpression::error(span);
     }
 
@@ -1339,10 +1348,7 @@ fn check_dereference(
         _ => {
             ctx.diag.error(
                 span,
-                format!(
-                    "indirection requires pointer operand (have '{}')",
-                    ty
-                ),
+                format!("indirection requires pointer operand (have '{}')", ty),
             );
             TypedExpression::error(span)
         }
@@ -1596,10 +1602,7 @@ fn check_array_subscript(
         if !pointee.is_complete() && !pointee.is_void() {
             ctx.diag.error(
                 span,
-                format!(
-                    "subscript of pointer to incomplete type '{}'",
-                    pointee
-                ),
+                format!("subscript of pointer to incomplete type '{}'", pointee),
             );
         }
         let result_ty = (**pointee).clone();
@@ -1628,23 +1631,16 @@ fn check_member_access(
     match &obj_ty {
         CType::Struct { fields, .. } | CType::Union { fields, .. } => {
             match resolve_member(fields, member, ctx) {
-                Some(field_ty) => {
-                    TypedExpression::new(
-                        expr.clone(),
-                        field_ty,
-                        typed_object.is_lvalue,
-                        false,
-                        span,
-                    )
-                }
+                Some(field_ty) => TypedExpression::new(
+                    expr.clone(),
+                    field_ty,
+                    typed_object.is_lvalue,
+                    false,
+                    span,
+                ),
                 None => {
-                    ctx.diag.error(
-                        span,
-                        format!(
-                            "no member named in type '{}'",
-                            obj_ty
-                        ),
-                    );
+                    ctx.diag
+                        .error(span, format!("no member named in type '{}'", obj_ty));
                     TypedExpression::error(span)
                 }
             }
@@ -1683,13 +1679,8 @@ fn check_arrow_access(
                             TypedExpression::new(expr.clone(), field_ty, true, false, span)
                         }
                         None => {
-                            ctx.diag.error(
-                                span,
-                                format!(
-                                    "no member named in type '{}'",
-                                    pointee_c
-                                ),
-                            );
+                            ctx.diag
+                                .error(span, format!("no member named in type '{}'", pointee_c));
                             TypedExpression::error(span)
                         }
                     }
@@ -1709,10 +1700,7 @@ fn check_arrow_access(
         _ => {
             ctx.diag.error(
                 span,
-                format!(
-                    "member reference type '{}' is not a pointer",
-                    ptr_ty
-                ),
+                format!("member reference type '{}' is not a pointer", ptr_ty),
             );
             TypedExpression::error(span)
         }
@@ -1869,10 +1857,7 @@ fn check_cast(
 
     ctx.diag.error(
         span,
-        format!(
-            "invalid cast from '{}' to '{}'",
-            src_ty, target_ty
-        ),
+        format!("invalid cast from '{}' to '{}'", src_ty, target_ty),
     );
     TypedExpression::new(expr.clone(), target_ty, false, false, span)
 }
@@ -1899,7 +1884,10 @@ fn check_sizeof(
             if !ty.is_complete() && !ty.is_void() {
                 ctx.diag.error(
                     span,
-                    format!("invalid application of 'sizeof' to incomplete type '{}'", ty),
+                    format!(
+                        "invalid application of 'sizeof' to incomplete type '{}'",
+                        ty
+                    ),
                 );
             }
             // sizeof(type) is always a constant expression.
@@ -1920,7 +1908,10 @@ fn check_sizeof(
             if !ty.is_complete() && !ty.is_void() {
                 ctx.diag.error(
                     span,
-                    format!("invalid application of 'sizeof' to incomplete type '{}'", ty),
+                    format!(
+                        "invalid application of 'sizeof' to incomplete type '{}'",
+                        ty
+                    ),
                 );
             }
             // sizeof(expr) is a constant unless the expression is a VLA.
@@ -2062,10 +2053,8 @@ fn check_generic(
             None => {
                 // Default association: _Generic(ctrl, default: expression)
                 if default_expr.is_some() {
-                    ctx.diag.error(
-                        span,
-                        "duplicate default in _Generic expression".to_string(),
-                    );
+                    ctx.diag
+                        .error(span, "duplicate default in _Generic expression".to_string());
                 }
                 default_expr = Some(check_expr_inner(&assoc.expression, ctx));
             }
@@ -2073,15 +2062,30 @@ fn check_generic(
     }
 
     if let Some(result) = matched {
-        return TypedExpression::new(expr.clone(), result.ty, result.is_lvalue, result.is_constant, span);
+        return TypedExpression::new(
+            expr.clone(),
+            result.ty,
+            result.is_lvalue,
+            result.is_constant,
+            span,
+        );
     }
     if let Some(result) = default_expr {
-        return TypedExpression::new(expr.clone(), result.ty, result.is_lvalue, result.is_constant, span);
+        return TypedExpression::new(
+            expr.clone(),
+            result.ty,
+            result.is_lvalue,
+            result.is_constant,
+            span,
+        );
     }
 
     ctx.diag.error(
         span,
-        format!("_Generic selector of type '{}' is not compatible with any association", ctrl_ty),
+        format!(
+            "_Generic selector of type '{}' is not compatible with any association",
+            ctrl_ty
+        ),
     );
     TypedExpression::error(span)
 }
@@ -2136,11 +2140,7 @@ fn check_stmt_expr(
 ///
 /// Pointer arithmetic requires a pointer to a complete object type (not void,
 /// not function, not incomplete).
-fn validate_pointer_arithmetic_target(
-    ptr_ty: &CType,
-    span: Span,
-    ctx: &mut TypeCheckContext<'_>,
-) {
+fn validate_pointer_arithmetic_target(ptr_ty: &CType, span: Span, ctx: &mut TypeCheckContext<'_>) {
     if let CType::Pointer(pointee) = ptr_ty.canonical() {
         let p = pointee.canonical();
         if p.is_void() {
@@ -2149,10 +2149,8 @@ fn validate_pointer_arithmetic_target(
                 "pointer arithmetic on a pointer to void is a GNU extension".to_string(),
             );
         } else if p.is_function() {
-            ctx.diag.error(
-                span,
-                "arithmetic on a pointer to function type".to_string(),
-            );
+            ctx.diag
+                .error(span, "arithmetic on a pointer to function type".to_string());
         } else if !p.is_complete() {
             ctx.diag.error(
                 span,
@@ -2235,9 +2233,7 @@ fn resolve_type_name(type_name: &TypeName, ctx: &mut TypeCheckContext<'_>) -> CT
             TypeSpecifier::Signed => has_signed = true,
             TypeSpecifier::Unsigned => has_unsigned = true,
             TypeSpecifier::Complex => has_complex = true,
-            TypeSpecifier::Struct {
-                name, fields, ..
-            } => {
+            TypeSpecifier::Struct { name, fields, .. } => {
                 // Struct specifier: look up the tag in scope to retrieve the
                 // already-resolved CType.  Definitions (with fields) should
                 // already have been processed by the declaration handler.
@@ -2261,9 +2257,7 @@ fn resolve_type_name(type_name: &TypeName, ctx: &mut TypeCheckContext<'_>) -> CT
                     });
                 }
             }
-            TypeSpecifier::Union {
-                name, fields, ..
-            } => {
+            TypeSpecifier::Union { name, fields, .. } => {
                 if let Some(tag_name) = name {
                     if let Some(tag_entry) = ctx.scopes.lookup_tag(*tag_name) {
                         resolved_from_tag = Some(tag_entry.ty.clone());
@@ -2303,10 +2297,8 @@ fn resolve_type_name(type_name: &TypeName, ctx: &mut TypeCheckContext<'_>) -> CT
                     resolved_from_typedef = Some(entry.ty.clone());
                 } else {
                     // Unknown typedef — emit diagnostic, fall back to int.
-                    ctx.diag.error(
-                        type_name.span,
-                        "unknown type name".to_string(),
-                    );
+                    ctx.diag
+                        .error(type_name.span, "unknown type name".to_string());
                     resolved_from_typedef = Some(CType::Int { signed: true });
                 }
             }
@@ -2390,9 +2382,7 @@ fn resolve_type_name(type_name: &TypeName, ctx: &mut TypeCheckContext<'_>) -> CT
                 DerivedDeclarator::Pointer { qualifiers: _ } => {
                     result_ty = CType::Pointer(Box::new(result_ty));
                 }
-                DerivedDeclarator::Array {
-                    size, ..
-                } => {
+                DerivedDeclarator::Array { size, .. } => {
                     // Array size is an expression that should be a constant.
                     // For type name resolution we note it as an array type.
                     let array_size = size.as_ref().map(|_| 0usize); // Size evaluation deferred.
@@ -2590,10 +2580,8 @@ fn check_stmt_inner(stmt: &Statement, ctx: &mut TypeCheckContext<'_>) {
                 }
                 (None, Some(ret_ty)) => {
                     if !ret_ty.is_void() {
-                        ctx.diag.warning(
-                            *span,
-                            "non-void function should return a value".to_string(),
-                        );
+                        ctx.diag
+                            .warning(*span, "non-void function should return a value".to_string());
                     }
                 }
                 (Some(ret_expr), None) => {

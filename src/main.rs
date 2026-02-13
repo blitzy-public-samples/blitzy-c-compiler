@@ -35,8 +35,8 @@ use std::process;
 
 // Library imports for the preprocessing pipeline (-E mode).
 use bcc::common::{DiagnosticEngine, Interner, SourceMap, Target as LibTarget};
+use bcc::frontend::lexer::token::{Token as LexToken, TokenKind};
 use bcc::frontend::preprocessor::Preprocessor;
-use bcc::frontend::lexer::token::{TokenKind, Token as LexToken};
 
 /// Maximum recursion depth for the parser and macro expander.
 /// Enforced to prevent stack overflow on deeply nested kernel constructs.
@@ -461,14 +461,14 @@ fn token_to_text(token: &LexToken, interner: &Interner) -> String {
             let ch = *value;
             let prefix_str = format!("{}", prefix);
             if (0x20..0x7f).contains(&ch) && ch != (b'\\' as u32) && ch != (b'\'' as u32) {
-                format!("{}'{}'" , prefix_str, char::from_u32(ch).unwrap_or('?'))
+                format!("{}'{}'", prefix_str, char::from_u32(ch).unwrap_or('?'))
             } else {
                 match ch {
                     0x0a => format!("{}'\\n'", prefix_str),
                     0x0d => format!("{}'\\r'", prefix_str),
                     0x09 => format!("{}'\\t'", prefix_str),
                     0x00 => format!("{}'\\0'", prefix_str),
-                    0x5c => format!("{}'\\\\'" , prefix_str),
+                    0x5c => format!("{}'\\\\'", prefix_str),
                     0x27 => format!("{}'\\''", prefix_str),
                     _ => format!("{}'\\x{:02x}'", prefix_str, ch),
                 }

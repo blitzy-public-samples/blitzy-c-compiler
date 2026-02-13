@@ -49,11 +49,13 @@ pub use relocations::I686RelocationHandler;
 
 use crate::backend::elf_writer_common::{
     ElfSection, ElfSymbol, ElfWriter, ProgramHeader, ELFCLASS32, ELFDATA2LSB, EM_386, ET_DYN,
-    ET_EXEC, PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD,
-    PT_PHDR, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_DYNAMIC, SHT_DYNSYM, SHT_HASH,
-    SHT_NOBITS, SHT_PROGBITS, SHT_STRTAB, STB_GLOBAL, STB_LOCAL, STT_FILE, STT_SECTION,
+    ET_EXEC, PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_PHDR,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_DYNAMIC, SHT_DYNSYM, SHT_HASH, SHT_NOBITS,
+    SHT_PROGBITS, SHT_STRTAB, STB_GLOBAL, STB_LOCAL, STT_FILE, STT_SECTION,
 };
-use crate::backend::linker_common::dynamic::{interp_string, DynamicRelocation, GotEntry, PltEntry};
+use crate::backend::linker_common::dynamic::{
+    interp_string, DynamicRelocation, GotEntry, PltEntry,
+};
 use crate::backend::linker_common::relocation::RelocationEntry;
 use crate::backend::linker_common::{
     DynamicLayout, DynamicSectionBuilder, DynamicSymbolTable, GotBuilder, InputRelocation,
@@ -227,10 +229,7 @@ impl I686Linker {
     /// * `Ok(Vec<u8>)` — The complete ELF binary as a byte vector.
     /// * `Err(Vec<LinkError>)` — Linking errors (undefined symbols, duplicate
     ///   definitions, relocation overflows, etc.).
-    pub fn link(
-        &mut self,
-        input_objects: Vec<InputObject>,
-    ) -> Result<Vec<u8>, Vec<LinkError>> {
+    pub fn link(&mut self, input_objects: Vec<InputObject>) -> Result<Vec<u8>, Vec<LinkError>> {
         let mut diag = DiagnosticEngine::new();
         let reloc_handler = I686RelocationHandler::new();
 
@@ -270,9 +269,7 @@ impl I686Linker {
                 for (reloc_sec_idx, relocs) in &obj.relocations {
                     if *reloc_sec_idx == sec_idx && !relocs.is_empty() {
                         let out_idx = merger.section_count().saturating_sub(1);
-                        reloc_processor.collect_relocations(
-                            obj_idx, sec_idx, relocs, out_idx, 0,
-                        );
+                        reloc_processor.collect_relocations(obj_idx, sec_idx, relocs, out_idx, 0);
                     }
                 }
             }
@@ -565,10 +562,7 @@ impl I686Linker {
         // serialization.  Fatal conditions were already returned above; this
         // catches any secondary issues emitted via `diag.error()`.
         if diag.has_errors() {
-            diag.note(
-                Span::DUMMY,
-                "linking aborted due to previous errors",
-            );
+            diag.note(Span::DUMMY, "linking aborted due to previous errors");
         }
 
         // -- Step 12: Write output ELF ----------------------------------------
@@ -895,8 +889,12 @@ impl I686Linker {
             for phdr in &phdrs {
                 if phdr.p_type == PT_LOAD {
                     // Ensure at least read permission is set.
-                    debug_assert_ne!(phdr.p_flags & PF_R, 0,
-                        "PT_LOAD segment at 0x{:x} has no PF_R flag", phdr.p_vaddr);
+                    debug_assert_ne!(
+                        phdr.p_flags & PF_R,
+                        0,
+                        "PT_LOAD segment at 0x{:x} has no PF_R flag",
+                        phdr.p_vaddr
+                    );
                 }
             }
             // PT_GNU_RELRO is only emitted by the linker script when there are
@@ -1165,15 +1163,9 @@ mod tests {
             0x0804_C000
         );
         // r_info = (0 << 8) | 8 = 8
-        assert_eq!(
-            u32::from_le_bytes(result[4..8].try_into().unwrap()),
-            8
-        );
+        assert_eq!(u32::from_le_bytes(result[4..8].try_into().unwrap()), 8);
         // r_addend = 0x100
-        assert_eq!(
-            i32::from_le_bytes(result[8..12].try_into().unwrap()),
-            0x100
-        );
+        assert_eq!(i32::from_le_bytes(result[8..12].try_into().unwrap()), 0x100);
     }
 
     #[test]
@@ -1197,12 +1189,21 @@ mod tests {
 
         // First reloc: r_offset=0x1000, r_info=(2<<8)|1=513, r_addend=0
         assert_eq!(u32::from_le_bytes(result[0..4].try_into().unwrap()), 0x1000);
-        assert_eq!(u32::from_le_bytes(result[4..8].try_into().unwrap()), (2 << 8) | 1);
+        assert_eq!(
+            u32::from_le_bytes(result[4..8].try_into().unwrap()),
+            (2 << 8) | 1
+        );
         assert_eq!(i32::from_le_bytes(result[8..12].try_into().unwrap()), 0);
 
         // Second reloc: r_offset=0x2000, r_info=(3<<8)|7=775, r_addend=-4
-        assert_eq!(u32::from_le_bytes(result[12..16].try_into().unwrap()), 0x2000);
-        assert_eq!(u32::from_le_bytes(result[16..20].try_into().unwrap()), (3 << 8) | 7);
+        assert_eq!(
+            u32::from_le_bytes(result[12..16].try_into().unwrap()),
+            0x2000
+        );
+        assert_eq!(
+            u32::from_le_bytes(result[16..20].try_into().unwrap()),
+            (3 << 8) | 7
+        );
         assert_eq!(i32::from_le_bytes(result[20..24].try_into().unwrap()), -4);
     }
 
@@ -1279,8 +1280,14 @@ mod tests {
                 entry_size: 0,
             },
         ];
-        assert_eq!(linker.find_section_address(&sections, ".text"), Some(0x0804_9000));
-        assert_eq!(linker.find_section_address(&sections, ".data"), Some(0x0804_B000));
+        assert_eq!(
+            linker.find_section_address(&sections, ".text"),
+            Some(0x0804_9000)
+        );
+        assert_eq!(
+            linker.find_section_address(&sections, ".data"),
+            Some(0x0804_B000)
+        );
         assert_eq!(linker.find_section_address(&sections, ".bss"), None);
     }
 

@@ -627,7 +627,57 @@ fn handle_gcc_comma_deletion(
     });
 
     if !va_empty {
-        return body.to_vec();
+        // When variadic args are non-empty, we must STILL neutralise the
+        // `## __VA_ARGS__` pattern by removing the `##` token.  If we leave
+        // it in place, `apply_paste_operators` will later try to
+        // token-paste the preceding comma with the first variadic-argument
+        // token, destroying both.  The correct GCC semantics for
+        // non-empty variadic is: keep the comma, substitute __VA_ARGS__
+        // normally — just strip the `##` that was acting as the
+        // conditional-comma-deletion marker.
+        let mut result = Vec::with_capacity(body.len());
+        let mut i = 0;
+
+        while i < body.len() {
+            if matches!(body[i].kind, TokenKind::Comma) {
+                // Probe ahead for `## __VA_ARGS__`.
+                let mut j = i + 1;
+                while j < body.len()
+                    && matches!(body[j].kind, TokenKind::Whitespace | TokenKind::Newline)
+                {
+                    j += 1;
+                }
+                if j < body.len() && matches!(body[j].kind, TokenKind::HashHash) {
+                    let mut k = j + 1;
+                    while k < body.len()
+                        && matches!(body[k].kind, TokenKind::Whitespace | TokenKind::Newline)
+                    {
+                        k += 1;
+                    }
+                    if k < body.len() {
+                        if let TokenKind::Identifier(s) = body[k].kind {
+                            let is_va = s == va_args_sym
+                                || extended_params
+                                    .last()
+                                    .map_or(false, |last| *last == s && s != va_args_sym);
+                            if is_va {
+                                // Non-empty case: keep comma, skip `##`
+                                // (and interstitial whitespace), keep
+                                // `__VA_ARGS__` for normal substitution.
+                                result.push(body[i].clone()); // push comma
+                                i = k; // advance to __VA_ARGS__; will be
+                                        // pushed on the next iteration
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            result.push(body[i].clone());
+            i += 1;
+        }
+
+        return result;
     }
 
     // Scan for pattern: Comma [Whitespace…] HashHash [Whitespace…] __VA_ARGS__

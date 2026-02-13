@@ -32,6 +32,13 @@ pub mod abbrev;
 /// debugging in GDB and other DWARF-aware debuggers.
 pub mod line;
 
+/// `.debug_info` section generator — compilation unit, subprogram, and
+/// variable Debug Information Entries (DIEs) for source-level debugging.
+/// Produces DW_TAG_compile_unit, DW_TAG_subprogram, DW_TAG_variable, and
+/// type DIEs referencing abbreviation codes from [`abbrev`] and string
+/// offsets from [`debug_str`].
+pub mod info;
+
 /// `.debug_str` section generator — string table construction for debug
 /// information names, providing `DW_FORM_strp` offset management so that
 /// string-valued attributes in `.debug_info` DIEs reference this shared

@@ -42,6 +42,11 @@ pub mod linker_common;
 /// selection, built-in assembler, and built-in linker for the x86-64 target.
 pub mod x86_64;
 
+/// i686 (IA-32) backend — `ArchCodegen` trait implementation, instruction
+/// selection, built-in assembler, and built-in linker for the 32-bit x86
+/// target with cdecl/System V i386 ABI conformance.
+pub mod i686;
+
 /// AArch64 (ARM 64-bit) backend — `ArchCodegen` trait implementation,
 /// instruction selection, built-in assembler, and built-in linker for the
 /// AArch64 target with AAPCS64 ABI conformance.

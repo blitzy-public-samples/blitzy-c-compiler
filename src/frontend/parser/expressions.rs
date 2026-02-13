@@ -1,24 +1,41 @@
 //! Expression parsing module for the BCC C11 parser.
 //!
-//! Implements Pratt / precedence-climbing expression parsing for all C11
-//! operators, primary expressions, casts, sizeof, `_Alignof`, `_Generic`,
-//! compound literals, and GCC extensions (statement expressions, label
-//! addresses, conditional omission).
+//! Implements recursive-descent expression parsing for all C11 operators,
+//! primary expressions, casts, sizeof, `_Alignof`, `_Generic`, compound
+//! literals, and GCC extensions (statement expressions, label addresses,
+//! conditional omission `x ?: y`, `__extension__`).
 //!
 //! # Operator Precedence
 //!
 //! The parser follows the standard C operator precedence table (15 levels).
-//! Assignment operators are right-associative; all other binary operators
-//! are left-associative.
+//! Each level is implemented as a separate function in the recursive-descent
+//! chain.  Assignment operators and the conditional operator (`?:`) are
+//! right-associative; all other binary operators are left-associative.
+//!
+//! # Type-Name Disambiguation
+//!
+//! Parenthesised constructs `(...)` in expression context may represent:
+//! - Parenthesised expression:   `(expr)`
+//! - GCC statement expression:   `({ ... })`
+//! - Cast expression:            `(type-name) unary-expression`
+//! - Compound literal:           `(type-name) { initializer-list }`
+//!
+//! The disambiguator peeks at the token after `(`.  If it can start a
+//! type-name (type specifier keyword, type qualifier, `struct`/`union`/`enum`,
+//! `typeof`/`__typeof__`, or a registered typedef name) we parse a
+//! type-name.  After closing `)`, a following `{` selects compound-literal;
+//! otherwise it is a cast.  All other cases fall through to a regular
+//! parenthesised (or statement) expression.
 //!
 //! # Architecture
 //!
 //! All public functions accept a `&mut Parser` and return
-//! `Result<Expression, ParseError>`.
+//! `Result<Expression, ParseError>`.  Private helpers are used for each
+//! precedence level.
 
 use super::ast::{
-    AlignofOperand, BinaryOperator, Expression, GenericAssociation, SizeofOperand, Span,
-    UnaryOperator,
+    AlignofOperand, BinaryOperator, Designator, Expression, GenericAssociation, Initializer,
+    InitializerItem, SizeofOperand, Span, UnaryOperator,
 };
 use super::{ParseError, Parser};
 use crate::common::string_interner::Symbol;
@@ -26,7 +43,7 @@ use crate::frontend::lexer::token::TokenKind;
 
 // ===========================================================================
 // Public entry points — called from statements.rs, declarations.rs,
-// gcc_extensions.rs, and mod.rs.
+// gcc_extensions.rs, types.rs, inline_asm.rs, attributes.rs, and mod.rs.
 // ===========================================================================
 
 /// Parses a full expression (comma-separated expression list).
@@ -67,7 +84,8 @@ pub fn parse_expression(parser: &mut Parser<'_>) -> Result<Expression, ParseErro
     })
 }
 
-/// Parses an assignment expression.
+/// Parses an assignment expression — used in function arguments, initializers,
+/// and anywhere the comma operator must *not* be consumed.
 ///
 /// ```text
 /// assignment-expression:
@@ -76,9 +94,9 @@ pub fn parse_expression(parser: &mut Parser<'_>) -> Result<Expression, ParseErro
 /// ```
 ///
 /// Since we cannot trivially distinguish unary-expression from conditional-
-/// expression by lookahead, we parse a conditional-expression and then check
-/// if it is followed by an assignment operator. If so, we reinterpret the
-/// LHS as an lvalue and emit a `BinaryOp` with the assignment operator.
+/// expression by lookahead, we parse a conditional-expression first, then
+/// check if it is followed by an assignment operator.  If so, we reinterpret
+/// the LHS as an lvalue and emit a `BinaryOp` with the assignment operator.
 pub fn parse_assignment_expression(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     parser.enter_recursion()?;
     let lhs = parse_conditional_expression(parser)?;
@@ -100,6 +118,22 @@ pub fn parse_assignment_expression(parser: &mut Parser<'_>) -> Result<Expression
     Ok(lhs)
 }
 
+/// Parses a constant expression — used for array sizes, case values, enum
+/// values, bitfield widths, `_Static_assert` conditions, and similar
+/// contexts where only compile-time-evaluable expressions are allowed.
+///
+/// ```text
+/// constant-expression:
+///     conditional-expression
+/// ```
+///
+/// The grammar for constant expressions is identical to conditional
+/// expressions.  The compile-time-evaluability constraint is enforced by
+/// the semantic analyzer, not the parser.
+pub fn parse_constant_expression(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
+    parse_conditional_expression(parser)
+}
+
 /// Parses a conditional (ternary) expression.
 ///
 /// ```text
@@ -110,7 +144,7 @@ pub fn parse_assignment_expression(parser: &mut Parser<'_>) -> Result<Expression
 /// ```
 ///
 /// The GCC extension form `x ?: y` omits the "then" operand; it is
-/// dispatched to [`gcc_extensions::parse_conditional_omission`].
+/// dispatched to [`super::gcc_extensions::parse_conditional_omission`].
 pub fn parse_conditional_expression(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     parser.enter_recursion()?;
     let condition = parse_logical_or(parser)?;
@@ -145,10 +179,10 @@ pub fn parse_conditional_expression(parser: &mut Parser<'_>) -> Result<Expressio
 }
 
 // ===========================================================================
-// Binary operators — precedence climbing
+// Binary operators — one function per precedence level (recursive-descent)
 // ===========================================================================
 
-/// Parses logical-or: `a || b`
+/// Parses logical-or: `a || b`   (precedence 4)
 fn parse_logical_or(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_logical_and(parser)?;
     while parser.check(TokenKind::PipePipe) {
@@ -165,7 +199,7 @@ fn parse_logical_or(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     Ok(left)
 }
 
-/// Parses logical-and: `a && b`
+/// Parses logical-and: `a && b`   (precedence 5)
 fn parse_logical_and(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_bitwise_or(parser)?;
     while parser.check(TokenKind::AmpAmp) {
@@ -182,7 +216,7 @@ fn parse_logical_and(parser: &mut Parser<'_>) -> Result<Expression, ParseError> 
     Ok(left)
 }
 
-/// Parses bitwise-or: `a | b`
+/// Parses bitwise-or: `a | b`    (precedence 6)
 fn parse_bitwise_or(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_bitwise_xor(parser)?;
     while parser.check(TokenKind::Pipe) {
@@ -199,7 +233,7 @@ fn parse_bitwise_or(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     Ok(left)
 }
 
-/// Parses bitwise-xor: `a ^ b`
+/// Parses bitwise-xor: `a ^ b`   (precedence 7)
 fn parse_bitwise_xor(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_bitwise_and(parser)?;
     while parser.check(TokenKind::Caret) {
@@ -216,7 +250,7 @@ fn parse_bitwise_xor(parser: &mut Parser<'_>) -> Result<Expression, ParseError> 
     Ok(left)
 }
 
-/// Parses bitwise-and: `a & b`
+/// Parses bitwise-and: `a & b`   (precedence 8)
 fn parse_bitwise_and(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_equality(parser)?;
     while parser.check(TokenKind::Ampersand) {
@@ -233,7 +267,7 @@ fn parse_bitwise_and(parser: &mut Parser<'_>) -> Result<Expression, ParseError> 
     Ok(left)
 }
 
-/// Parses equality: `a == b`, `a != b`
+/// Parses equality: `a == b`, `a != b`   (precedence 9)
 fn parse_equality(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_relational(parser)?;
     loop {
@@ -255,7 +289,7 @@ fn parse_equality(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     Ok(left)
 }
 
-/// Parses relational: `a < b`, `a > b`, `a <= b`, `a >= b`
+/// Parses relational: `a < b`, `a > b`, `a <= b`, `a >= b`   (precedence 10)
 fn parse_relational(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_shift(parser)?;
     loop {
@@ -279,7 +313,7 @@ fn parse_relational(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     Ok(left)
 }
 
-/// Parses shift: `a << b`, `a >> b`
+/// Parses shift: `a << b`, `a >> b`   (precedence 11)
 fn parse_shift(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_additive(parser)?;
     loop {
@@ -301,7 +335,7 @@ fn parse_shift(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     Ok(left)
 }
 
-/// Parses additive: `a + b`, `a - b`
+/// Parses additive: `a + b`, `a - b`   (precedence 12)
 fn parse_additive(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     let mut left = parse_multiplicative(parser)?;
     loop {
@@ -323,9 +357,9 @@ fn parse_additive(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     Ok(left)
 }
 
-/// Parses multiplicative: `a * b`, `a / b`, `a % b`
+/// Parses multiplicative: `a * b`, `a / b`, `a % b`   (precedence 13)
 fn parse_multiplicative(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
-    let mut left = parse_unary(parser)?;
+    let mut left = parse_cast(parser)?;
     loop {
         let op = match parser.current().kind {
             TokenKind::Star => BinaryOperator::Mul,
@@ -334,7 +368,7 @@ fn parse_multiplicative(parser: &mut Parser<'_>) -> Result<Expression, ParseErro
             _ => break,
         };
         parser.advance();
-        let right = parse_unary(parser)?;
+        let right = parse_cast(parser)?;
         let span = Span::merge(left.span(), right.span());
         left = Expression::BinaryOp {
             op,
@@ -347,10 +381,74 @@ fn parse_multiplicative(parser: &mut Parser<'_>) -> Result<Expression, ParseErro
 }
 
 // ===========================================================================
+// Cast expression — the bridge between binary and unary operators
+// ===========================================================================
+
+/// Parses a cast expression (C11 §6.5.4).
+///
+/// ```text
+/// cast-expression:
+///     unary-expression
+///     '(' type-name ')' cast-expression
+/// ```
+///
+/// When the parser sees `(`, it must disambiguate between:
+/// 1. `(type-name) cast-expression` — explicit cast
+/// 2. `(type-name) { init-list }` — compound literal (C11)
+/// 3. `({ ... })` — GCC statement expression
+/// 4. `( expression )` — parenthesized expression (handled inside
+///    `parse_unary` → `parse_postfix` → `parse_primary`)
+///
+/// The heuristic: after consuming `(`, if the current token can begin a
+/// type-name *and* the construct is not a statement expression, we attempt
+/// to parse as type-name.  After the closing `)`, a `{` yields a compound
+/// literal, otherwise a cast.  If the token after `(` cannot start a
+/// type-name, we fall through to `parse_unary`.
+fn parse_cast(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
+    // Only attempt the type-name path when `(` is current **and** the token
+    // after `(` looks like it can start a type-name.
+    if parser.check(TokenKind::LeftParen) && is_type_name_start_at(parser, 1) {
+        // Speculatively peek: if the token after `(` is `{` this is actually
+        // a GCC statement expression `({ ... })`, not a cast.
+        if matches!(parser.peek_ahead(1).kind, TokenKind::LeftBrace) {
+            return parse_unary(parser);
+        }
+
+        let start = parser.current().span;
+        parser.advance(); // consume `(`
+        let type_name = super::types::parse_type_name(parser)?;
+        parser.expect(TokenKind::RightParen)?;
+
+        // Compound literal: `(type-name) { initializer-list }`
+        if parser.check(TokenKind::LeftBrace) {
+            let initializer = parse_brace_initializer(parser)?;
+            let end_span = initializer_span(&initializer);
+            let span = Span::merge(start, end_span);
+            return Ok(Expression::CompoundLiteral {
+                type_name: Box::new(type_name),
+                initializer,
+                span,
+            });
+        }
+
+        // Cast: `(type-name) cast-expression`
+        let operand = parse_cast(parser)?;
+        let span = Span::merge(start, operand.span());
+        return Ok(Expression::Cast {
+            type_name: Box::new(type_name),
+            operand: Box::new(operand),
+            span,
+        });
+    }
+
+    parse_unary(parser)
+}
+
+// ===========================================================================
 // Unary expressions
 // ===========================================================================
 
-/// Parses a unary expression.
+/// Parses a unary expression (C11 §6.5.3).
 ///
 /// ```text
 /// unary-expression:
@@ -361,8 +459,9 @@ fn parse_multiplicative(parser: &mut Parser<'_>) -> Result<Expression, ParseErro
 ///     'sizeof' unary-expression
 ///     'sizeof' '(' type-name ')'
 ///     '_Alignof' '(' type-name ')'
-///     '&&' identifier              (GCC label address)
-///     '__extension__' expr         (GCC extension prefix)
+///     '__alignof__' '(' type-name ')'   (GCC synonym)
+///     '&&' identifier                   (GCC label address)
+///     '__extension__' expression         (GCC extension prefix)
 /// ```
 fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     parser.enter_recursion()?;
@@ -398,7 +497,7 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
         // Address-of: `&expr`
         TokenKind::Ampersand => {
             let start = parser.advance();
-            let operand = parse_unary(parser)?;
+            let operand = parse_cast(parser)?;
             let span = Span::merge(start, operand.span());
             Ok(Expression::AddressOf {
                 operand: Box::new(operand),
@@ -409,7 +508,7 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
         // Dereference: `*expr`
         TokenKind::Star => {
             let start = parser.advance();
-            let operand = parse_unary(parser)?;
+            let operand = parse_cast(parser)?;
             let span = Span::merge(start, operand.span());
             Ok(Expression::Dereference {
                 operand: Box::new(operand),
@@ -420,7 +519,7 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
         // Unary plus: `+expr`
         TokenKind::Plus => {
             let start = parser.advance();
-            let operand = parse_unary(parser)?;
+            let operand = parse_cast(parser)?;
             let span = Span::merge(start, operand.span());
             Ok(Expression::UnaryOp {
                 op: UnaryOperator::Plus,
@@ -433,7 +532,7 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
         // Unary minus: `-expr`
         TokenKind::Minus => {
             let start = parser.advance();
-            let operand = parse_unary(parser)?;
+            let operand = parse_cast(parser)?;
             let span = Span::merge(start, operand.span());
             Ok(Expression::UnaryOp {
                 op: UnaryOperator::Neg,
@@ -446,7 +545,7 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
         // Bitwise NOT: `~expr`
         TokenKind::Tilde => {
             let start = parser.advance();
-            let operand = parse_unary(parser)?;
+            let operand = parse_cast(parser)?;
             let span = Span::merge(start, operand.span());
             Ok(Expression::UnaryOp {
                 op: UnaryOperator::BitNot,
@@ -459,7 +558,7 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
         // Logical NOT: `!expr`
         TokenKind::Exclaim => {
             let start = parser.advance();
-            let operand = parse_unary(parser)?;
+            let operand = parse_cast(parser)?;
             let span = Span::merge(start, operand.span());
             Ok(Expression::UnaryOp {
                 op: UnaryOperator::LogNot,
@@ -469,33 +568,13 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
             })
         }
 
-        // sizeof
-        TokenKind::Sizeof => {
-            let start = parser.advance();
-            // sizeof(x) — could be type or expression
-            let operand = parse_unary(parser)?;
-            let span = Span::merge(start, operand.span());
-            Ok(Expression::Sizeof {
-                operand: SizeofOperand::Expression(Box::new(operand)),
-                span,
-            })
-        }
+        // sizeof (C11 §6.5.3.4)
+        TokenKind::Sizeof => parse_sizeof(parser),
 
-        // _Alignof
-        TokenKind::Alignof => {
-            let start = parser.advance();
-            parser.expect(TokenKind::LeftParen)?;
-            // For now, parse as expression. Sema resolves type vs expression.
-            let operand = parse_expression(parser)?;
-            let close = parser.expect(TokenKind::RightParen)?;
-            let span = Span::merge(start, close);
-            Ok(Expression::Alignof {
-                operand: AlignofOperand::Expression(Box::new(operand)),
-                span,
-            })
-        }
+        // _Alignof / __alignof__ (C11 §6.5.3.4)
+        TokenKind::Alignof => parse_alignof(parser),
 
-        // __extension__ expr (GCC extension)
+        // __extension__ expr (GCC extension prefix)
         TokenKind::Extension => super::gcc_extensions::parse_extension_expr(parser),
 
         // Fall through to postfix expression
@@ -506,11 +585,84 @@ fn parse_unary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     result
 }
 
+/// Parses a `sizeof` expression (C11 §6.5.3.4).
+///
+/// ```text
+/// sizeof unary-expression
+/// sizeof ( type-name )
+/// ```
+///
+/// Disambiguation: if the token after `sizeof` is `(` and the token after
+/// *that* can start a type-name, we parse `sizeof(type-name)`.  Otherwise
+/// we parse `sizeof unary-expression`.
+fn parse_sizeof(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
+    let start = parser.advance(); // consume `sizeof`
+
+    // sizeof ( type-name )
+    if parser.check(TokenKind::LeftParen) && is_type_name_start_at(parser, 1) {
+        // Guard against `sizeof({ ... })` which is a GCC statement expression
+        if !matches!(parser.peek_ahead(1).kind, TokenKind::LeftBrace) {
+            parser.advance(); // consume `(`
+            let type_name = super::types::parse_type_name(parser)?;
+            let end = parser.expect(TokenKind::RightParen)?;
+            let span = Span::merge(start, end);
+            return Ok(Expression::Sizeof {
+                operand: SizeofOperand::TypeName(Box::new(type_name)),
+                span,
+            });
+        }
+    }
+
+    // sizeof unary-expression
+    let operand = parse_unary(parser)?;
+    let span = Span::merge(start, operand.span());
+    Ok(Expression::Sizeof {
+        operand: SizeofOperand::Expression(Box::new(operand)),
+        span,
+    })
+}
+
+/// Parses an `_Alignof` / `__alignof__` expression (C11 §6.5.3.4).
+///
+/// ```text
+/// _Alignof ( type-name )
+/// __alignof__ ( expression )        (GCC extension)
+/// ```
+///
+/// C11 mandates that `_Alignof` takes a type-name in parentheses.  GCC
+/// additionally allows `__alignof__(expr)`.  We attempt type-name first;
+/// if that fails (the current token after `(` does not start a type-name),
+/// we fall back to an expression operand.
+fn parse_alignof(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
+    let start = parser.advance(); // consume `_Alignof` / `__alignof__`
+    parser.expect(TokenKind::LeftParen)?;
+
+    // Attempt type-name
+    if is_type_name_start(parser) {
+        let type_name = super::types::parse_type_name(parser)?;
+        let end = parser.expect(TokenKind::RightParen)?;
+        let span = Span::merge(start, end);
+        return Ok(Expression::Alignof {
+            operand: AlignofOperand::TypeName(Box::new(type_name)),
+            span,
+        });
+    }
+
+    // GCC extension: __alignof__(expression)
+    let expr = parse_expression(parser)?;
+    let end = parser.expect(TokenKind::RightParen)?;
+    let span = Span::merge(start, end);
+    Ok(Expression::Alignof {
+        operand: AlignofOperand::Expression(Box::new(expr)),
+        span,
+    })
+}
+
 // ===========================================================================
 // Postfix expressions
 // ===========================================================================
 
-/// Parses a postfix expression.
+/// Parses a postfix expression (C11 §6.5.2).
 ///
 /// ```text
 /// postfix-expression:
@@ -618,19 +770,23 @@ fn parse_postfix(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
 // Primary expressions
 // ===========================================================================
 
-/// Parses a primary expression.
+/// Parses a primary expression (C11 §6.5.1).
 ///
 /// ```text
 /// primary-expression:
 ///     identifier
-///     integer-literal
-///     float-literal
+///     constant (integer / float / char)
 ///     string-literal
-///     char-literal
 ///     '(' expression ')'
-///     '(' '{' ... '}' ')'           (GCC statement expression)
+///     '(' '{' ... '}' ')'        (GCC statement expression)
 ///     _Generic( ... )
 /// ```
+///
+/// Note: cast expressions `(type-name) expr` and compound literals
+/// `(type-name) { init }` are handled by [`parse_cast`] *before* this
+/// function is reached.  By the time we enter `parse_primary`, any `(`
+/// we encounter is guaranteed to be either a parenthesized expression
+/// or a GCC statement expression.
 fn parse_primary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     match parser.current().kind.clone() {
         // Identifier
@@ -659,7 +815,7 @@ fn parse_primary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
             })
         }
 
-        // String literal
+        // String literal (handles adjacent string concatenation at lexer level)
         TokenKind::StringLiteral { value, prefix } => {
             let span = parser.advance();
             Ok(Expression::StringLiteral {
@@ -679,9 +835,14 @@ fn parse_primary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
             })
         }
 
-        // Parenthesized expression or GCC statement expression
+        // Parenthesized expression or GCC statement expression.
+        //
+        // Cast/compound-literal cases have already been handled by
+        // `parse_cast` before we reach here, so we only need to deal
+        // with plain parenthesized expressions and statement expressions.
         TokenKind::LeftParen => {
-            let _start = parser.advance();
+            let _start = parser.advance(); // consume `(`
+
             // GCC statement expression: `({ ... })`
             if parser.check(TokenKind::LeftBrace) {
                 let expr = super::gcc_extensions::parse_statement_expression(parser)?;
@@ -696,10 +857,10 @@ fn parse_primary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
             Ok(inner)
         }
 
-        // _Generic selection
+        // _Generic selection expression (C11 §6.5.1.1)
         TokenKind::Generic => parse_generic_selection(parser),
 
-        // Unexpected token
+        // Unexpected token — emit diagnostic and return error
         _ => {
             let tok = parser.current();
             let span = tok.span;
@@ -714,16 +875,27 @@ fn parse_primary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
     }
 }
 
+// ===========================================================================
+// _Generic selection expression
+// ===========================================================================
+
 /// Parses a `_Generic` selection expression (C11 §6.5.1.1).
 ///
 /// ```text
 /// _Generic ( assignment-expression , generic-assoc-list )
-/// generic-assoc-list: generic-association (',' generic-association)*
-/// generic-association: type-name ':' assignment-expression
-///                    | 'default' ':' assignment-expression
+/// generic-assoc-list:
+///     generic-association
+///     generic-assoc-list ',' generic-association
+/// generic-association:
+///     type-name ':' assignment-expression
+///     'default' ':' assignment-expression
 /// ```
+///
+/// The controlling expression's type is evaluated at compile time and
+/// matched against the type-name associations.  Only the matched
+/// association's expression is selected (the others are not evaluated).
 fn parse_generic_selection(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
-    let start = parser.advance(); // consume _Generic
+    let start = parser.advance(); // consume `_Generic`
     parser.expect(TokenKind::LeftParen)?;
     let controlling = parse_assignment_expression(parser)?;
     parser.expect(TokenKind::Comma)?;
@@ -731,8 +903,10 @@ fn parse_generic_selection(parser: &mut Parser<'_>) -> Result<Expression, ParseE
     let mut associations = Vec::new();
     loop {
         let assoc_start = parser.current().span;
+
         if parser.check(TokenKind::Default) {
-            parser.advance();
+            // default: assignment-expression
+            parser.advance(); // consume `default`
             parser.expect(TokenKind::Colon)?;
             let expr = parse_assignment_expression(parser)?;
             let assoc_span = Span::merge(assoc_start, expr.span());
@@ -742,17 +916,13 @@ fn parse_generic_selection(parser: &mut Parser<'_>) -> Result<Expression, ParseE
                 span: assoc_span,
             });
         } else {
-            // Parse type-name as expression (simplified; sema resolves).
-            let type_expr = parse_assignment_expression(parser)?;
+            // type-name : assignment-expression
+            let type_name = super::types::parse_type_name(parser)?;
             parser.expect(TokenKind::Colon)?;
             let expr = parse_assignment_expression(parser)?;
             let assoc_span = Span::merge(assoc_start, expr.span());
-            // For the minimal parser, we treat the type as an expression
-            // and record it. The semantic analyzer resolves type names.
-            let _ = type_expr; // The type name information is lost here;
-                               // TODO: Proper type-name parsing in the types module will fill this in.
             associations.push(GenericAssociation {
-                type_name: None, // Will be filled in by sema/types module
+                type_name: Some(type_name),
                 expression: Box::new(expr),
                 span: assoc_span,
             });
@@ -770,6 +940,95 @@ fn parse_generic_selection(parser: &mut Parser<'_>) -> Result<Expression, ParseE
         associations,
         span,
     })
+}
+
+// ===========================================================================
+// Brace-enclosed initializer parsing (for compound literals)
+// ===========================================================================
+
+/// Parses a brace-enclosed initializer list (C11 §6.7.9).
+///
+/// ```text
+/// { initializer-list [,] }
+/// { }
+/// ```
+///
+/// This is used by compound literals `(type-name) { init-list }`.  The
+/// logic mirrors `declarations::parse_brace_initializer` but is local to
+/// this module to avoid cross-module visibility issues.
+fn parse_brace_initializer(parser: &mut Parser<'_>) -> Result<Initializer, ParseError> {
+    let start = parser.expect(TokenKind::LeftBrace)?;
+    let mut items: Vec<InitializerItem> = Vec::new();
+
+    while !parser.check(TokenKind::RightBrace) && !parser.at_end() {
+        let item_start = parser.current().span;
+        let mut designators: Vec<Designator> = Vec::new();
+
+        // Parse designators: `.field` or `[index]`
+        while parser.check(TokenKind::Dot) || parser.check(TokenKind::LeftBracket) {
+            if parser.eat(TokenKind::Dot) {
+                // Field designator: `.field`
+                let field = parse_designator_field(parser)?;
+                designators.push(Designator::Field(field));
+            } else {
+                // Array index designator: `[expr]`
+                parser.advance(); // consume `[`
+                let index = parse_conditional_expression(parser)?;
+                parser.expect(TokenKind::RightBracket)?;
+                designators.push(Designator::Index(Box::new(index)));
+            }
+        }
+
+        // After designators, expect `=`
+        if !designators.is_empty() {
+            parser.expect(TokenKind::Assign)?;
+        }
+
+        // Initializer value — nested braces or a single expression
+        let init = if parser.check(TokenKind::LeftBrace) {
+            parse_brace_initializer(parser)?
+        } else {
+            let expr = parse_assignment_expression(parser)?;
+            Initializer::Expression(Box::new(expr))
+        };
+        let item_end = parser.current().span;
+        let item_span = Span::merge(item_start, item_end);
+
+        items.push(InitializerItem {
+            designators,
+            initializer: init,
+            span: item_span,
+        });
+
+        if !parser.eat(TokenKind::Comma) {
+            break;
+        }
+    }
+
+    let end = parser.expect(TokenKind::RightBrace)?;
+    let span = Span::merge(start, end);
+    Ok(Initializer::List { items, span })
+}
+
+/// Parses a field name in a designator context (`.field`).
+fn parse_designator_field(parser: &mut Parser<'_>) -> Result<Symbol, ParseError> {
+    match &parser.current().kind {
+        TokenKind::Identifier(sym) => {
+            let sym = *sym;
+            parser.advance();
+            Ok(sym)
+        }
+        _ => {
+            let span = parser.current().span;
+            let msg = "expected field name after '.' in designator".to_string();
+            parser.diagnostics.error(span, &msg);
+            Err(ParseError {
+                span,
+                message: msg,
+                expected: Some("identifier".to_string()),
+            })
+        }
+    }
 }
 
 // ===========================================================================
@@ -813,5 +1072,91 @@ fn try_assignment_operator(kind: &TokenKind) -> Option<BinaryOperator> {
         TokenKind::LeftShiftAssign => Some(BinaryOperator::ShlAssign),
         TokenKind::RightShiftAssign => Some(BinaryOperator::ShrAssign),
         _ => None,
+    }
+}
+
+/// Returns `true` if the *current* token of the parser can begin a
+/// C type-name (specifier-qualifier-list followed by an optional abstract
+/// declarator).
+///
+/// This is a narrower check than [`Parser::is_declaration_start`] because
+/// type-names cannot contain storage-class specifiers, function specifiers,
+/// `_Alignas`, `_Static_assert`, or `__extension__`.
+fn is_type_name_start(parser: &Parser<'_>) -> bool {
+    match &parser.current().kind {
+        // Type specifier keywords
+        TokenKind::Void
+        | TokenKind::Char
+        | TokenKind::Short
+        | TokenKind::Int
+        | TokenKind::Long
+        | TokenKind::Float
+        | TokenKind::Double
+        | TokenKind::Signed
+        | TokenKind::Unsigned
+        | TokenKind::Bool
+        | TokenKind::Complex => true,
+
+        // Aggregate / enum specifiers
+        TokenKind::Struct | TokenKind::Union | TokenKind::Enum => true,
+
+        // Type qualifiers
+        TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict | TokenKind::Atomic => true,
+
+        // typeof / __typeof__ (GCC extension — produces a type)
+        TokenKind::TypeofKeyword => true,
+
+        // __attribute__ can precede a type-name
+        TokenKind::Attribute => true,
+
+        // Identifier that is a registered typedef name
+        TokenKind::Identifier(sym) => parser.is_typedef_name(*sym),
+
+        _ => false,
+    }
+}
+
+/// Returns `true` if the token at `parser.pos + offset` can begin a
+/// type-name.  This is used to peek *past* a `(` without consuming it.
+fn is_type_name_start_at(parser: &Parser<'_>, offset: usize) -> bool {
+    let tok = parser.peek_ahead(offset);
+    match &tok.kind {
+        // Type specifier keywords
+        TokenKind::Void
+        | TokenKind::Char
+        | TokenKind::Short
+        | TokenKind::Int
+        | TokenKind::Long
+        | TokenKind::Float
+        | TokenKind::Double
+        | TokenKind::Signed
+        | TokenKind::Unsigned
+        | TokenKind::Bool
+        | TokenKind::Complex => true,
+
+        // Aggregate / enum specifiers
+        TokenKind::Struct | TokenKind::Union | TokenKind::Enum => true,
+
+        // Type qualifiers
+        TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict | TokenKind::Atomic => true,
+
+        // typeof / __typeof__
+        TokenKind::TypeofKeyword => true,
+
+        // __attribute__
+        TokenKind::Attribute => true,
+
+        // Typedef name
+        TokenKind::Identifier(sym) => parser.is_typedef_name(*sym),
+
+        _ => false,
+    }
+}
+
+/// Extracts the span from an `Initializer` value.
+fn initializer_span(init: &Initializer) -> Span {
+    match init {
+        Initializer::Expression(expr) => expr.span(),
+        Initializer::List { span, .. } => *span,
     }
 }

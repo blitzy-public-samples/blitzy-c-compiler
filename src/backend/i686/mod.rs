@@ -31,6 +31,12 @@ pub mod registers;
 /// ModR/M + SIB encoding for all i686 addressing modes.
 pub mod assembler;
 
+/// cdecl / System V i386 ABI implementation — stack-based parameter
+/// passing, EAX / EDX:EAX integer returns, x87 ST(0) floating-point
+/// returns, sret for large struct returns, and 16-byte call-site
+/// stack alignment.
+pub mod abi;
+
 /// Built-in i686 ELF linker producing ET_EXEC and ET_DYN binaries
 /// with full GOT/PLT relocation support for PIC code.
 pub mod linker;

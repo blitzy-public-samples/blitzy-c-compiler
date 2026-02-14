@@ -809,7 +809,7 @@ mod tests {
     fn test_return_int_in_eax() {
         let abi = I686Abi::new();
         let t = i686_target();
-        let cls = abi.classify_return(&CType::Int { is_unsigned: false }, &t);
+        let cls = abi.classify_return(&CType::Int { signed: true }, &t);
         assert_eq!(cls, ReturnClassification::InRegister { reg: EAX });
     }
 
@@ -817,7 +817,7 @@ mod tests {
     fn test_return_long_long_in_edx_eax() {
         let abi = I686Abi::new();
         let t = i686_target();
-        let cls = abi.classify_return(&CType::LongLong { is_unsigned: false }, &t);
+        let cls = abi.classify_return(&CType::LongLong { signed: true }, &t);
         assert_eq!(
             cls,
             ReturnClassification::RegisterPair { lo: EAX, hi: EDX }
@@ -844,7 +844,7 @@ mod tests {
     fn test_return_pointer_in_eax() {
         let abi = I686Abi::new();
         let t = i686_target();
-        let ty = CType::Pointer(Box::new(CType::Int { is_unsigned: false }));
+        let ty = CType::Pointer(Box::new(CType::Int { signed: true }));
         let cls = abi.classify_return(&ty, &t);
         assert_eq!(cls, ReturnClassification::InRegister { reg: EAX });
     }
@@ -861,7 +861,7 @@ mod tests {
     fn test_return_char_in_eax() {
         let abi = I686Abi::new();
         let t = i686_target();
-        let cls = abi.classify_return(&CType::Char { is_unsigned: false }, &t);
+        let cls = abi.classify_return(&CType::Char { signed: true }, &t);
         assert_eq!(cls, ReturnClassification::InRegister { reg: EAX });
     }
 
@@ -871,7 +871,7 @@ mod tests {
     fn test_arg_int_on_stack() {
         let abi = I686Abi::new();
         let t = i686_target();
-        let cls = abi.classify_argument(&CType::Int { is_unsigned: false }, &t);
+        let cls = abi.classify_argument(&CType::Int { signed: true }, &t);
         match cls {
             ArgClassification::Stack { offset, size } => {
                 assert_eq!(offset, 0);
@@ -885,7 +885,7 @@ mod tests {
     fn test_arg_char_promoted_to_4bytes() {
         let abi = I686Abi::new();
         let t = i686_target();
-        let cls = abi.classify_argument(&CType::Char { is_unsigned: false }, &t);
+        let cls = abi.classify_argument(&CType::Char { signed: true }, &t);
         match cls {
             ArgClassification::Stack { size, .. } => assert_eq!(size, 4),
             _ => panic!("expected Stack classification"),
@@ -918,7 +918,7 @@ mod tests {
     fn test_arg_long_long_8bytes() {
         let abi = I686Abi::new();
         let t = i686_target();
-        let cls = abi.classify_argument(&CType::LongLong { is_unsigned: false }, &t);
+        let cls = abi.classify_argument(&CType::LongLong { signed: true }, &t);
         match cls {
             ArgClassification::Stack { size, .. } => assert_eq!(size, 8),
             _ => panic!("expected Stack classification"),
@@ -943,8 +943,8 @@ mod tests {
         let abi = I686Abi::new();
         let t = i686_target();
         let params = [
-            CType::Int { is_unsigned: false },
-            CType::Int { is_unsigned: true },
+            CType::Int { signed: true },
+            CType::Int { signed: false },
         ];
         let layout = abi.compute_stack_layout(&params, &t);
 
@@ -973,9 +973,9 @@ mod tests {
         let abi = I686Abi::new();
         let t = i686_target();
         let params = [
-            CType::Int { is_unsigned: false },    // 4 bytes at offset 0
+            CType::Int { signed: true },           // 4 bytes at offset 0
             CType::Double,                         // 8 bytes at offset 4
-            CType::Char { is_unsigned: true },     // 4 bytes (promoted) at offset 12
+            CType::Char { signed: false },         // 4 bytes (promoted) at offset 12
         ];
         let layout = abi.compute_stack_layout(&params, &t);
 
@@ -991,7 +991,7 @@ mod tests {
         let abi = I686Abi::new();
         let t = i686_target();
         assert_eq!(
-            abi.classify_type(&CType::Int { is_unsigned: false }, &t),
+            abi.classify_type(&CType::Int { signed: true }, &t),
             ParamClass::Integer
         );
     }

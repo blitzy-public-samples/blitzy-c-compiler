@@ -333,7 +333,7 @@ pub fn needs_rex(reg: PhysReg) -> bool {
     let idx = reg.0;
     // GPR range: R8–R15 (indices 8–15)
     // SSE range: XMM8–XMM15 (indices 24–31)
-    (idx >= 8 && idx <= 15) || (idx >= 24 && idx <= 31)
+    (8..=15).contains(&idx) || (24..=31).contains(&idx)
 }
 
 /// Returns `true` if the given `PhysReg` is a general-purpose register (GPR).

@@ -380,7 +380,7 @@ fn register_name_lower(reg: PhysReg) -> &'static str {
 ///     mov     [rsp], <reg>
 ///     ret
 /// ```
-#[allow(dead_code)]
+#[allow(dead_code, clippy::vec_init_then_push)]
 pub fn generate_retpoline_thunk(target_reg: PhysReg) -> Vec<MachineInstr> {
     let mut instrs = Vec::with_capacity(6);
 
@@ -478,6 +478,7 @@ pub fn generate_retpoline_thunk(target_reg: PhysReg) -> Vec<MachineInstr> {
 ///     ja   .Lprobe_loop       ; continue probing if above target
 ///     mov  rsp, <final_rsp>   ; set final stack pointer
 /// ```
+#[allow(clippy::vec_init_then_push)]
 fn insert_stack_probe(mf: &mut MachineFunction) {
     if mf.blocks.is_empty() {
         return;

@@ -348,9 +348,9 @@ fn classify_struct(
             start_eb
         };
 
-        for eb in start_eb..=end_eb {
-            if eb < num_eightbytes {
-                classes[eb] = classes[eb].merge(field_class);
+        for (idx, class) in classes.iter_mut().enumerate().take(num_eightbytes).skip(start_eb) {
+            if idx <= end_eb {
+                *class = class.merge(field_class);
             }
         }
 
@@ -359,16 +359,17 @@ fn classify_struct(
 
     // Post-merge rules from the ABI:
     // If any eightbyte is MEMORY, the entire struct is MEMORY.
-    if classes.iter().any(|c| *c == ParamClass::Memory) {
+    if classes.contains(&ParamClass::Memory) {
         return vec![ParamClass::Memory];
     }
 
     // If the first eightbyte is X87 and the second isn't X87UP (or vice versa),
     // the whole struct is MEMORY.
-    if num_eightbytes == 2 {
-        if classes[0] == ParamClass::X87 && classes[1] != ParamClass::X87Up {
-            return vec![ParamClass::Memory];
-        }
+    if num_eightbytes == 2
+        && classes[0] == ParamClass::X87
+        && classes[1] != ParamClass::X87Up
+    {
+        return vec![ParamClass::Memory];
     }
 
     classes
@@ -407,7 +408,7 @@ fn classify_union(
     }
 
     // If any eightbyte is MEMORY, the entire union is MEMORY.
-    if classes.iter().any(|c| *c == ParamClass::Memory) {
+    if classes.contains(&ParamClass::Memory) {
         return vec![ParamClass::Memory];
     }
 
@@ -497,10 +498,8 @@ pub fn compute_param_locations(param_types: &[CType]) -> Vec<ParamLocation> {
         let sse_needed = classes.iter()
             .filter(|c| **c == ParamClass::SSE)
             .count();
-        let has_memory = classes.iter()
-            .any(|c| *c == ParamClass::Memory);
-        let has_x87 = classes.iter()
-            .any(|c| *c == ParamClass::X87);
+        let has_memory = classes.contains(&ParamClass::Memory);
+        let has_x87 = classes.contains(&ParamClass::X87);
 
         // X87 or Memory types always go on the stack.
         if has_memory || has_x87 {
@@ -629,10 +628,8 @@ pub fn compute_return_location(return_type: &CType) -> ParamLocation {
     let sse_count = classes.iter()
         .filter(|c| **c == ParamClass::SSE)
         .count();
-    let has_memory = classes.iter()
-        .any(|c| *c == ParamClass::Memory);
-    let has_x87 = classes.iter()
-        .any(|c| *c == ParamClass::X87);
+    let has_memory = classes.contains(&ParamClass::Memory);
+    let has_x87 = classes.contains(&ParamClass::X87);
 
     // MEMORY class: returned via hidden first argument (RDI points to
     // caller-allocated space, RAX returns the same pointer).

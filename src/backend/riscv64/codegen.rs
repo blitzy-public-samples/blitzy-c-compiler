@@ -32,19 +32,14 @@
 //! Position-independent code uses `AUIPC`+`LD` for GOT-relative global access
 //! and `AUIPC`+`JALR` for PLT-relative function calls.
 
-use crate::backend::riscv64::abi::{
-    ArgClassification, ReturnClassification, RiscV64Abi, StackLayout,
-};
+use crate::backend::riscv64::abi::RiscV64Abi;
 use crate::backend::riscv64::registers;
 use crate::backend::traits::{
     MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand, PhysReg,
 };
-use crate::common::diagnostics::DiagnosticEngine;
 use crate::common::fx_hash::FxHashMap;
 use crate::common::target::Target;
-use crate::common::types::CType;
-use crate::ir::basic_block::BasicBlock;
-use crate::ir::function::{CallingConvention, IrFunction, Parameter};
+use crate::ir::function::IrFunction;
 use crate::ir::instructions::{
     BasicBlockId, BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId,
 };
@@ -211,6 +206,7 @@ pub const RV_INLINE_ASM: u32 = 250;
 /// The register allocator and prologue/epilogue emitter use these to compute
 /// final stack offsets.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct FrameObject {
     /// Size in bytes of the allocated storage.
     size: u32,
@@ -237,9 +233,12 @@ struct FrameObject {
 /// let mut isel = RiscV64InstrSel::new(/*pic_enabled=*/ false);
 /// let machine_func = isel.select_function(&ir_function);
 /// ```
+#[allow(dead_code)]
 pub struct RiscV64InstrSel {
     /// Whether position-independent code generation is enabled (`-fPIC`).
     pic_enabled: bool,
+    /// The target architecture descriptor (always `Target::RiscV64`).
+    target: Target,
     /// Maps IR SSA ValueIds to their corresponding machine operands.
     /// Populated during instruction selection as each IR instruction is lowered.
     value_map: FxHashMap<ValueId, MachineOperand>,
@@ -277,6 +276,7 @@ impl RiscV64InstrSel {
     pub fn new(pic_enabled: bool) -> Self {
         Self {
             pic_enabled,
+            target: Target::RiscV64,
             value_map: FxHashMap::default(),
             block_map: FxHashMap::default(),
             next_vreg_id: 0,
@@ -324,6 +324,7 @@ impl RiscV64InstrSel {
     }
 
     /// Emits a machine instruction into the specified machine basic block.
+    #[allow(dead_code)]
     fn emit_to_block(block: &mut MachineBasicBlock, instr: MachineInstr) {
         block.instructions.push(instr);
     }
@@ -760,12 +761,17 @@ impl RiscV64InstrSel {
 // Cast kind helper enum
 // ---------------------------------------------------------------------------
 
-/// Internal enum distinguishing truncation, zero-extension, and sign-extension
-/// casts during instruction selection.
+/// Enum distinguishing truncation, zero-extension, and sign-extension
+/// casts during instruction selection. Used by [`RiscV64InstrSel::select_cast`]
+/// to determine which machine instruction sequence to emit for integer and
+/// floating-point type conversions.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum CastKind {
+pub enum CastKind {
+    /// Truncation: discard upper bits (e.g., i64 → i32).
     Trunc,
+    /// Zero extension: fill upper bits with zeros (e.g., u8 → u64).
     ZExt,
+    /// Sign extension: fill upper bits by replicating the sign bit (e.g., i8 → i64).
     SExt,
 }
 
@@ -959,7 +965,7 @@ impl RiscV64InstrSel {
         pred: ICmpPredicate,
         lhs: ValueId,
         rhs: ValueId,
-        func: &IrFunction,
+        _func: &IrFunction,
         out: &mut Vec<MachineInstr>,
     ) {
         let rd = MachineOperand::VirtualReg(result);
@@ -1056,7 +1062,7 @@ impl RiscV64InstrSel {
         let lhs_ty = func.get_value_type(lhs);
         let is_single = matches!(lhs_ty, IrType::F32);
 
-        let (feq, flt, fle, fclass) = if is_single {
+        let (feq, flt, fle, _fclass) = if is_single {
             (RV_FEQ_S, RV_FLT_S, RV_FLE_S, RV_FCLASS_S)
         } else {
             (RV_FEQ_D, RV_FLT_D, RV_FLE_D, RV_FCLASS_D)
@@ -1241,7 +1247,7 @@ impl RiscV64InstrSel {
         result: ValueId,
         ptr: ValueId,
         ty: &IrType,
-        func: &IrFunction,
+        _func: &IrFunction,
         out: &mut Vec<MachineInstr>,
     ) {
         let rd = MachineOperand::VirtualReg(result);
@@ -1304,9 +1310,9 @@ impl RiscV64InstrSel {
         result: ValueId,
         ty: &IrType,
         alignment: u32,
-        out: &mut Vec<MachineInstr>,
+        _out: &mut Vec<MachineInstr>,
     ) {
-        let size = ty.size_bytes() as u32;
+        let size = ty.size_bytes(&self.target) as u32;
         let align = if alignment > 0 {
             alignment
         } else {
@@ -1344,10 +1350,10 @@ impl RiscV64InstrSel {
         base: ValueId,
         indices: &[ValueId],
         ty: &IrType,
-        func: &IrFunction,
+        _func: &IrFunction,
         out: &mut Vec<MachineInstr>,
     ) {
-        let rd = MachineOperand::VirtualReg(result);
+        let _rd = MachineOperand::VirtualReg(result);
         let mut current = self.operand_for_value(base);
 
         // Walk the type and indices to compute the final offset.
@@ -1358,20 +1364,20 @@ impl RiscV64InstrSel {
             // Determine the element size based on the current aggregate type.
             let elem_size = match &current_ty {
                 IrType::Ptr => 8u64, // Pointer-to-anything, use pointee size
-                IrType::Array(elem_ty, _) => {
-                    let sz = elem_ty.size_bytes() as u64;
-                    current_ty = (**elem_ty).clone();
+                IrType::Array { element, count: _ } => {
+                    let sz = element.size_bytes(&self.target) as u64;
+                    current_ty = (**element).clone();
                     sz
                 }
-                IrType::Struct(fields) => {
+                IrType::Struct { fields: _, packed: _ } => {
                     // For structs, the index selects a specific field.
                     // This should be a constant index in well-formed IR.
                     // We handle it by computing the cumulative field offset.
                     // For now, treat as byte offset.
-                    let sz = current_ty.size_bytes() as u64;
+                    let sz = current_ty.size_bytes(&self.target) as u64;
                     sz
                 }
-                _ => current_ty.size_bytes() as u64,
+                _ => current_ty.size_bytes(&self.target) as u64,
             };
 
             if elem_size == 0 {
@@ -1459,7 +1465,7 @@ impl RiscV64InstrSel {
 
         // Float → Int conversions.
         if from_ty.is_floating() && to_ty.is_integer() {
-            let to_bits = to_ty.size_bits();
+            let to_bits = to_ty.size_bits(&self.target);
             let is_single = matches!(from_ty, IrType::F32);
             let opc = match (is_single, to_bits > 32) {
                 (true, false) => RV_FCVT_W_S,
@@ -1474,7 +1480,7 @@ impl RiscV64InstrSel {
 
         // Int → Float conversions.
         if from_ty.is_integer() && to_ty.is_floating() {
-            let from_bits = from_ty.size_bits();
+            let from_bits = from_ty.size_bits(&self.target);
             let is_single = matches!(to_ty, IrType::F32);
             let opc = match (is_single, from_bits > 32) {
                 (true, false) => RV_FCVT_S_W,
@@ -1488,8 +1494,8 @@ impl RiscV64InstrSel {
         }
 
         // Integer ↔ Integer conversions.
-        let from_bits = from_ty.size_bits();
-        let to_bits = to_ty.size_bits();
+        let from_bits = from_ty.size_bits(&self.target);
+        let to_bits = to_ty.size_bits(&self.target);
 
         match kind {
             CastKind::Trunc => {
@@ -2148,9 +2154,9 @@ impl RiscV64InstrSel {
             for instr in block.instructions.drain(..) {
                 if instr.is_return {
                     // Restore callee-saved registers in reverse order.
-                    let mut restore_offset = fs - 8;
+                    let mut _restore_offset = fs - 8;
                     if self.has_calls {
-                        restore_offset -= 8; // Skip to callee-saved area
+                        _restore_offset -= 8; // Skip to callee-saved area
                     }
 
                     // Restore callee-saved registers (reverse order).

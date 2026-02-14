@@ -36,6 +36,12 @@ pub mod abi;
 /// instruction relocation handling.
 pub mod assembler;
 
+/// RISC-V 64 instruction selection and emission — translates IR instructions
+/// into RISC-V 64 machine instructions using the RV64IMAFDC ISA, including
+/// R/I/S/B/U/J-type selection, immediate materialization, PIC addressing,
+/// floating-point operations, and LP64D calling convention compliance.
+pub mod codegen;
+
 /// Built-in RISC-V 64 linker — relocation application with relaxation support,
 /// producing ELF executables and shared objects for the RISC-V 64 target.
 pub mod linker;

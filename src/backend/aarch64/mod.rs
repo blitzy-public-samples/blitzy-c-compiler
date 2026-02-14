@@ -22,6 +22,11 @@
 //!
 //! - [`linker`]: Built-in AArch64 ELF linker with relocation support
 
+/// AArch64 physical register definitions — X0–X30, W0–W30, SP, XZR/WZR,
+/// V0–V31, S0–S31, D0–D31, NZCV condition codes, ABI classification arrays,
+/// register name lookup, property queries, and 5-bit A64 encoding helpers.
+pub mod registers;
+
 /// Built-in AArch64 ELF linker producing ET_EXEC and ET_DYN binaries
 /// with full GOT/PLT relocation support for PIC code.
 pub mod linker;

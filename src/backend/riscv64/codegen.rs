@@ -536,6 +536,9 @@ impl RiscV64InstrSel {
     /// Lowers function parameters into the value map according to the LP64D
     /// ABI. Integer arguments go in a0–a7, float arguments go in fa0–fa7,
     /// and excess arguments are passed on the stack.
+    ///
+    /// Uses [`registers::is_float_reg`] and [`registers::is_integer_reg`] to
+    /// validate register class assignments after ABI classification.
     fn lower_parameters(&mut self, func: &IrFunction, _mf: &mut MachineFunction) {
         let mut int_idx: usize = 0;
         let mut fp_idx: usize = 0;
@@ -546,12 +549,22 @@ impl RiscV64InstrSel {
             if Self::is_fp_type(ty) && fp_idx < registers::FLOAT_ARG_REGS.len() {
                 // Pass in floating-point argument register.
                 let reg = registers::FLOAT_ARG_REGS[fp_idx];
+                debug_assert!(
+                    registers::is_float_reg(reg),
+                    "ABI float arg reg must be a float register: {}",
+                    registers::reg_name(reg),
+                );
                 self.value_map
                     .insert(param.id, MachineOperand::Register(reg));
                 fp_idx += 1;
             } else if !Self::is_fp_type(ty) && int_idx < registers::INTEGER_ARG_REGS.len() {
                 // Pass in integer argument register.
                 let reg = registers::INTEGER_ARG_REGS[int_idx];
+                debug_assert!(
+                    registers::is_integer_reg(reg),
+                    "ABI int arg reg must be an integer register: {}",
+                    registers::reg_name(reg),
+                );
                 self.value_map
                     .insert(param.id, MachineOperand::Register(reg));
                 int_idx += 1;
@@ -574,8 +587,13 @@ impl RiscV64InstrSel {
 
     /// Scans emitted machine instructions for physical register uses to
     /// determine which callee-saved registers need to be preserved.
+    ///
+    /// Iterates the canonical callee-saved register sets from
+    /// [`registers::CALLEE_SAVED_INT`] and [`registers::CALLEE_SAVED_FP`]
+    /// to collect only those that are actually referenced in the emitted code.
     fn compute_callee_saved(&mut self, mf: &MachineFunction) {
-        let mut used = Vec::new();
+        // Build the set of all registers actually used in emitted instructions.
+        let mut referenced: Vec<PhysReg> = Vec::new();
         for block in &mf.blocks {
             for instr in &block.instructions {
                 if instr.is_call {
@@ -583,16 +601,38 @@ impl RiscV64InstrSel {
                 }
                 for op in &instr.operands {
                     if let MachineOperand::Register(reg) = op {
-                        if registers::is_callee_saved(*reg) && !used.contains(reg) {
-                            used.push(*reg);
+                        if !referenced.contains(reg) {
+                            referenced.push(*reg);
                         }
                     }
                 }
                 for reg in &instr.implicit_defs {
-                    if registers::is_callee_saved(*reg) && !used.contains(reg) {
-                        used.push(*reg);
+                    if !referenced.contains(reg) {
+                        referenced.push(*reg);
                     }
                 }
+                for reg in &instr.implicit_uses {
+                    if !referenced.contains(reg) {
+                        referenced.push(*reg);
+                    }
+                }
+            }
+        }
+
+        // Intersect referenced registers with the canonical callee-saved
+        // sets. This ensures we only preserve registers that are both
+        // callee-saved and actually used by the function body.
+        let mut used = Vec::new();
+        for &reg in registers::CALLEE_SAVED_INT.iter() {
+            debug_assert!(registers::is_callee_saved(reg));
+            if referenced.contains(&reg) && !used.contains(&reg) {
+                used.push(reg);
+            }
+        }
+        for &reg in registers::CALLEE_SAVED_FP.iter() {
+            debug_assert!(registers::is_callee_saved(reg));
+            if referenced.contains(&reg) && !used.contains(&reg) {
+                used.push(reg);
             }
         }
         self.used_callee_saved = used;
@@ -1785,7 +1825,21 @@ impl RiscV64InstrSel {
             }
         }
 
-        // Step 4: Restore SP if stack arguments were placed.
+        // Step 4: Mark caller-saved registers as implicitly defined (clobbered)
+        // by the call. This is necessary for correct register allocation — the
+        // allocator must know which registers are destroyed across the call.
+        if let Some(last) = out.last_mut() {
+            if last.is_call {
+                for &reg in registers::CALLER_SAVED_INT.iter() {
+                    last.implicit_defs.push(reg);
+                }
+                for &reg in registers::CALLER_SAVED_FP.iter() {
+                    last.implicit_defs.push(reg);
+                }
+            }
+        }
+
+        // Step 5: Restore SP if stack arguments were placed.
         if !stack_args.is_empty() {
             let aligned_stack = ((stack_offset + 15) & !15) as i64;
             out.push(Self::make_rri(
@@ -1796,7 +1850,7 @@ impl RiscV64InstrSel {
             ));
         }
 
-        // Step 5: Move return value into the result register.
+        // Step 6: Move return value into the result register.
         if let Some(res) = result {
             let rd = MachineOperand::VirtualReg(res);
             // Determine return type. Default to integer register (a0).
@@ -1888,8 +1942,12 @@ impl RiscV64InstrSel {
             ops.push(self.operand_for_value(op_val));
         }
 
-        // Encode the template and constraints as a Symbol operand.
+        // Encode the template and constraints as Symbol operands so the
+        // assembler phase can extract them from the instruction.
         ops.push(MachineOperand::Symbol(template.to_string()));
+        if !constraints.is_empty() {
+            ops.push(MachineOperand::Symbol(format!("constraints:{}", constraints)));
+        }
 
         let mut instr = MachineInstr::with_operands(RV_INLINE_ASM, ops);
 
@@ -1902,6 +1960,13 @@ impl RiscV64InstrSel {
                     // Try to resolve the clobber name to a physical register.
                     // Common names: "ra", "t0", "a0", etc.
                     if let Some(reg) = clobber_name_to_reg(name) {
+                        // Verify the register encoding is valid (0..31 for
+                        // both integer and float register files).
+                        debug_assert!(
+                            registers::encoding(reg) < 32,
+                            "Clobber register has invalid encoding: {}",
+                            registers::reg_name(reg),
+                        );
                         instr.implicit_defs.push(reg);
                     }
                 }
@@ -1928,6 +1993,9 @@ impl RiscV64InstrSel {
 /// Accepts both ABI names (e.g., "a0", "ra", "sp") and register numbers
 /// (e.g., "x1", "x10"). Returns `None` for unrecognized names or special
 /// clobbers like "memory" / "cc".
+///
+/// After resolution, [`registers::encoding`] can be used to obtain the 5-bit
+/// hardware encoding of the resolved register for binary instruction emission.
 fn clobber_name_to_reg(name: &str) -> Option<PhysReg> {
     match name {
         "zero" | "x0" => Some(registers::ZERO),

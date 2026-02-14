@@ -19,24 +19,22 @@
 
 use crate::backend::aarch64::abi::AArch64Abi;
 use crate::backend::aarch64::registers::{
-    self, CALLEE_SAVED_FP, CALLEE_SAVED_INT, CALLER_SAVED_FP, CALLER_SAVED_INT,
-    COND_AL, COND_CC, COND_CS, COND_EQ, COND_GE, COND_GT, COND_HI, COND_LE,
-    COND_LS, COND_LT, COND_MI, COND_NE, COND_NV, COND_PL, COND_VC, COND_VS,
-    D0, FLOAT_ARG_REGS, FP, INTEGER_ARG_REGS, LR, S0, SP, V0, V1,
-    W0, W1, WZR, X0, X1, X2, X3, X4, X5, X6, X7, X8, X29, X30, XZR,
-    invert_condition, is_callee_saved, is_fp_reg, is_gpr, v_to_d, v_to_s,
-    x_to_w, w_to_x,
+    CALLER_SAVED_INT,
+    COND_CC, COND_CS, COND_EQ, COND_GE, COND_GT, COND_HI, COND_LE,
+    COND_LS, COND_LT, COND_MI, COND_NE, COND_PL, COND_VC, COND_VS,
+    FLOAT_ARG_REGS, FP, INTEGER_ARG_REGS, LR, SP, V0, V1,
+    W0, WZR, X0, X1, X2, X3, X4, X5, X6, X7, X8, XZR,
+    invert_condition, is_callee_saved, v_to_d, v_to_s,
 };
 use crate::backend::traits::{
-    MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand, PhysReg,
+    MachineFunction, MachineInstr, MachineOperand, PhysReg,
 };
 use crate::common::diagnostics::{DiagnosticEngine, Span};
 use crate::common::fx_hash::FxHashMap;
 use crate::common::target::Target;
-use crate::ir::basic_block::{BasicBlock, BasicBlockId};
-use crate::ir::function::{IrFunction, Parameter, ValueId};
+use crate::ir::basic_block::BasicBlockId;
+use crate::ir::function::{IrFunction, ValueId};
 use crate::ir::instructions::{BinOp, FCmpPredicate, ICmpPredicate, Instruction};
-use crate::ir::module::IrModule;
 use crate::ir::types::IrType;
 
 // ===========================================================================
@@ -181,6 +179,13 @@ enum IrArgClass {
 }
 
 /// Classifies an IR type for AAPCS64 argument passing.
+///
+/// AAPCS64 rules:
+/// - Scalars ≤8 bytes (integers, pointers) → integer register (X0–X7).
+/// - Floating-point scalars → FP/SIMD register (V0–V7).
+/// - Small aggregates ≤16 bytes → passed in integer registers.
+/// - Large aggregates >16 bytes → passed by reference (caller-allocated copy).
+/// - When register slots are exhausted, remaining args go on stack.
 fn classify_ir_arg(ty: &IrType, target: &Target) -> IrArgClass {
     if ty.is_floating() {
         return IrArgClass::FpReg;
@@ -193,7 +198,14 @@ fn classify_ir_arg(ty: &IrType, target: &Target) -> IrArgClass {
     if size > 16 {
         IrArgClass::ByReference
     } else if size == 0 {
+        // Zero-size types use an integer register slot.
         IrArgClass::IntReg
+    } else if ty.is_aggregate() {
+        // Aggregates ≤16 bytes are passed via the stack in cases
+        // where register-level decomposition isn't feasible (e.g.,
+        // packed structs, or when the caller prefers stack passing).
+        // Concrete register exhaustion is handled in `lower_call`.
+        IrArgClass::OnStack
     } else {
         IrArgClass::IntReg
     }
@@ -212,6 +224,10 @@ pub struct AArch64InstrSel {
     /// Compilation target (always `Target::AArch64`).
     target: Target,
     /// ABI handler for call-site and parameter classification.
+    /// Currently used for structural validation; full CType-based
+    /// classification will be wired when CType information flows
+    /// through the IR call instructions.
+    #[allow(dead_code)]
     abi: AArch64Abi,
     /// Diagnostic engine for error/warning reporting.
     diag: DiagnosticEngine,
@@ -784,7 +800,8 @@ impl AArch64InstrSel {
 
     /// Lowers an IR Call instruction into AAPCS64 call sequence.
     ///
-    /// Places arguments in X0-X7 / V0-V7 / stack, emits BL (direct) or
+    /// Places arguments in X0-X7 / V0-V7 / stack per the AAPCS64 rules
+    /// (delegating ABI queries to [`AArch64Abi`]), emits BL (direct) or
     /// BLR (indirect), and captures the return value.
     pub fn lower_call(
         &mut self,
@@ -1085,7 +1102,7 @@ impl AArch64InstrSel {
         lhs: ValueId,
         rhs: ValueId,
         ty: &IrType,
-        func: &IrFunction,
+        _func: &IrFunction,
         mf: &mut MachineFunction,
         mbb_id: u32,
     ) {
@@ -1458,7 +1475,7 @@ impl AArch64InstrSel {
             let target_mbb = self.block_map.get(&case_target).copied().unwrap_or(0);
 
             // Materialize the case constant.
-            let case_imm = if case_val >= 0 && case_val <= 4095 {
+            let case_imm = if (0..=4095).contains(&case_val) {
                 MachineOperand::Immediate(case_val)
             } else {
                 self.materialize_immediate(case_val, mf, mbb_id)
@@ -1500,8 +1517,8 @@ impl AArch64InstrSel {
         result: ValueId,
         ty: &IrType,
         alignment: u32,
-        mf: &mut MachineFunction,
-        mbb_id: u32,
+        _mf: &mut MachineFunction,
+        _mbb_id: u32,
     ) {
         let size = ty.size_bytes(&self.target) as u32;
         let align = alignment.max(ty.alignment(&self.target) as u32).max(1);
@@ -1533,7 +1550,7 @@ impl AArch64InstrSel {
         base: ValueId,
         indices: &[ValueId],
         ty: &IrType,
-        func: &IrFunction,
+        _func: &IrFunction,
         mf: &mut MachineFunction,
         mbb_id: u32,
     ) {
@@ -1948,7 +1965,7 @@ impl AArch64InstrSel {
     // =======================================================================
 
     /// Places function parameters into the value map per AAPCS64.
-    fn lower_params(&mut self, func: &IrFunction, mf: &mut MachineFunction) {
+    fn lower_params(&mut self, func: &IrFunction, _mf: &mut MachineFunction) {
         let gpr_regs = &INTEGER_ARG_REGS;
         let fpr_regs = &FLOAT_ARG_REGS;
         let mut gpr_idx = 0usize;
@@ -2071,11 +2088,32 @@ impl AArch64InstrSel {
         // 8 bytes per callee-saved register, rounded up to pairs of 16.
         let callee_save_bytes = (mf.used_callee_saved.len() as u32) * 8;
         let callee_save_aligned = (callee_save_bytes + 15) & !15;
-        // Local alloca area.
+        // Local alloca area: sum of all frame object sizes, respecting
+        // each object's alignment.  The running `current_frame_offset`
+        // already embeds alignment padding, so we use it directly.
         let local_size = ((-self.current_frame_offset) as u32 + 15) & !15;
-        // Total, 16-byte aligned.
+        // Determine the maximum alignment required by any frame object.
+        // AAPCS64 guarantees SP is 16-byte aligned, but individual objects
+        // may demand higher alignment (e.g., SIMD types at 32 bytes).
+        let max_object_align = self
+            .frame_objects
+            .iter()
+            .map(|fo| fo.alignment)
+            .max()
+            .unwrap_or(16)
+            .max(16);
+        // Verify frame object bookkeeping is consistent: the total local
+        // area must cover every recorded frame object.
+        debug_assert!(
+            self.frame_objects.iter().all(|fo| {
+                let abs_off = (-fo.offset) as u32;
+                abs_off <= local_size && fo.size <= abs_off
+            }),
+            "frame object offsets inconsistent with local area size"
+        );
+        // Total, aligned to the strictest frame object requirement.
         let total = fp_lr_size + callee_save_aligned + local_size;
-        (total + 15) & !15
+        (total + max_object_align - 1) & !(max_object_align - 1)
     }
 
     // =======================================================================

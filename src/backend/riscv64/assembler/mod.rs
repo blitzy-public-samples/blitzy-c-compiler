@@ -301,6 +301,12 @@ pub struct RiscV64Assembler {
     current_function: String,
 }
 
+impl Default for RiscV64Assembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RiscV64Assembler {
     /// Creates a new assembler with a default `.text` section.
     pub fn new() -> Self {
@@ -749,7 +755,7 @@ impl RiscV64Assembler {
         let imm = self.extract_immediate(&instr.operands, 1)?;
 
         // Case 1: Small immediate fits in 12-bit sign-extended range.
-        if imm >= -2048 && imm <= 2047 {
+        if (-2048..=2047).contains(&imm) {
             let ops = [
                 EncoderOperand::Register(rd),
                 EncoderOperand::Register(registers::encoding(ZERO)),
@@ -883,7 +889,7 @@ impl RiscV64Assembler {
             // First get the upper 20 bits of the lower half into position.
             // Use LUI on a temp? No — we are constrained to rd only.
             // Instead, shift and add in 12-bit chunks.
-            let upper_lo = ((lo32 >> 12) & 0xFFFFF) as i64;
+            let upper_lo = (lo32 >> 12) & 0xFFFFF;
             if upper_lo != 0 {
                 // ORI or ADDI the upper portion of the lower 32 bits.
                 // ADDI rd, rd, upper_lo (but this is > 12 bits...)
@@ -897,7 +903,7 @@ impl RiscV64Assembler {
                 if lo_upper_12 != 0 {
                     // Sign-extend the 12-bit chunk.
                     let sign_ext = if lo_upper_12 >= 0x800 {
-                        lo_upper_12 as i64 - 0x1000
+                        lo_upper_12 - 0x1000
                     } else {
                         lo_upper_12
                     };
@@ -929,7 +935,7 @@ impl RiscV64Assembler {
                     };
                     // We need to add the remaining 20 bits but that may not fit
                     // in 12. Use another shift-add pair.
-                    if lo_sign_ext >= -2048 && lo_sign_ext <= 2047 {
+                    if (-2048..=2047).contains(&lo_sign_ext) {
                         let addi3_ops = [
                             EncoderOperand::Register(rd),
                             EncoderOperand::Register(rd),

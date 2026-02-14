@@ -33,6 +33,13 @@ pub mod registers;
 /// AArch64 code generation.
 pub mod abi;
 
+/// AArch64 instruction selection and emission — translates IR instructions
+/// to AArch64 machine instructions. Implements the core instruction selector
+/// (`AArch64InstrSel`) with support for data processing, memory operations,
+/// branches, calls (AAPCS64), comparisons, conditional selects, FP/SIMD,
+/// PIC addressing, immediate materialization, and stack frame management.
+pub mod codegen;
+
 /// Built-in AArch64 assembler producing relocatable object code from
 /// `MachineFunction` output without invoking any external tools.
 /// Contains the A64 instruction encoder and AArch64-specific ELF

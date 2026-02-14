@@ -291,9 +291,8 @@ fn integer_suffix_to_ir_type(suffix: IntegerSuffix, value: u128, target: &Target
         IntegerSuffix::None => {
             if value <= i32::MAX as u128 {
                 IrType::I32
-            } else if target.long_size() == 8 && value <= i64::MAX as u128 {
-                IrType::I64
             } else if value <= i64::MAX as u128 {
+                // Fits in a 64-bit signed integer regardless of target long size.
                 IrType::I64
             } else {
                 IrType::I128
@@ -500,7 +499,7 @@ fn to_i1(ctx: &mut LoweringContext<'_>, val: ValueId) -> ValueId {
     match &ty {
         IrType::I1 => val,
         IrType::Ptr => {
-            let target = ctx.target().clone();
+            let target = *ctx.target();
             let int_ty = pointer_int_type(&target);
             let int_val = ctx.builder.build_ptr_to_int(ctx.function, val, int_ty.clone());
             let zero = ctx.builder.build_const_int(ctx.function, int_ty, 0);
@@ -568,7 +567,7 @@ fn lower_integer_literal(
     suffix: IntegerSuffix,
     _span: Span,
 ) -> Result<ValueId, LoweringError> {
-    let target = ctx.target().clone();
+    let target = *ctx.target();
     let ir_ty = integer_suffix_to_ir_type(suffix, value, &target);
     Ok(ctx.builder.build_const_int(ctx.function, ir_ty, value as i64))
 }
@@ -580,7 +579,7 @@ fn lower_float_literal(
     suffix: FloatSuffix,
     _span: Span,
 ) -> Result<ValueId, LoweringError> {
-    let target = ctx.target().clone();
+    let target = *ctx.target();
     let ir_ty = float_suffix_to_ir_type(suffix, &target);
     Ok(ctx.builder.build_const_float(ctx.function, ir_ty, value))
 }
@@ -756,7 +755,7 @@ fn lower_arithmetic_binop(
     }
     // Pointer difference: ptr - ptr → integer.
     if matches!(lhs_ty, IrType::Ptr) && matches!(rhs_ty, IrType::Ptr) && op == BinaryOperator::Sub {
-        let target = ctx.target().clone();
+        let target = *ctx.target();
         let int_ty = pointer_int_type(&target);
         let lhs_int = ctx.builder.build_ptr_to_int(ctx.function, lhs, int_ty.clone());
         let rhs_int = ctx.builder.build_ptr_to_int(ctx.function, rhs, int_ty.clone());
@@ -822,7 +821,7 @@ fn lower_comparison(
         };
         Ok(ctx.builder.build_fcmp(ctx.function, pred, lhs_c, rhs_c))
     } else if is_ptr {
-        let target = ctx.target().clone();
+        let target = *ctx.target();
         let int_ty = pointer_int_type(&target);
         let lhs_int = if matches!(lhs_ty, IrType::Ptr) {
             ctx.builder.build_ptr_to_int(ctx.function, lhs, int_ty.clone())
@@ -1081,7 +1080,7 @@ fn resolve_type_name_ir(
     ctx: &LoweringContext<'_>,
     type_name: &TypeName,
 ) -> Result<IrType, LoweringError> {
-    let target = ctx.target().clone();
+    let target = *ctx.target();
     let specs = &type_name.specifiers.specifiers;
 
     if specs.is_empty() {
@@ -1457,7 +1456,7 @@ fn lower_sizeof(
     operand: &SizeofOperand,
     _span: Span,
 ) -> Result<ValueId, LoweringError> {
-    let target = ctx.target().clone();
+    let target = *ctx.target();
     let result_ty = size_t_ir_type(&target);
 
     let size_bytes: usize = match operand {
@@ -1485,7 +1484,7 @@ fn lower_alignof(
     operand: &AlignofOperand,
     _span: Span,
 ) -> Result<ValueId, LoweringError> {
-    let target = ctx.target().clone();
+    let target = *ctx.target();
     let result_ty = size_t_ir_type(&target);
 
     let alignment: usize = match operand {

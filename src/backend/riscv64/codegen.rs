@@ -436,7 +436,7 @@ impl RiscV64InstrSel {
 
     /// Returns `true` if the given immediate fits in a signed 12-bit field.
     fn fits_in_simm12(val: i64) -> bool {
-        val >= -2048 && val <= 2047
+        (-2048..=2047).contains(&val)
     }
 
     /// Returns `true` if the given IR type is a 32-bit integer requiring
@@ -1329,7 +1329,7 @@ impl RiscV64InstrSel {
         self.frame_objects.push(FrameObject {
             size,
             alignment: align,
-            offset: -(offset as i32 + size as i32), // Negative offset from FP
+            offset: -(offset + size as i32), // Negative offset from FP
         });
 
         // Map the alloca result to a frame index. The prologue/epilogue will
@@ -1365,7 +1365,7 @@ impl RiscV64InstrSel {
             let elem_size = match &current_ty {
                 IrType::Ptr => 8u64, // Pointer-to-anything, use pointee size
                 IrType::Array { element, count: _ } => {
-                    let sz = element.size_bytes(&self.target) as u64;
+                    let sz = element.size_bytes(&self.target);
                     current_ty = (**element).clone();
                     sz
                 }
@@ -1374,10 +1374,9 @@ impl RiscV64InstrSel {
                     // This should be a constant index in well-formed IR.
                     // We handle it by computing the cumulative field offset.
                     // For now, treat as byte offset.
-                    let sz = current_ty.size_bytes(&self.target) as u64;
-                    sz
+                    current_ty.size_bytes(&self.target)
                 }
-                _ => current_ty.size_bytes(&self.target) as u64,
+                _ => current_ty.size_bytes(&self.target),
             };
 
             if elem_size == 0 {
@@ -1735,25 +1734,23 @@ impl RiscV64InstrSel {
                     stack_args.push((arg_op, stack_offset));
                     stack_offset += 8;
                 }
+            } else if int_idx < registers::INTEGER_ARG_REGS.len() {
+                let reg = registers::INTEGER_ARG_REGS[int_idx];
+                out.push(MachineInstr::with_operands(
+                    RV_MV,
+                    vec![MachineOperand::Register(reg), arg_op],
+                ));
+                int_idx += 1;
             } else {
-                if int_idx < registers::INTEGER_ARG_REGS.len() {
-                    let reg = registers::INTEGER_ARG_REGS[int_idx];
-                    out.push(MachineInstr::with_operands(
-                        RV_MV,
-                        vec![MachineOperand::Register(reg), arg_op],
-                    ));
-                    int_idx += 1;
-                } else {
-                    stack_args.push((arg_op, stack_offset));
-                    stack_offset += 8;
-                }
+                stack_args.push((arg_op, stack_offset));
+                stack_offset += 8;
             }
         }
 
         // Step 2: Spill excess arguments onto the stack.
         if !stack_args.is_empty() {
             // Adjust SP for the stack argument area (must be 16-byte aligned).
-            let aligned_stack = ((stack_offset + 15) & !15) as i64;
+            let aligned_stack = (stack_offset + 15) & !15;
             out.push(Self::make_rri(
                 RV_ADDI,
                 MachineOperand::Register(registers::SP),
@@ -1847,7 +1844,7 @@ impl RiscV64InstrSel {
 
         // Step 5: Restore SP if stack arguments were placed.
         if !stack_args.is_empty() {
-            let aligned_stack = ((stack_offset + 15) & !15) as i64;
+            let aligned_stack = (stack_offset + 15) & !15;
             out.push(Self::make_rri(
                 RV_ADDI,
                 MachineOperand::Register(registers::SP),
@@ -2256,14 +2253,14 @@ impl RiscV64InstrSel {
         let zero = MachineOperand::Register(registers::ZERO);
 
         // Case 1: Fits in signed 12-bit immediate.
-        if value >= -2048 && value <= 2047 {
+        if (-2048..=2047).contains(&value) {
             out.push(Self::make_rri(RV_ADDI, rd, zero, value));
             return;
         }
 
         // Case 2: Fits in 32-bit signed range.
         let value_32 = value as i32;
-        if value as i64 == value_32 as i64 {
+        if value == value_32 as i64 {
             // LUI loads bits [31:12] with sign-extension to 64 bits.
             let lo12 = ((value_32 as u32) & 0xFFF) as i32;
             let mut hi20 = ((value_32 as u32) >> 12) as i32;

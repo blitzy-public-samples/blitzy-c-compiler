@@ -37,6 +37,12 @@ pub mod assembler;
 /// stack alignment.
 pub mod abi;
 
+/// i686 instruction selection and emission — translates IR instructions
+/// to i686 machine instructions, handling 32-bit integer operations,
+/// x87 FPU floating-point, 64-bit register pair emulation, cdecl
+/// calling convention, and PIC addressing modes.
+pub mod codegen;
+
 /// Built-in i686 ELF linker producing ET_EXEC and ET_DYN binaries
 /// with full GOT/PLT relocation support for PIC code.
 pub mod linker;

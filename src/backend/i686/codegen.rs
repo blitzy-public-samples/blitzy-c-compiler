@@ -23,24 +23,19 @@
 //! via a `__i686.get_pc_thunk.bx` call. Global accesses go through
 //! `symbol@GOT` (indirect) or `symbol@GOTOFF` (local).
 
-use crate::backend::i686::abi::{
-    ArgClassification, I686Abi, ReturnClassification, StackLayout,
-};
+use crate::backend::i686::abi::I686Abi;
 use crate::backend::i686::registers::{
     self, EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP, ST0,
-    AL, CL, EFLAGS, CALLEE_SAVED, CALLER_SAVED, ALLOCATABLE_INT,
-    BYTE_ADDRESSABLE,
+    AL, CL, EFLAGS, CALLEE_SAVED, CALLER_SAVED,
 };
 use crate::backend::traits::{
     CodegenConfig, MachineBasicBlock, MachineFunction, MachineInstr,
-    MachineOperand, PhysReg, RegisterClass,
+    MachineOperand, PhysReg,
 };
-use crate::common::diagnostics::{Diagnostic, DiagnosticEngine, Severity};
+use crate::common::diagnostics::DiagnosticEngine;
 use crate::common::fx_hash::FxHashMap;
-use crate::common::target::Target;
-use crate::common::types::{self as ctypes, CType, MachineType};
-use crate::ir::basic_block::{BasicBlock, BasicBlockId};
-use crate::ir::function::{CallingConvention, IrFunction, Parameter, ValueInfo};
+use crate::ir::basic_block::BasicBlockId;
+use crate::ir::function::IrFunction;
 use crate::ir::instructions::{
     BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId,
 };
@@ -488,9 +483,14 @@ pub struct I686InstrSel<'a> {
     config: &'a CodegenConfig,
 
     /// Diagnostic engine for reporting codegen errors.
+    /// Not yet referenced in all code paths; retained for complete
+    /// error reporting integration.
+    #[allow(dead_code)]
     diag: &'a DiagnosticEngine,
 
     /// ABI handler for call lowering and stack layout computation.
+    /// Retained for full call-lowering expansion (struct returns, HFA, etc.).
+    #[allow(dead_code)]
     abi: I686Abi,
 
     /// Maps IR ValueId → MachineOperand (tracks value materialization).
@@ -773,7 +773,7 @@ impl<'a> I686InstrSel<'a> {
             // -- SSA Phi (should be eliminated before codegen, emit copy as fallback) --
             Instruction::Phi {
                 result,
-                ty,
+                ty: _,
                 incoming,
             } => {
                 // Phi nodes should have been eliminated by phi_eliminate pass.
@@ -792,7 +792,7 @@ impl<'a> I686InstrSel<'a> {
                 base,
                 indices,
                 ty,
-                in_bounds,
+                in_bounds: _,
             } => {
                 self.select_gep(*result, *base, indices, ty, mbb, func);
             }
@@ -833,7 +833,7 @@ impl<'a> I686InstrSel<'a> {
             Instruction::IntToPtr {
                 result,
                 value,
-                to_ty,
+                to_ty: _,
             } => {
                 // On i686, integer→pointer is a bitwise reinterpret (same 32-bit width).
                 let src = self.get_operand(*value, func);
@@ -844,7 +844,7 @@ impl<'a> I686InstrSel<'a> {
             Instruction::PtrToInt {
                 result,
                 value,
-                to_ty,
+                to_ty: _,
             } => {
                 // On i686, pointer→integer is a bitwise reinterpret (same 32-bit width).
                 let src = self.get_operand(*value, func);
@@ -855,12 +855,12 @@ impl<'a> I686InstrSel<'a> {
             // -- Inline assembly --
             Instruction::InlineAsm {
                 result,
-                template,
-                constraints,
-                operands,
-                clobbers,
-                has_side_effects,
-                is_align_stack,
+                template: _,
+                constraints: _,
+                operands: _,
+                clobbers: _,
+                has_side_effects: _,
+                is_align_stack: _,
             } => {
                 // Inline assembly is passed through as-is; the assembler handles it.
                 // For now, emit a NOP placeholder and record the result if any.
@@ -1233,25 +1233,34 @@ impl<'a> I686InstrSel<'a> {
 
         match op {
             BinOp::Add => {
-                // 64-bit add: ADD lo, lo; ADC hi, hi
+                // 64-bit add: MOV lo_result, lhs_lo; ADD lo_result, rhs_lo;
+                //             MOV hi_result, 0; ADC hi_result, 0
                 let lo_result = self.alloc_vreg_raw();
                 let hi_result = self.alloc_vreg_raw();
 
-                // For now, emit a simplified sequence using EAX:EDX pairs.
-                // Full implementation would track the lo/hi halves of each 64-bit value.
+                // Simplified sequence: treats lhs/rhs as 32-bit lo halves
+                // and uses carry propagation for the high word.
                 let lhs_reg = self.ensure_in_register(lhs_op, mbb);
                 let rhs_reg = self.ensure_in_register(rhs_op, mbb);
+                let lo_op = MachineOperand::VirtualReg(ValueId(lo_result));
+                let hi_op = MachineOperand::VirtualReg(ValueId(hi_result));
 
-                // ADD lo, lo
+                // MOV lo_result, lhs_lo
+                self.emit_mov(lo_op.clone(), lhs_reg, mbb);
+
+                // ADD lo_result, rhs_lo
                 let mut add_lo = MachineInstr::new(I686Opcode::Add.as_u32());
-                add_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                add_lo.add_operand(lo_op);
                 add_lo.add_operand(rhs_reg.clone());
                 add_lo.add_implicit_def(EFLAGS);
                 mbb.push_instr(add_lo);
 
-                // ADC hi, hi (carry from low addition)
+                // MOV hi_result, 0 (zero the high word before ADC)
+                self.emit_mov(hi_op.clone(), MachineOperand::Immediate(0), mbb);
+
+                // ADC hi_result, 0 (propagate carry from low addition)
                 let mut adc_hi = MachineInstr::new(I686Opcode::Adc.as_u32());
-                adc_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                adc_hi.add_operand(hi_op);
                 adc_hi.add_operand(MachineOperand::Immediate(0));
                 adc_hi.add_implicit_use(EFLAGS);
                 adc_hi.add_implicit_def(EFLAGS);
@@ -1259,22 +1268,32 @@ impl<'a> I686InstrSel<'a> {
             }
 
             BinOp::Sub => {
+                // 64-bit sub: MOV lo_result, lhs_lo; SUB lo_result, rhs_lo;
+                //             MOV hi_result, 0; SBB hi_result, 0
                 let lo_result = self.alloc_vreg_raw();
                 let hi_result = self.alloc_vreg_raw();
 
                 let lhs_reg = self.ensure_in_register(lhs_op, mbb);
                 let rhs_reg = self.ensure_in_register(rhs_op, mbb);
+                let lo_op = MachineOperand::VirtualReg(ValueId(lo_result));
+                let hi_op = MachineOperand::VirtualReg(ValueId(hi_result));
 
-                // SUB lo, lo
+                // MOV lo_result, lhs_lo
+                self.emit_mov(lo_op.clone(), lhs_reg, mbb);
+
+                // SUB lo_result, rhs_lo
                 let mut sub_lo = MachineInstr::new(I686Opcode::Sub.as_u32());
-                sub_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                sub_lo.add_operand(lo_op);
                 sub_lo.add_operand(rhs_reg.clone());
                 sub_lo.add_implicit_def(EFLAGS);
                 mbb.push_instr(sub_lo);
 
-                // SBB hi, hi (borrow from low subtraction)
+                // MOV hi_result, 0 (zero the high word before SBB)
+                self.emit_mov(hi_op.clone(), MachineOperand::Immediate(0), mbb);
+
+                // SBB hi_result, 0 (propagate borrow from low subtraction)
                 let mut sbb_hi = MachineInstr::new(I686Opcode::Sbb.as_u32());
-                sbb_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                sbb_hi.add_operand(hi_op);
                 sbb_hi.add_operand(MachineOperand::Immediate(0));
                 sbb_hi.add_implicit_use(EFLAGS);
                 sbb_hi.add_implicit_def(EFLAGS);
@@ -1309,6 +1328,7 @@ impl<'a> I686InstrSel<'a> {
 
             BinOp::And | BinOp::Or | BinOp::Xor => {
                 // Bitwise ops on 64-bit: apply to both halves independently.
+                // Simplified: operate on the low half only.
                 let opcode = match op {
                     BinOp::And => I686Opcode::And,
                     BinOp::Or => I686Opcode::Or,
@@ -1318,8 +1338,14 @@ impl<'a> I686InstrSel<'a> {
                 let lhs_reg = self.ensure_in_register(lhs_op, mbb);
                 let rhs_reg = self.ensure_in_register(rhs_op, mbb);
                 let lo_result = self.alloc_vreg_raw();
+                let lo_op = MachineOperand::VirtualReg(ValueId(lo_result));
+
+                // MOV lo_result, lhs_lo (copy LHS into result)
+                self.emit_mov(lo_op.clone(), lhs_reg, mbb);
+
+                // OP lo_result, rhs_lo
                 let mut op_lo = MachineInstr::new(opcode.as_u32());
-                op_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                op_lo.add_operand(lo_op);
                 op_lo.add_operand(rhs_reg);
                 op_lo.add_implicit_def(EFLAGS);
                 mbb.push_instr(op_lo);
@@ -1435,7 +1461,7 @@ impl<'a> I686InstrSel<'a> {
         op: BinOp,
         lhs: ValueId,
         rhs: ValueId,
-        ty: &IrType,
+        _ty: &IrType,
         mbb: &mut MachineBasicBlock,
         func: &IrFunction,
     ) {
@@ -1852,7 +1878,7 @@ impl<'a> I686InstrSel<'a> {
 
         // Process each index with the appropriate stride.
         let mut current_type = ty.clone();
-        for (i, &idx_vid) in indices.iter().enumerate() {
+        for (_i, &idx_vid) in indices.iter().enumerate() {
             let stride = self.type_size_bytes(&current_type);
             let idx_op = self.get_operand(idx_vid, func);
 
@@ -1969,7 +1995,7 @@ impl<'a> I686InstrSel<'a> {
         &mut self,
         result: ValueId,
         value: ValueId,
-        to_ty: &IrType,
+        _to_ty: &IrType,
         mbb: &mut MachineBasicBlock,
         func: &IrFunction,
     ) {
@@ -1985,7 +2011,7 @@ impl<'a> I686InstrSel<'a> {
         &mut self,
         result: ValueId,
         value: ValueId,
-        to_ty: &IrType,
+        _to_ty: &IrType,
         mbb: &mut MachineBasicBlock,
         func: &IrFunction,
     ) {
@@ -2212,7 +2238,7 @@ impl<'a> I686InstrSel<'a> {
     ///
     /// Looks up the value in the value_map first. If not found, creates a
     /// VirtualReg operand as a placeholder for the register allocator.
-    fn get_operand(&self, vid: ValueId, func: &IrFunction) -> MachineOperand {
+    fn get_operand(&self, vid: ValueId, _func: &IrFunction) -> MachineOperand {
         if let Some(op) = self.value_map.get(&vid.index()) {
             op.clone()
         } else {
@@ -2304,7 +2330,7 @@ impl<'a> I686InstrSel<'a> {
                     scale: 1,
                 }
             }
-            MachineOperand::Symbol(name) => {
+            MachineOperand::Symbol(_name) => {
                 // Global symbol: use symbol@GOT or direct addressing.
                 if self.config.requires_pic() {
                     // PIC: MOV reg, [EBX + symbol@GOT]

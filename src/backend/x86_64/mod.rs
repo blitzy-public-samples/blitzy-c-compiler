@@ -100,7 +100,7 @@ pub mod linker;
 // ---------------------------------------------------------------------------
 
 use crate::backend::traits::{
-    ArchCodegen, CodegenConfig, MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand,
+    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr, MachineOperand,
     ParamClass, PhysReg, RelocationType,
 };
 use crate::common::target::Target;
@@ -359,41 +359,41 @@ pub mod opcodes {
 /// Each entry maps a human-readable name to its numeric value (the
 /// `r_type` field in `Elf64_Rela`).
 const X86_64_RELOCATION_TYPES: &[RelocationType] = &[
-    RelocationType { name: "R_X86_64_NONE", value: 0 },
-    RelocationType { name: "R_X86_64_64", value: 1 },
-    RelocationType { name: "R_X86_64_PC32", value: 2 },
-    RelocationType { name: "R_X86_64_GOT32", value: 3 },
-    RelocationType { name: "R_X86_64_PLT32", value: 4 },
-    RelocationType { name: "R_X86_64_COPY", value: 5 },
-    RelocationType { name: "R_X86_64_GLOB_DAT", value: 6 },
-    RelocationType { name: "R_X86_64_JUMP_SLOT", value: 7 },
-    RelocationType { name: "R_X86_64_RELATIVE", value: 8 },
-    RelocationType { name: "R_X86_64_GOTPCREL", value: 9 },
-    RelocationType { name: "R_X86_64_32", value: 10 },
-    RelocationType { name: "R_X86_64_32S", value: 11 },
-    RelocationType { name: "R_X86_64_16", value: 12 },
-    RelocationType { name: "R_X86_64_PC16", value: 13 },
-    RelocationType { name: "R_X86_64_8", value: 14 },
-    RelocationType { name: "R_X86_64_PC8", value: 15 },
-    RelocationType { name: "R_X86_64_DTPMOD64", value: 16 },
-    RelocationType { name: "R_X86_64_DTPOFF64", value: 17 },
-    RelocationType { name: "R_X86_64_TPOFF64", value: 18 },
-    RelocationType { name: "R_X86_64_TLSGD", value: 19 },
-    RelocationType { name: "R_X86_64_TLSLD", value: 20 },
-    RelocationType { name: "R_X86_64_DTPOFF32", value: 21 },
-    RelocationType { name: "R_X86_64_GOTTPOFF", value: 22 },
-    RelocationType { name: "R_X86_64_TPOFF32", value: 23 },
-    RelocationType { name: "R_X86_64_PC64", value: 24 },
-    RelocationType { name: "R_X86_64_GOTOFF64", value: 25 },
-    RelocationType { name: "R_X86_64_GOTPC32", value: 26 },
-    RelocationType { name: "R_X86_64_SIZE32", value: 32 },
-    RelocationType { name: "R_X86_64_SIZE64", value: 33 },
-    RelocationType { name: "R_X86_64_GOTPC32_TLSDESC", value: 34 },
-    RelocationType { name: "R_X86_64_TLSDESC_CALL", value: 35 },
-    RelocationType { name: "R_X86_64_TLSDESC", value: 36 },
-    RelocationType { name: "R_X86_64_IRELATIVE", value: 37 },
-    RelocationType { name: "R_X86_64_GOTPCRELX", value: 41 },
-    RelocationType { name: "R_X86_64_REX_GOTPCRELX", value: 42 },
+    RelocationType { name: "R_X86_64_NONE",              value:  0, is_pc_relative: false, size: 0 },
+    RelocationType { name: "R_X86_64_64",                value:  1, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_PC32",              value:  2, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_GOT32",             value:  3, is_pc_relative: false, size: 4 },
+    RelocationType { name: "R_X86_64_PLT32",             value:  4, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_COPY",              value:  5, is_pc_relative: false, size: 0 },
+    RelocationType { name: "R_X86_64_GLOB_DAT",          value:  6, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_JUMP_SLOT",         value:  7, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_RELATIVE",          value:  8, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_GOTPCREL",          value:  9, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_32",                value: 10, is_pc_relative: false, size: 4 },
+    RelocationType { name: "R_X86_64_32S",               value: 11, is_pc_relative: false, size: 4 },
+    RelocationType { name: "R_X86_64_16",                value: 12, is_pc_relative: false, size: 2 },
+    RelocationType { name: "R_X86_64_PC16",              value: 13, is_pc_relative: true,  size: 2 },
+    RelocationType { name: "R_X86_64_8",                 value: 14, is_pc_relative: false, size: 1 },
+    RelocationType { name: "R_X86_64_PC8",               value: 15, is_pc_relative: true,  size: 1 },
+    RelocationType { name: "R_X86_64_DTPMOD64",          value: 16, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_DTPOFF64",          value: 17, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_TPOFF64",           value: 18, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_TLSGD",             value: 19, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_TLSLD",             value: 20, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_DTPOFF32",          value: 21, is_pc_relative: false, size: 4 },
+    RelocationType { name: "R_X86_64_GOTTPOFF",          value: 22, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_TPOFF32",           value: 23, is_pc_relative: false, size: 4 },
+    RelocationType { name: "R_X86_64_PC64",              value: 24, is_pc_relative: true,  size: 8 },
+    RelocationType { name: "R_X86_64_GOTOFF64",          value: 25, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_GOTPC32",           value: 26, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_SIZE32",            value: 32, is_pc_relative: false, size: 4 },
+    RelocationType { name: "R_X86_64_SIZE64",            value: 33, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_GOTPC32_TLSDESC",   value: 34, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_TLSDESC_CALL",      value: 35, is_pc_relative: true,  size: 0 },
+    RelocationType { name: "R_X86_64_TLSDESC",           value: 36, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_IRELATIVE",         value: 37, is_pc_relative: false, size: 8 },
+    RelocationType { name: "R_X86_64_GOTPCRELX",         value: 41, is_pc_relative: true,  size: 4 },
+    RelocationType { name: "R_X86_64_REX_GOTPCRELX",     value: 42, is_pc_relative: true,  size: 4 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -1140,6 +1140,7 @@ fn align_to(value: u32, alignment: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::traits::MachineBasicBlock;
 
     /// Creates a minimal [`CodegenConfig`] targeting x86-64 with all
     /// optional features disabled. Used as a baseline for tests.
@@ -1148,6 +1149,7 @@ mod tests {
     }
 
     /// Creates a test config with security mitigations enabled.
+    #[allow(dead_code)]
     fn security_config() -> CodegenConfig {
         let mut cfg = CodegenConfig::new(Target::X86_64);
         cfg.retpoline = true;

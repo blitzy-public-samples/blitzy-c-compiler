@@ -27,6 +27,12 @@
 /// register name lookup, property queries, and 5-bit A64 encoding helpers.
 pub mod registers;
 
+/// Built-in AArch64 assembler producing relocatable object code from
+/// `MachineFunction` output without invoking any external tools.
+/// Contains the A64 instruction encoder and AArch64-specific ELF
+/// relocation type definitions.
+pub mod assembler;
+
 /// Built-in AArch64 ELF linker producing ET_EXEC and ET_DYN binaries
 /// with full GOT/PLT relocation support for PIC code.
 pub mod linker;

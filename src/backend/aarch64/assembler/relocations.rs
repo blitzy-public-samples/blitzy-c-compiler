@@ -50,6 +50,7 @@ use crate::backend::traits::RelocationType;
 /// - Range validation ([`check_range`](Self::check_range))
 /// - Conversion to the architecture-agnostic linker types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(non_camel_case_types)]
 pub enum AArch64RelocationType {
     // ----- Absolute Data Relocations -----
 

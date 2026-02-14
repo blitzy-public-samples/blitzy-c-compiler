@@ -1,16 +1,33 @@
 //! Statement parsing module for the BCC C11 parser.
 //!
 //! Implements parsing for all C11 statement forms and the GCC extensions
-//! (computed gotos, case ranges, local labels, inline assembly dispatch).
+//! required for Linux kernel compilation:
+//!
+//! - Computed gotos: `goto *expression;`
+//! - Case ranges: `case low ... high:`
+//! - Local labels: `__label__ id1, id2, ...;`
+//! - Inline assembly dispatch to the [`inline_asm`](super::inline_asm) module
 //!
 //! # Architecture
 //!
 //! All public functions accept a `&mut Parser` and return
 //! `Result<Statement, ParseError>` or `Result<BlockItem, ParseError>`.
+//! The main entry point is [`parse_statement`], which dispatches to
+//! specialised sub-parsers based on the current token.
+//!
+//! # Error Recovery
+//!
+//! When a parse error is encountered inside a compound statement, a
+//! [`Statement::Error`] node is inserted into the AST and the parser
+//! synchronises to the next `;`, `{`, or `}` so that subsequent
+//! statements can still be parsed. The [`error_symbol`] helper produces
+//! a well-known sentinel identifier for error-recovery AST nodes.
 
-use super::ast::{BlockItem, ForInit, Span, Statement};
+use super::ast::{
+    AsmStatement, Attribute, BlockItem, Declaration, Expression, ForInit, Span, Statement,
+};
 use super::{ParseError, Parser};
-use crate::common::string_interner::Symbol;
+use crate::common::string_interner::{Interner, Symbol};
 use crate::frontend::lexer::token::TokenKind;
 
 // ===========================================================================
@@ -35,6 +52,19 @@ use crate::frontend::lexer::token::TokenKind;
 /// delegates to the appropriate sub-parser.
 pub fn parse_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     parser.enter_recursion()?;
+
+    // Check for unexpected end-of-file before dispatching.
+    if parser.check(TokenKind::Eof) {
+        parser.leave_recursion();
+        let span = parser.current().span;
+        let msg = "unexpected end of file while parsing statement".to_string();
+        parser.diagnostics.error(span, &msg);
+        return Err(ParseError {
+            span,
+            message: msg,
+            expected: Some("statement".to_string()),
+        });
+    }
 
     let result = match parser.current().kind.clone() {
         // Compound statement: { ... }
@@ -64,16 +94,13 @@ pub fn parse_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError>
 
         // Inline assembly: asm / __asm__
         TokenKind::AsmKeyword => {
-            let asm = super::inline_asm::parse_asm_statement(parser)?;
+            let asm: AsmStatement = super::inline_asm::parse_asm_statement(parser)?;
             Ok(Statement::Asm(Box::new(asm)))
         }
 
-        // __extension__ — may precede a declaration or expression-statement
-        TokenKind::Extension => {
-            // Try parsing as an expression-statement (which will handle
-            // the __extension__ prefix via the expression parser).
-            parse_expression_statement(parser)
-        }
+        // __extension__ — may precede a declaration or expression-statement.
+        // Delegate to the expression parser which handles the prefix.
+        TokenKind::Extension => parse_expression_statement(parser),
 
         // Null statement: ;
         TokenKind::Semicolon => {
@@ -82,8 +109,8 @@ pub fn parse_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError>
         }
 
         // Identifier — could be a labeled statement (`label:`) or an
-        // expression-statement. Check for `:` after the identifier.
-        TokenKind::Identifier(_sym) => {
+        // expression-statement.  Check for `:` after the identifier.
+        TokenKind::Identifier(_) => {
             // Lookahead: if the next token is `:`, this is a labeled statement.
             if parser.peek_ahead(1).kind == TokenKind::Colon {
                 parse_labeled_statement(parser)
@@ -103,10 +130,11 @@ pub fn parse_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError>
 /// Parses a compound statement (block): `{ block-item* }`.
 ///
 /// A compound statement contains a sequence of block items, where each item
-/// is either a declaration or a statement.
+/// is either a declaration or a statement.  Error recovery inserts
+/// [`Statement::Error`] nodes so that parsing can continue past errors.
 ///
 /// GCC extensions parsed at block scope:
-/// - `__label__` local label declarations (handled by `parse_statement`)
+/// - `__label__` local label declarations (handled by [`parse_statement`])
 /// - Declarations mixed with statements (standard in C99+)
 pub fn parse_compound_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.expect(TokenKind::LeftBrace)?;
@@ -116,8 +144,14 @@ pub fn parse_compound_statement(parser: &mut Parser<'_>) -> Result<Statement, Pa
         match parse_block_item(parser) {
             Ok(item) => items.push(item),
             Err(e) => {
-                // Error recovery: report and skip to next synchronisation point.
-                parser.diagnostics.error(e.span, &e.message);
+                // Error recovery: emit an Error AST node and skip to the next
+                // synchronisation point so that parsing can continue for
+                // remaining block items.
+                let error_span = e.span;
+                parser.diagnostics.error(error_span, &e.message);
+                items.push(BlockItem::Statement(Statement::Error {
+                    span: error_span,
+                }));
                 parser.synchronize();
                 if parser.at_end() {
                     break;
@@ -138,10 +172,13 @@ pub fn parse_compound_statement(parser: &mut Parser<'_>) -> Result<Statement, Pa
 /// treat it as a declaration; otherwise treat it as a statement.
 pub fn parse_block_item(parser: &mut Parser<'_>) -> Result<BlockItem, ParseError> {
     if parser.is_declaration_start() {
-        // Some tokens are ambiguous (e.g., __extension__ can precede either
-        // a declaration or an expression-statement). We try declaration first.
+        // Some tokens are ambiguous (e.g., `__extension__` can precede either
+        // a declaration or an expression-statement).  We try declaration first.
         match super::declarations::parse_declaration(parser) {
-            Ok(decl) => Ok(BlockItem::Declaration(decl)),
+            Ok(decl) => {
+                let _decl_ref: &Declaration = &decl;
+                Ok(BlockItem::Declaration(decl))
+            }
             Err(_) => {
                 // If declaration parsing fails, this might be an expression
                 // starting with a typedef name — fall through to statement.
@@ -160,7 +197,10 @@ pub fn parse_block_item(parser: &mut Parser<'_>) -> Result<BlockItem, ParseError
 // ===========================================================================
 
 /// Parses an `if` statement: `if (condition) then [else else_branch]`.
-fn parse_if_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+///
+/// Dangling-else resolution follows the standard rule: an `else` binds to
+/// the nearest unmatched `if`.
+pub fn parse_if_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `if`
     parser.expect(TokenKind::LeftParen)?;
     let condition = super::expressions::parse_expression(parser)?;
@@ -188,7 +228,7 @@ fn parse_if_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> 
 }
 
 /// Parses a `switch` statement: `switch (expression) body`.
-fn parse_switch_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+pub fn parse_switch_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `switch`
     parser.expect(TokenKind::LeftParen)?;
     let expression = super::expressions::parse_expression(parser)?;
@@ -209,7 +249,7 @@ fn parse_switch_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseErr
 // ===========================================================================
 
 /// Parses a `while` statement: `while (condition) body`.
-fn parse_while_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+pub fn parse_while_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `while`
     parser.expect(TokenKind::LeftParen)?;
     let condition = super::expressions::parse_expression(parser)?;
@@ -226,7 +266,7 @@ fn parse_while_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseErro
 }
 
 /// Parses a `do ... while (condition);` statement.
-fn parse_do_while_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+pub fn parse_do_while_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `do`
     let body = parse_statement(parser)?;
     parser.expect(TokenKind::While)?;
@@ -250,8 +290,8 @@ fn parse_do_while_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseE
 /// ```
 ///
 /// The initialiser may be a declaration (`for (int i = 0; ...)`) or an
-/// expression.
-fn parse_for_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+/// expression.  All three clauses (init, condition, increment) are optional.
+pub fn parse_for_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `for`
     parser.expect(TokenKind::LeftParen)?;
 
@@ -260,7 +300,7 @@ fn parse_for_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError>
         parser.advance(); // consume `;`
         None
     } else if parser.is_declaration_start() {
-        let decl = super::declarations::parse_declaration(parser)?;
+        let decl: Declaration = super::declarations::parse_declaration(parser)?;
         // The declaration already consumed its trailing semicolon.
         Some(ForInit::Declaration(Box::new(decl)))
     } else {
@@ -270,7 +310,7 @@ fn parse_for_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError>
     };
 
     // Parse condition (optional).
-    let condition = if parser.check(TokenKind::Semicolon) {
+    let condition: Option<Box<Expression>> = if parser.check(TokenKind::Semicolon) {
         None
     } else {
         Some(Box::new(super::expressions::parse_expression(parser)?))
@@ -306,7 +346,10 @@ fn parse_for_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError>
 /// Standard: `goto identifier;`
 /// GCC extension: `goto *expression;` (computed goto) — dispatched to
 /// [`gcc_extensions::parse_computed_goto`].
-fn parse_goto_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+///
+/// On a missing label identifier, error recovery produces a `Goto` with a
+/// synthetic `<error>` symbol so that the parser can continue.
+pub fn parse_goto_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `goto`
 
     // GCC computed goto: `goto *expr;`
@@ -315,11 +358,30 @@ fn parse_goto_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError
     }
 
     // Standard goto: `goto label;`
-    let label = expect_identifier(parser, "goto label")?;
-    let end = parser.expect_semicolon()?;
-    let span = Span::merge(start, end);
-
-    Ok(Statement::Goto { label, span })
+    match expect_identifier(parser, "goto label") {
+        Ok(label) => {
+            let end = parser.expect_semicolon()?;
+            let span = Span::merge(start, end);
+            Ok(Statement::Goto { label, span })
+        }
+        Err(e) => {
+            // Error recovery: produce a goto with a synthetic error symbol
+            // so that parsing can continue.  Sema will reject the <error>
+            // label as undefined.
+            let error_label = error_symbol(parser.interner);
+            // Try to consume the semicolon for resynchronisation.
+            let end_span = if parser.eat(TokenKind::Semicolon) {
+                Span::merge(start, parser.tokens.get(parser.pos.wrapping_sub(1))
+                    .map_or(e.span, |t| t.span))
+            } else {
+                Span::merge(start, e.span)
+            };
+            Ok(Statement::Goto {
+                label: error_label,
+                span: end_span,
+            })
+        }
+    }
 }
 
 /// Parses a `break;` statement.
@@ -339,13 +401,19 @@ fn parse_continue_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseE
 }
 
 /// Parses a `return [expression];` statement.
-fn parse_return_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+///
+/// The return value is optional — `return;` is valid in void functions.
+/// The value is parsed as an assignment-expression per
+/// [`super::expressions::parse_assignment_expression`].
+pub fn parse_return_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `return`
 
     let value = if parser.check(TokenKind::Semicolon) {
         None
     } else {
-        Some(Box::new(super::expressions::parse_expression(parser)?))
+        Some(Box::new(
+            super::expressions::parse_assignment_expression(parser)?,
+        ))
     };
 
     let end = parser.expect_semicolon()?;
@@ -358,29 +426,32 @@ fn parse_return_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseErr
 // Label statements
 // ===========================================================================
 
-/// Parses a labeled statement: `identifier : statement`.
+/// Parses a labeled statement: `identifier : [attributes] statement`.
 ///
 /// The caller has already verified (via lookahead) that the current token
 /// is an identifier followed by `:`.
-fn parse_labeled_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+///
+/// GCC allows attributes on labels:
+/// ```text
+/// label: __attribute__((unused)) statement
+/// ```
+pub fn parse_labeled_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+    // Save the start span before consuming the identifier for accurate
+    // source location coverage.
+    let label_start = parser.current().span;
     let label = expect_identifier(parser, "label name")?;
     let _colon = parser.expect(TokenKind::Colon)?;
 
     // GCC allows attributes on labels: `label: __attribute__((unused)) stmt`
-    let attrs = if parser.check(TokenKind::Attribute) {
+    let attrs: Vec<Attribute> = if parser.check(TokenKind::Attribute) {
         super::attributes::parse_attribute_list(parser)?
     } else {
         Vec::new()
     };
 
     let body = parse_statement(parser)?;
-    let span = Span::merge(
-        parser
-            .tokens
-            .get(parser.pos.saturating_sub(2))
-            .map_or(Span::DUMMY, |t| t.span),
-        body.span(),
-    );
+    // Span covers from the label identifier through the end of body.
+    let span = Span::merge(label_start, body.span());
 
     Ok(Statement::Labeled {
         label,
@@ -390,15 +461,20 @@ fn parse_labeled_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseEr
     })
 }
 
-/// Parses a `case value:` label (with GCC case-range extension).
+/// Parses a `case value:` label, with GCC case-range extension support.
 ///
 /// ```text
-/// case constant-expression :
-/// case constant-expression ... constant-expression :    (GCC extension)
+/// case constant-expression :                                 (C11)
+/// case constant-expression ... constant-expression :         (GCC extension)
 /// ```
-fn parse_case_label(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+///
+/// The case value must be an integer constant expression, parsed via
+/// [`super::expressions::parse_constant_expression`].  If an ellipsis (`...`)
+/// follows the first constant expression, this is a GCC case-range and
+/// parsing is delegated to [`gcc_extensions::parse_case_range`].
+pub fn parse_case_label(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `case`
-    let low = super::expressions::parse_conditional_expression(parser)?;
+    let low = super::expressions::parse_constant_expression(parser)?;
 
     // GCC case range: `case LOW ... HIGH:`
     if parser.check(TokenKind::Ellipsis) {
@@ -417,7 +493,7 @@ fn parse_case_label(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
 }
 
 /// Parses a `default:` label in a switch statement.
-fn parse_default_label(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
+pub fn parse_default_label(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.advance(); // consume `default`
     parser.expect(TokenKind::Colon)?;
     let body = parse_statement(parser)?;
@@ -434,6 +510,10 @@ fn parse_default_label(parser: &mut Parser<'_>) -> Result<Statement, ParseError>
 // ===========================================================================
 
 /// Parses an expression-statement: `expression ;`.
+///
+/// This is the fallback when no statement keyword matches.  The full
+/// comma-expression grammar is accepted via
+/// [`super::expressions::parse_expression`].
 fn parse_expression_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let expr = super::expressions::parse_expression(parser)?;
     let end = parser.expect_semicolon()?;
@@ -451,20 +531,38 @@ fn parse_expression_statement(parser: &mut Parser<'_>) -> Result<Statement, Pars
 
 /// Parses a GCC `__label__` local label declaration as a statement.
 ///
-/// `__label__ id1, id2, ..., idN ;`
+/// ```text
+/// __label__ id1, id2, ..., idN ;
+/// ```
 ///
-/// Local labels are scoped to the enclosing compound statement.
-/// We parse them and emit a Null statement (their semantic effect is
-/// registering the labels in the current scope — handled by sema).
+/// Local labels are scoped to the enclosing compound statement.  The actual
+/// scope registration happens in semantic analysis; the parser records them
+/// and emits a `Null` statement as a placeholder.
+///
+/// **Important:** [`gcc_extensions::parse_local_labels`](super::gcc_extensions::parse_local_labels)
+/// already consumes the trailing semicolon, so we must NOT call
+/// `expect_semicolon` here.
 fn parse_local_label_decl(parser: &mut Parser<'_>) -> Result<Statement, ParseError> {
     let start = parser.current().span;
     let labels = super::gcc_extensions::parse_local_labels(parser)?;
-    let end = parser.expect_semicolon()?;
-    let span = Span::merge(start, end);
+    // `parse_local_labels()` consumed `__label__ id1, ..., idN ;` including
+    // the trailing semicolon.  Compute the end span from the last consumed
+    // token so the Null statement's span covers the full declaration.
+    let end_span = if parser.pos > 0 {
+        parser
+            .tokens
+            .get(parser.pos.wrapping_sub(1))
+            .map_or(start, |t| t.span)
+    } else {
+        start
+    };
+    let span = Span::merge(start, end_span);
 
-    // Local labels are registered in scope tracking by sema.
-    // The parser emits them as a side-effect and returns a Null statement.
-    let _ = labels;
+    // The parsed label symbols are available for sema-phase scope registration.
+    // We deliberately bind them here to suppress any "unused variable" warning
+    // while keeping the data accessible for future extensions.
+    let _local_labels: &[Symbol] = &labels;
+
     Ok(Statement::Null { span })
 }
 
@@ -472,8 +570,21 @@ fn parse_local_label_decl(parser: &mut Parser<'_>) -> Result<Statement, ParseErr
 // Helpers
 // ===========================================================================
 
-/// Expects and consumes an identifier token, returning its `Symbol`.
-/// On failure, emits a diagnostic and returns a `ParseError`.
+/// Creates an interned error-recovery symbol (`<error>`).
+///
+/// This produces a well-known sentinel identifier that the semantic analyser
+/// can recognise and reject.  Used when an identifier is required for AST
+/// construction but the actual token is missing or invalid, enabling the
+/// parser to continue past the error.
+fn error_symbol(interner: &mut Interner) -> Symbol {
+    interner.intern("<error>")
+}
+
+/// Expects and consumes an identifier token, returning its [`Symbol`].
+///
+/// On failure, emits a diagnostic and returns a [`ParseError`].  The error
+/// message includes the expected `context` (e.g., `"goto label"`,
+/// `"label name"`) for human-readable diagnostics.
 fn expect_identifier(parser: &mut Parser<'_>, context: &str) -> Result<Symbol, ParseError> {
     match &parser.current().kind {
         TokenKind::Identifier(sym) => {

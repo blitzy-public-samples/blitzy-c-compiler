@@ -734,31 +734,31 @@ impl AArch64RelocationType {
         match self {
             // ±128 MiB, 4-byte aligned (26-bit signed × 4)
             Self::R_AARCH64_CALL26 | Self::R_AARCH64_JUMP26 => {
-                (value & 0x3) == 0 && value >= -134_217_728 && value <= 134_217_724
+                (value & 0x3) == 0 && (-134_217_728..=134_217_724).contains(&value)
             }
 
             // ±1 MiB, 4-byte aligned (19-bit signed × 4)
             Self::R_AARCH64_CONDBR19 => {
-                (value & 0x3) == 0 && value >= -1_048_576 && value <= 1_048_572
+                (value & 0x3) == 0 && (-1_048_576..=1_048_572).contains(&value)
             }
 
             // ±32 KiB, 4-byte aligned (14-bit signed × 4)
             Self::R_AARCH64_TSTBR14 => {
-                (value & 0x3) == 0 && value >= -32_768 && value <= 32_764
+                (value & 0x3) == 0 && (-32_768..=32_764).contains(&value)
             }
 
             // ±4 GiB page range (21-bit signed page offset × 4096)
             Self::R_AARCH64_ADR_PREL_PG_HI21 => {
-                value >= -4_294_967_296 && value <= 4_294_963_200
+                (-4_294_967_296..=4_294_963_200).contains(&value)
             }
 
             // ±1 MiB (21-bit signed, no shift)
             Self::R_AARCH64_ADR_PREL_LO21 => {
-                value >= -1_048_576 && value <= 1_048_575
+                (-1_048_576..=1_048_575).contains(&value)
             }
 
             // 32-bit unsigned absolute
-            Self::R_AARCH64_ABS32 => value >= 0 && value <= 0xFFFF_FFFF,
+            Self::R_AARCH64_ABS32 => (0..=0xFFFF_FFFF).contains(&value),
 
             // 32-bit signed PC-relative
             Self::R_AARCH64_PREL32 => {
@@ -766,7 +766,7 @@ impl AArch64RelocationType {
             }
 
             // 16-bit unsigned absolute
-            Self::R_AARCH64_ABS16 => value >= 0 && value <= 0xFFFF,
+            Self::R_AARCH64_ABS16 => (0..=0xFFFF).contains(&value),
 
             // 16-bit signed PC-relative
             Self::R_AARCH64_PREL16 => {
@@ -799,7 +799,7 @@ impl AArch64RelocationType {
             Self::R_AARCH64_ADR_GOT_PAGE
             | Self::R_AARCH64_TLSGD_ADR_PAGE21
             | Self::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => {
-                value >= -4_294_967_296 && value <= 4_294_963_200
+                (-4_294_967_296..=4_294_963_200).contains(&value)
             }
 
             // Dynamic relocations — always valid (runtime linker handles them)

@@ -801,15 +801,15 @@ pub fn is_fp_reg(reg: PhysReg) -> bool {
 pub fn is_callee_saved(reg: PhysReg) -> bool {
     let idx = reg.0;
     // X19–X28 (integer callee-saved)
-    (idx >= 19 && idx <= 28)
+    (19..=28).contains(&idx)
     // V8–V15 (FP callee-saved — lower 64 bits only)
-    || (idx >= 74 && idx <= 81)
+    || (74..=81).contains(&idx)
     // D8–D15 (explicit double-precision view of callee-saved FP)
-    || (idx >= 138 && idx <= 145)
+    || (138..=145).contains(&idx)
     // S8–S15 (single-precision view of callee-saved FP)
-    || (idx >= 106 && idx <= 113)
+    || (106..=113).contains(&idx)
     // W19–W28 (32-bit views of callee-saved integer regs)
-    || (idx >= 53 && idx <= 62)
+    || (53..=62).contains(&idx)
 }
 
 /// Returns `true` if `reg` is available for the register allocator.
@@ -825,7 +825,7 @@ pub fn is_allocatable(reg: PhysReg) -> bool {
     let idx = reg.0;
     match idx {
         // SP, XZR, WZR — never allocatable
-        31 | 32 | 33 => false,
+        31..=33 => false,
         // X29 (FP) — reserved for frame pointer
         29 => false,
         // WSP — not allocatable

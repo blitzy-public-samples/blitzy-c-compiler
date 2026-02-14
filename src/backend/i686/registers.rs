@@ -357,10 +357,10 @@ pub fn reg_name_8lo(reg: PhysReg) -> &'static str {
     if idx < 4 {
         // 32-bit GPR (EAX-EBX) → return low-byte name
         GPR8LO_NAMES[idx]
-    } else if idx >= 8 && idx < 12 {
+    } else if (8..12).contains(&idx) {
         // 16-bit sub-register (AX-BX) → return low-byte name
         GPR8LO_NAMES[idx - 8]
-    } else if idx >= 16 && idx < 20 {
+    } else if (16..20).contains(&idx) {
         // Already a low-byte sub-register (AL-BL)
         GPR8LO_NAMES[idx - 16]
     } else {
@@ -393,10 +393,10 @@ pub fn reg_name_8hi(reg: PhysReg) -> &'static str {
     if idx < 4 {
         // 32-bit GPR (EAX-EBX) → return high-byte name
         GPR8HI_NAMES[idx]
-    } else if idx >= 8 && idx < 12 {
+    } else if (8..12).contains(&idx) {
         // 16-bit sub-register (AX-BX) → return high-byte name
         GPR8HI_NAMES[idx - 8]
-    } else if idx >= 20 && idx < 24 {
+    } else if (20..24).contains(&idx) {
         // Already a high-byte sub-register (AH-BH)
         GPR8HI_NAMES[idx - 20]
     } else {
@@ -422,7 +422,7 @@ pub fn reg_name_8hi(reg: PhysReg) -> &'static str {
 /// ```
 pub fn fpu_reg_name(reg: PhysReg) -> &'static str {
     let idx = reg.0 as usize;
-    if idx >= 24 && idx < 32 {
+    if (24..32).contains(&idx) {
         FPU_NAMES[idx - 24]
     } else {
         panic!(

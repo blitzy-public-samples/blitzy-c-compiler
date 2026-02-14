@@ -18,12 +18,18 @@
 //! # Sub-modules
 //!
 //! - [`registers`]: i686 register definitions — 8 GPRs, sub-registers, x87 FPU stack
+//! - [`assembler`]: Built-in i686 assembler — 32-bit instruction encoding, REL relocations
 //! - [`linker`]: Built-in i686 ELF linker with relocation support
 
 /// i686 register definitions — 8 GPRs (EAX–EDI), 16-bit and 8-bit
 /// sub-register aliases, x87 FPU stack registers (ST0–ST7), EFLAGS,
 /// register classification arrays, and property query functions.
 pub mod registers;
+
+/// Built-in i686 assembler — 32-bit x86 instruction encoding without
+/// REX prefixes, using REL-format relocations (inline addends) and
+/// ModR/M + SIB encoding for all i686 addressing modes.
+pub mod assembler;
 
 /// Built-in i686 ELF linker producing ET_EXEC and ET_DYN binaries
 /// with full GOT/PLT relocation support for PIC code.

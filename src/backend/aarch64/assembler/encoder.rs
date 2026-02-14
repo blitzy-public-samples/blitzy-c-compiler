@@ -1409,12 +1409,21 @@ pub fn encode_bitmask_immediate(value: u64, reg_size: u8) -> Option<(bool, u8, u
     let mut rotation = 0u32;
 
     // Find a 0→1 transition to anchor the rotation search.
-    let doubled = pattern | (pattern << size);
+    // For size < 64 we double the pattern to simulate rotation via shift.
+    // For size == 64 we cannot left-shift by 64 (overflow), so we use
+    // u64::rotate_right instead.
+    let doubled = if size < 64 {
+        pattern | (pattern << size)
+    } else {
+        0 // unused when size == 64; rotation handled below
+    };
     let mut found = false;
 
     for r in 0..size as u32 {
         let rotated = if r == 0 {
             pattern
+        } else if size == 64 {
+            pattern.rotate_right(r)
         } else {
             (doubled >> r) & elem_mask
         };
@@ -1523,14 +1532,21 @@ pub fn encode_mov_imm(rd: u8, value: u64, sf: bool) -> Vec<u32> {
     // Use MOVN strategy if it produces fewer instructions.
     if not_nonzero_hws.len() < nonzero_hws.len() {
         let mut instrs = Vec::new();
-        let first = not_nonzero_hws[0];
-        instrs.push(encode_movn(sf, rd, first.1, first.0));
-        // Remaining halfwords that differ from 0xFFFF in the original value
-        // need MOVK with the actual value.
-        for hw in 0..max_hw {
-            let hw_val = ((value >> (hw * 16)) & 0xFFFF) as u16;
-            if hw != first.0 && hw_val != 0xFFFF {
-                instrs.push(encode_movk(sf, rd, hw_val, hw));
+        if not_nonzero_hws.is_empty() {
+            // All halfwords in not_value are zero, meaning the original value
+            // is all-ones (0xFFFF_FFFF_FFFF_FFFF for 64-bit or
+            // 0xFFFF_FFFF for 32-bit).  MOVN Xd/Wd, #0 produces ~0.
+            instrs.push(encode_movn(sf, rd, 0, 0));
+        } else {
+            let first = not_nonzero_hws[0];
+            instrs.push(encode_movn(sf, rd, first.1, first.0));
+            // Remaining halfwords that differ from 0xFFFF in the original value
+            // need MOVK with the actual value.
+            for hw in 0..max_hw {
+                let hw_val = ((value >> (hw * 16)) & 0xFFFF) as u16;
+                if hw != first.0 && hw_val != 0xFFFF {
+                    instrs.push(encode_movk(sf, rd, hw_val, hw));
+                }
             }
         }
         return instrs;

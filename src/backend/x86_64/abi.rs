@@ -490,8 +490,8 @@ fn classify_struct(
         };
 
         // Merge the field's class into each overlapping eightbyte.
-        for eb_idx in start_eb..=end_eb.min(num_eightbytes - 1) {
-            classes[eb_idx] = classes[eb_idx].merge(field_class);
+        for class in classes.iter_mut().take(end_eb.min(num_eightbytes - 1) + 1).skip(start_eb) {
+            *class = class.merge(field_class);
         }
     }
 
@@ -1183,7 +1183,7 @@ pub fn can_use_red_zone(func: &IrFunction) -> bool {
 /// | R15      | General-purpose callee-saved               |
 #[inline]
 pub fn callee_saved_gprs() -> &'static [PhysReg] {
-    &registers::CALLEE_SAVED
+    registers::CALLEE_SAVED
 }
 
 /// Returns the caller-saved (volatile) general-purpose registers for the
@@ -1212,7 +1212,7 @@ pub fn callee_saved_gprs() -> &'static [PhysReg] {
 /// handled separately by the register allocator.
 #[inline]
 pub fn caller_saved_gprs() -> &'static [PhysReg] {
-    &registers::CALLER_SAVED
+    registers::CALLER_SAVED
 }
 
 // ---------------------------------------------------------------------------

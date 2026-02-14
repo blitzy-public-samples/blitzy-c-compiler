@@ -303,6 +303,12 @@ pub struct AArch64Assembler {
     symbol_references: Vec<SymbolReference>,
 }
 
+impl Default for AArch64Assembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AArch64Assembler {
     // -------------------------------------------------------------------
     // Construction
@@ -485,9 +491,7 @@ impl AArch64Assembler {
             let func_align = 4u32; // Minimum A64 instruction alignment.
             let current_len = text_section.len() as u32;
             let padding = alignment_padding(current_len, func_align);
-            for _ in 0..padding {
-                text_section.push(0x00);
-            }
+            text_section.resize(text_section.len() + padding as usize, 0x00);
             let func_offset = text_section.len() as u32;
 
             // Assemble the function.

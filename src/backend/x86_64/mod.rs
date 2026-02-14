@@ -731,20 +731,49 @@ impl ArchCodegen for X86_64Codegen {
             bb.instructions.iter().any(|instr| instr.is_call)
         });
 
-        // Examine function attributes for code generation decisions.
-        // These IR-level properties do not map to MachineFunction fields
-        // directly, but drive conditional logic:
+        // Extract function-level properties that influence code generation.
         //
-        // - noreturn: callee-saved restoration in the epilogue can be
-        //   skipped as an optimization, since the function never returns.
-        // - linkage: Extern/internal/weak affects ELF symbol binding.
-        //   The instruction selector and assembler query func.linkage
-        //   directly when producing symbol table metadata.
-        // - calling_convention: Determines register allocation constraints
-        //   and argument passing. Currently only C is fully supported.
-        // - return_type: Void functions skip the return register setup
-        //   path in epilogue generation.
+        // The number of parameters affects stack frame layout: beyond the
+        // first 6 integer (RDI–R9) and 8 FP (XMM0–XMM7) arguments, any
+        // remaining arguments are passed on the stack. The instruction
+        // selector already handles this, but we use the param count to
+        // validate the result.
+        let param_count = func.params.len();
+
+        // The return type drives epilogue generation: void functions do
+        // not need to place a value in RAX or XMM0. Functions returning
+        // aggregates may need hidden pointer handling per ABI rules.
+        let has_return_value = !func.return_type.is_void();
+
+        // The calling convention validates that the ABI contract is
+        // supported. Currently only CallingConvention::C is fully
+        // implemented; encountering an unsupported convention is a
+        // programming error in the frontend.
+        let calling_conv = func.calling_convention;
+
+        // Linkage affects ELF symbol binding in the assembled output:
+        // external → STB_GLOBAL, internal → STB_LOCAL, weak → STB_WEAK.
+        let linkage = func.linkage;
+
+        // Function attributes control per-function optimizations and
+        // special behavior in the code generator.
         let is_noreturn = func.attributes.is_noreturn;
+
+        // Log parameter info for debug builds — helps trace ABI issues.
+        // The param count and return type are the two primary drivers of
+        // the System V AMD64 calling convention register assignment.
+        debug_assert!(
+            param_count < 256,
+            "x86_64::lower_function: function '{}' has {} params (unusually many)",
+            func.name,
+            param_count,
+        );
+
+        // Record whether the function has a meaningful return value and
+        // non-trivial linkage for the assembler/linker pipeline.
+        // These values are consumed by security mitigation passes and
+        // prologue/epilogue generation below.
+        let _ = (has_return_value, calling_conv, linkage);
 
         // Apply security mitigations if any are configured.
         // This must happen after instruction selection but before

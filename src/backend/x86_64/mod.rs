@@ -18,6 +18,12 @@
 //! - System V AMD64 calling convention: RDI, RSI, RDX, RCX, R8, R9 for
 //!   integer arguments; XMM0–XMM7 for floating-point arguments
 
+/// x86-64 physical register definitions — named constants for all 16 GPRs
+/// (RAX–R15), 32-bit aliases (EAX–R15D), 16 SSE registers (XMM0–XMM15),
+/// ABI classification arrays (callee-saved, caller-saved, argument registers),
+/// register name lookup, property queries, and 3-bit ModR/M encoding helpers.
+pub mod registers;
+
 /// Built-in x86-64 assembler — instruction encoding, ModR/M, SIB, REX/VEX
 /// prefixes, and ELF relocation recording for the x86-64 target.
 pub mod assembler;

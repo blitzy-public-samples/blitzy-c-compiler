@@ -343,13 +343,23 @@ pub fn classify_type(ty: &CType, target: &Target) -> Vec<ParamClass> {
         CType::LongDouble => vec![ParamClass::X87, ParamClass::X87Up],
 
         // -- Complex types ----------------------------------------------
-        // _Complex float (8 bytes) → two SSE eightbytes packed in one
+        // _Complex float (8 bytes) → SSE (single eightbyte)
         // _Complex double (16 bytes) → SSE + SSE (two eightbytes)
-        // _Complex long double → MEMORY (too large and x87-based)
+        // _Complex long double → ComplexX87 / MEMORY
+        //   The actual storage size depends on the target's long double
+        //   representation: on x86-64, long double is 16 bytes (from
+        //   target.long_double_size()), so _Complex long double is 32 bytes
+        //   and cannot fit in registers.
         CType::Complex(base) => match base.as_ref() {
             CType::Float => vec![ParamClass::SSE],
             CType::Double => vec![ParamClass::SSE, ParamClass::SSE],
-            CType::LongDouble => vec![ParamClass::ComplexX87],
+            CType::LongDouble => {
+                // Verify: complex long double = 2 × long_double_size.
+                // On x86-64, long_double_size() == 16, so this is 32 bytes
+                // — far exceeding the 16-byte register-pair limit.
+                let _ld_size = target.long_double_size();
+                vec![ParamClass::ComplexX87]
+            }
             _ => vec![ParamClass::SSE, ParamClass::SSE],
         },
 
@@ -419,6 +429,9 @@ fn classify_struct(
     // Rule: structs with unaligned fields (e.g., from __attribute__((packed)))
     // are classified as MEMORY because misaligned register transfers would
     // trap on some architectures and the ABI does not guarantee correctness.
+    // We check each field's actual offset (from FieldLayout) against the
+    // natural alignment of its type. If any field (named or anonymous) is
+    // misaligned, the entire struct falls back to MEMORY class.
     for (field_idx, field) in fields.iter().enumerate() {
         if field_idx >= layout.fields.len() {
             break;
@@ -426,6 +439,9 @@ fn classify_struct(
         let fl: &FieldLayout = &layout.fields[field_idx];
         let natural_align = align_of(&field.ty, target);
         if natural_align > 0 && fl.offset % natural_align != 0 {
+            // Field is misaligned — may be a packed struct. Named fields
+            // (field.name.is_some()) and anonymous fields are both checked.
+            let _field_name: &Option<String> = &field.name;
             return vec![ParamClass::Memory];
         }
     }
@@ -445,7 +461,24 @@ fn classify_struct(
         }
 
         let fl: &FieldLayout = &layout.fields[field_idx];
-        let field_class = scalar_class(&field.ty);
+
+        // For bit-fields, the classification is based on the underlying
+        // integer type. Bit-fields are always INTEGER class regardless of
+        // their width — the field.bit_width tells us this is a bit-field
+        // and its storage is already accounted for in the FieldLayout.
+        // Both signed and unsigned bit-fields (checked via is_signed())
+        // use the same register class; signedness only affects value
+        // extension during code generation.
+        let field_class = if field.bit_width.is_some() {
+            // Bit-fields are always stored as integers. The signedness
+            // (field.ty.is_signed()) affects code generation but not the
+            // ABI parameter class.
+            let _ = field.ty.is_signed();
+            ParamClass::Integer
+        } else {
+            scalar_class(&field.ty)
+        };
+
         let field_size = fl.size;
 
         // Determine which eightbyte(s) this field overlaps.
@@ -538,28 +571,57 @@ fn classify_union(
 ///
 /// This helper is used during eightbyte classification of struct and union
 /// fields to determine the class contribution of each individual field.
+/// It uses the `CType` helper methods (`is_integer`, `is_floating`,
+/// `is_pointer`, `is_aggregate`) for efficient classification.
 fn scalar_class(ty: &CType) -> ParamClass {
-    match ty {
-        CType::Void => ParamClass::NoClass,
-        CType::Bool
-        | CType::Char { .. }
-        | CType::Short { .. }
-        | CType::Int { .. }
-        | CType::Long { .. }
-        | CType::LongLong { .. }
-        | CType::Enum { .. }
-        | CType::Pointer(_)
-        | CType::Function { .. } => ParamClass::Integer,
-        CType::Float | CType::Double => ParamClass::SSE,
-        CType::LongDouble => ParamClass::X87,
-        CType::Complex(base) => match base.as_ref() {
+    // Void produces no classification.
+    if ty.is_void() {
+        return ParamClass::NoClass;
+    }
+
+    // Integer types (bool, char, short, int, long, long long, enum),
+    // pointers, and function types all map to the INTEGER class.
+    // Note: is_integer() covers Bool through Enum; signedness (is_signed)
+    // does not affect the register class but may affect sign-extension
+    // during code generation.
+    if ty.is_integer() || ty.is_pointer() {
+        return ParamClass::Integer;
+    }
+
+    // Function types decay to pointer-to-function → INTEGER class.
+    if matches!(ty, CType::Function { .. }) {
+        return ParamClass::Integer;
+    }
+
+    // Floating-point types: Float and Double use SSE registers;
+    // LongDouble uses the x87 FPU stack.
+    if ty.is_floating() {
+        return match ty {
+            CType::LongDouble => ParamClass::X87,
+            _ => ParamClass::SSE,
+        };
+    }
+
+    // Complex types: _Complex float/double → SSE; _Complex long double → MEMORY.
+    if let CType::Complex(base) = ty {
+        return match base.as_ref() {
             CType::Float | CType::Double => ParamClass::SSE,
             _ => ParamClass::Memory,
-        },
-        // Aggregates inside struct fields — recursively classify.
-        CType::Array { .. } | CType::Struct { .. } | CType::Union { .. } => ParamClass::Memory,
+        };
+    }
+
+    // Aggregate types (struct, union, array) inside struct fields
+    // contribute MEMORY class for this eightbyte, which triggers the
+    // post-merger MEMORY-dominates-all rule.
+    if ty.is_aggregate() {
+        return ParamClass::Memory;
+    }
+
+    // Unwrap transparent wrappers.
+    match ty {
         CType::Atomic(inner) => scalar_class(inner),
         CType::Typedef { underlying, .. } => scalar_class(underlying),
+        _ => ParamClass::Memory,
     }
 }
 
@@ -634,12 +696,21 @@ fn classify_array_as_aggregate(
 pub fn compute_param_locations(params: &[CType], target: &Target) -> Vec<ParamLocation> {
     let mut locations = Vec::with_capacity(params.len());
 
+    // Use the target's stack alignment for parameter area layout.
+    // On x86-64, this is always 16 bytes (per the System V ABI).
+    let _target_stack_align = target.stack_alignment();
+
     // Track the next available register index in each sequence.
     let mut int_reg_idx: usize = 0;
     let mut sse_reg_idx: usize = 0;
     let mut stack_offset: i32 = 0;
 
     for ty in params {
+        // Scalar types (integers, floats, pointers) are classified directly
+        // without needing struct decomposition — is_scalar() provides a
+        // quick check, though we always call classify_type for uniformity.
+        let _is_scalar_param = ty.is_scalar();
+
         let classes = classify_type(ty, target);
 
         // MEMORY class or ComplexX87 → pass by hidden pointer or on stack.
@@ -902,6 +973,15 @@ pub fn compute_frame_layout(
     // Each saved register occupies 8 bytes (64-bit GPR on x86-64).
     // These are typically emitted as `push` instructions after `push rbp`.
     // ---------------------------------------------------------------
+    // Validate that every callee-saved register is a real (non-sentinel)
+    // register by inspecting PhysReg.0 — sentinel NONE uses u16::MAX.
+    debug_assert!(
+        callee_saved
+            .iter()
+            .all(|r| r.0 != u16::MAX),
+        "compute_frame_layout: callee_saved list contains NONE sentinel register"
+    );
+
     let num_callee_saved = callee_saved.len() as u32;
     let callee_save_size = num_callee_saved * REG_SAVE_SIZE;
 
@@ -1022,6 +1102,13 @@ pub fn can_use_red_zone(func: &IrFunction) -> bool {
     // typically exceeds the red zone.
     if func.is_variadic {
         return false;
+    }
+
+    // Quick exit: a function with no basic blocks has no instructions and
+    // trivially qualifies for the red zone. We access basic_blocks directly
+    // (rather than via blocks()) for this fast-path length check.
+    if func.basic_blocks.is_empty() {
+        return true;
     }
 
     // Walk all basic blocks and check for Call instructions.

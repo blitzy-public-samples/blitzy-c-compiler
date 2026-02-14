@@ -353,10 +353,22 @@ fn encode_modrm(mod_bits: u8, reg: u8, rm: u8) -> u8 {
     ((mod_bits & 3) << 6) | ((reg & 7) << 3) | (rm & 7)
 }
 
+/// Return the 3-bit hardware encoding for any physical register (GPR or SSE).
+///
+/// For GPRs this is simply `reg.0 & 7`.  For SSE registers (XMM0–XMM15,
+/// PhysReg 16–31) it maps to the corresponding 3-bit field that the CPU
+/// uses inside ModR/M / SIB bytes; the 4th bit is supplied via REX.R / REX.B.
+#[inline]
+fn reg_hw_encoding(reg: PhysReg) -> u8 {
+    registers::reg_index(reg) & 0x07
+}
+
 /// ModR/M byte for two register-direct operands (mod=11).
+///
+/// Works for both GPR-GPR and SSE-SSE (and mixed GPR/SSE) pairings.
 #[inline]
 fn modrm_reg_reg(reg: PhysReg, rm: PhysReg) -> u8 {
-    encode_modrm(0b11, registers::gpr_encoding(reg), registers::gpr_encoding(rm))
+    encode_modrm(0b11, reg_hw_encoding(reg), reg_hw_encoding(rm))
 }
 
 // ============================================================================
@@ -1227,7 +1239,7 @@ fn encode_sse_rm(ctx: &mut EncodingContext, prefix: u8, opcode: u8, dst: PhysReg
     }
     ctx.emit_byte(0x0F);
     ctx.emit_byte(opcode);
-    emit_memory_operand(ctx, registers::gpr_encoding(dst), mem);
+    emit_memory_operand(ctx, reg_hw_encoding(dst), mem);
 }
 
 /// Encode SSE [mem], reg (store form).
@@ -1241,7 +1253,7 @@ fn encode_sse_mr(ctx: &mut EncodingContext, prefix: u8, opcode: u8, mem: &Memory
     }
     ctx.emit_byte(0x0F);
     ctx.emit_byte(opcode);
-    emit_memory_operand(ctx, registers::gpr_encoding(src), mem);
+    emit_memory_operand(ctx, reg_hw_encoding(src), mem);
 }
 
 /// CVTSI2SS / CVTSI2SD: convert GPR integer → SSE scalar.

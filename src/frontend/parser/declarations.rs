@@ -152,10 +152,10 @@ pub fn parse_external_declaration(parser: &mut Parser<'_>) -> Result<Declaration
     let start = parser.current().span;
 
     // Handle __extension__ prefix
-    if parser.check(TokenKind::Extension) {
-        if super::gcc_extensions::is_gcc_extension_start(&parser.current().kind) {
-            return super::gcc_extensions::parse_extension_decl(parser);
-        }
+    if parser.check(TokenKind::Extension)
+        && super::gcc_extensions::is_gcc_extension_start(&parser.current().kind)
+    {
+        return super::gcc_extensions::parse_extension_decl(parser);
     }
 
     // Handle _Static_assert
@@ -243,10 +243,10 @@ pub fn parse_declaration(parser: &mut Parser<'_>) -> Result<Declaration, ParseEr
     let start = parser.current().span;
 
     // Handle __extension__ prefix
-    if parser.check(TokenKind::Extension) {
-        if super::gcc_extensions::is_gcc_extension_start(&parser.current().kind) {
-            return super::gcc_extensions::parse_extension_decl(parser);
-        }
+    if parser.check(TokenKind::Extension)
+        && super::gcc_extensions::is_gcc_extension_start(&parser.current().kind)
+    {
+        return super::gcc_extensions::parse_extension_decl(parser);
     }
 
     // Handle _Static_assert
@@ -1329,10 +1329,7 @@ fn parse_parameter_declaration(parser: &mut Parser<'_>) -> Result<Parameter, Par
         })
     } else {
         // Try named declarator
-        match parse_declarator(parser) {
-            Ok(decl) => Some(decl),
-            Err(_) => None,
-        }
+        parse_declarator(parser).ok()
     };
 
     let end_span = declarator
@@ -1614,7 +1611,7 @@ pub(super) fn parse_struct_or_union_specifier(
             let tag = if is_struct { "struct" } else { "union" };
             parser
                 .diagnostics
-                .error(span, &format!("{tag} without name or body"));
+                .error(span, format!("{tag} without name or body"));
         }
         None
     };

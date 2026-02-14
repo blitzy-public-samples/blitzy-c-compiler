@@ -80,6 +80,13 @@ pub mod builder;
 /// sub-modules.
 pub mod mem2reg;
 
+/// AST-to-IR lowering (Phase 6).  Converts the semantically validated and
+/// type-annotated AST into the initial IR form where every local variable
+/// lives in an `alloca` instruction ("alloca-then-promote" architecture).
+/// Contains expression, statement, declaration, and inline-assembly
+/// lowering sub-modules coordinated by the `LoweringContext` driver.
+pub mod lowering;
+
 // ── Convenience re-exports ──────────────────────────────────────────────────
 // Re-export the most commonly used types so that other modules can write
 // `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.

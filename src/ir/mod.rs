@@ -33,9 +33,6 @@
 //! - `mem2reg`: SSA construction and phi elimination (Phases 7 & 9)
 
 // ── Submodule declarations ──────────────────────────────────────────────────
-// Only modules with corresponding source files on disk are declared here.
-// Other submodules (instructions, basic_block, function, module, builder,
-// lowering, mem2reg) will be added as their source files are created.
 
 /// IR type system — defines [`IrType`] for machine-level type representation
 /// used throughout the intermediate representation.  Bridges C language types
@@ -88,24 +85,53 @@ pub mod mem2reg;
 pub mod lowering;
 
 // ── Convenience re-exports ──────────────────────────────────────────────────
-// Re-export the most commonly used types so that other modules can write
-// `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.
+// Re-export the most commonly used types so that downstream consumers can
+// write `use crate::ir::IrType` rather than `use crate::ir::types::IrType`.
+// The grouping follows the logical ownership of each type:
+//
+//   types        → IrType
+//   instructions → Instruction, BinOp, ICmpPredicate, FCmpPredicate
+//   basic_block  → BasicBlock, BasicBlockId
+//   function     → IrFunction, ValueId, Parameter, FunctionAttributes,
+//                   Visibility, Linkage, ValueInfo
+//   module       → IrModule, GlobalVariable, FunctionDecl, Constant,
+//                   StringLiteral, CallingConvention, InlineAsmBlock
+//   builder      → IrBuilder, InsertPosition
 
+/// IR type system — the most widely referenced IR type across all consumers.
 pub use types::IrType;
 
-// Re-export instruction-layer types for convenient access.
-pub use instructions::{BasicBlockId, BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId};
+/// Core instruction vocabulary — Instruction enum and supporting operation /
+/// predicate enums used by every phase after AST lowering.
+pub use instructions::{BinOp, FCmpPredicate, ICmpPredicate, Instruction};
 
-// Re-export basic block types for convenient access.
-pub use basic_block::BasicBlock;
+/// Basic block types — the fundamental control-flow-graph unit and its
+/// lightweight identifier handle.  `BasicBlockId` is *defined* in
+/// `instructions` but canonically re-exported via `basic_block` for
+/// consumers working with the CFG.
+pub use basic_block::{BasicBlock, BasicBlockId};
 
-// Re-export function-layer types for convenient access.
+/// Function-level IR types — the central function container, SSA value
+/// handle, parameter descriptor, function attributes, ELF visibility and
+/// linkage enums, and per-value metadata.  `ValueId` is *defined* in
+/// `instructions` but canonically re-exported via `function` for consumers
+/// working with function IR.
 pub use function::{
-    CallingConvention, FunctionAttributes, IrFunction, Linkage, Parameter, ValueInfo, Visibility,
+    FunctionAttributes, IrFunction, Linkage, Parameter, ValueId, ValueInfo, Visibility,
 };
 
-// Re-export module-layer types for convenient access.
-pub use module::{Constant, FunctionDecl, GlobalVariable, InlineAsmBlock, IrModule, StringLiteral};
+/// Module-level IR types — top-level container for a compilation unit,
+/// global variables, external declarations, compile-time constants, string
+/// literal pool, calling convention enum, and module-level inline assembly.
+/// `CallingConvention` is *defined* in `function` but canonically
+/// re-exported via `module` for consumers working with module-level
+/// constructs.
+pub use module::{
+    CallingConvention, Constant, FunctionDecl, GlobalVariable, InlineAsmBlock, IrModule,
+    StringLiteral,
+};
 
-// Re-export builder types for convenient access.
+/// IR builder API — the primary construction interface used by AST-to-IR
+/// lowering (Phase 6), and the insertion position enum controlling where
+/// new instructions are placed within a basic block.
 pub use builder::{InsertPosition, IrBuilder};

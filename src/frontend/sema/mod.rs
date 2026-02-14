@@ -60,28 +60,28 @@
 // Submodule declarations
 // ============================================================================
 
-pub mod type_checker;
+pub mod attribute_handler;
+pub mod builtin_eval;
+pub mod constant_eval;
+pub mod initializer;
 pub mod scope;
 pub mod symbol_table;
-pub mod constant_eval;
-pub mod builtin_eval;
-pub mod initializer;
-pub mod attribute_handler;
+pub mod type_checker;
 
 // ============================================================================
 // Re-exports for external consumers of the sema module
 // ============================================================================
 
+pub use attribute_handler::ValidatedAttribute;
+pub use builtin_eval::BuiltinResult;
+pub use constant_eval::ConstValue;
+pub use initializer::CheckedInitializer;
 pub use scope::ScopeStack;
 pub use symbol_table::{
-    Linkage, StorageClass, SymbolAttributes, SymbolEntry, SymbolId, SymbolTable,
-    VisibilityKind, resolve_linkage,
+    resolve_linkage, Linkage, StorageClass, SymbolAttributes, SymbolEntry, SymbolId, SymbolTable,
+    VisibilityKind,
 };
 pub use type_checker::TypedExpression;
-pub use constant_eval::ConstValue;
-pub use builtin_eval::BuiltinResult;
-pub use initializer::CheckedInitializer;
-pub use attribute_handler::ValidatedAttribute;
 
 // ============================================================================
 // Internal imports
@@ -98,22 +98,21 @@ use crate::common::type_builder::{
 use crate::common::types::{CType, FieldDef};
 
 use crate::frontend::parser::ast::{
-    AbstractDeclarator, Attribute, BlockItem, Declaration,
-    DeclarationSpecifiers, Declarator, DerivedDeclarator, Enumerator, Expression,
-    FieldDeclaration, ForInit, InitDeclarator,
+    AbstractDeclarator, Attribute, BlockItem, Declaration, DeclarationSpecifiers, Declarator,
+    DerivedDeclarator, Enumerator, Expression, FieldDeclaration, ForInit, InitDeclarator,
     ParameterList, SpecifierQualifierList, Statement, StorageClass as AstStorageClass,
     TranslationUnit, TypeName, TypeSpecifier, TypeofOperand,
 };
 
 // Sibling module imports (private use within the driver)
-use scope::{ScopeLevel, TagEntry, TagKind};
-use type_checker::check_expression;
-use constant_eval::{evaluate_constant_expression, evaluate_static_assert};
-use builtin_eval::evaluate_builtin;
-use initializer::analyze_initializer;
 use attribute_handler::{
     propagate_to_symbol, propagate_to_type, validate_attributes, AttributeTargetKind,
 };
+use builtin_eval::evaluate_builtin;
+use constant_eval::{evaluate_constant_expression, evaluate_static_assert};
+use initializer::analyze_initializer;
+use scope::{ScopeLevel, TagEntry, TagKind};
+use type_checker::check_expression;
 
 // ============================================================================
 // Checked AST output types — Phase 5 output consumed by Phase 6 (IR lowering)
@@ -419,10 +418,7 @@ impl<'a> SemanticAnalyzer<'a> {
     /// - `Ok(CheckedTranslationUnit)` — the semantically validated output.
     /// - `Err(())` — one or more errors were emitted during analysis.
     #[allow(clippy::result_unit_err)]
-    pub fn analyze(
-        &mut self,
-        tu: &TranslationUnit,
-    ) -> Result<CheckedTranslationUnit, ()> {
+    pub fn analyze(&mut self, tu: &TranslationUnit) -> Result<CheckedTranslationUnit, ()> {
         // Push file scope (one level inside the global scope already
         // created by ScopeStack::new()).
         self.scope_stack.push(ScopeLevel::File);
@@ -457,8 +453,8 @@ impl<'a> SemanticAnalyzer<'a> {
         // Transfer ownership of the symbol table and scope stack into the
         // output structure. We use mem::take to move them out, leaving
         // empty defaults behind in the analyzer (which is about to be dropped).
-        let symbol_table = std::mem::replace(&mut self.symbol_table, SymbolTable::new());
-        let scope = std::mem::replace(&mut self.scope_stack, ScopeStack::new());
+        let symbol_table = std::mem::take(&mut self.symbol_table);
+        let scope = std::mem::take(&mut self.scope_stack);
 
         Ok(CheckedTranslationUnit {
             declarations: checked_decls,
@@ -476,10 +472,7 @@ impl<'a> SemanticAnalyzer<'a> {
     /// Dispatches to variant-specific handlers and returns a
     /// `CheckedDeclaration` on success.
     #[allow(clippy::result_unit_err)]
-    pub fn analyze_declaration(
-        &mut self,
-        decl: &Declaration,
-    ) -> Result<CheckedDeclaration, ()> {
+    pub fn analyze_declaration(&mut self, decl: &Declaration) -> Result<CheckedDeclaration, ()> {
         match decl {
             Declaration::Variable {
                 specifiers,
@@ -536,19 +529,15 @@ impl<'a> SemanticAnalyzer<'a> {
                 message,
                 span,
             } => {
-                evaluate_static_assert(
-                    condition,
-                    message,
-                    self.diagnostics,
-                    self.target,
-                )?;
+                evaluate_static_assert(condition, message, self.diagnostics, self.target)?;
                 Ok(CheckedDeclaration::StaticAssert { span: *span })
             }
 
             Declaration::Empty { span } => Ok(CheckedDeclaration::Empty { span: *span }),
 
             Declaration::Error { span } => {
-                self.diagnostics.error(*span, "invalid declaration".to_string());
+                self.diagnostics
+                    .error(*span, "invalid declaration".to_string());
                 Err(())
             }
         }
@@ -567,10 +556,7 @@ impl<'a> SemanticAnalyzer<'a> {
     /// For `__builtin_*` function calls, the call is first intercepted and
     /// routed to [`builtin_eval::evaluate_builtin`].
     #[allow(clippy::result_unit_err)]
-    pub fn analyze_expression(
-        &mut self,
-        expr: &Expression,
-    ) -> Result<TypedExpression, ()> {
+    pub fn analyze_expression(&mut self, expr: &Expression) -> Result<TypedExpression, ()> {
         // Check for builtin function calls before general type-checking.
         if let Expression::FunctionCall { callee, args, span } = expr {
             if let Expression::Identifier { name, .. } = callee.as_ref() {
@@ -616,10 +602,7 @@ impl<'a> SemanticAnalyzer<'a> {
     /// context (break/continue legality, return type consistency), and
     /// label definitions.
     #[allow(clippy::result_unit_err)]
-    pub fn analyze_statement(
-        &mut self,
-        stmt: &Statement,
-    ) -> Result<(), ()> {
+    pub fn analyze_statement(&mut self, stmt: &Statement) -> Result<(), ()> {
         match stmt {
             Statement::Compound { items, span: _ } => {
                 self.scope_stack.push(ScopeLevel::Block);
@@ -842,8 +825,8 @@ impl<'a> SemanticAnalyzer<'a> {
                             );
                         } else if !types_compatible(&typed.ty, ret_ty) {
                             // Allow implicit conversions between arithmetic types
-                            if !(typed.ty.is_arithmetic() && ret_ty.is_arithmetic())
-                                && !(typed.ty.is_pointer() && ret_ty.is_pointer())
+                            if !(typed.ty.is_arithmetic() && ret_ty.is_arithmetic()
+                                || typed.ty.is_pointer() && ret_ty.is_pointer())
                             {
                                 self.diagnostics.warning(
                                     *span,
@@ -899,22 +882,22 @@ impl<'a> SemanticAnalyzer<'a> {
                 Ok(())
             }
 
-            Statement::Labeled { label, attrs: _, body, span } => {
+            Statement::Labeled {
+                label,
+                attrs: _,
+                body,
+                span,
+            } => {
                 // Define the label in the current function.
-                let entry = self.function_labels
-                    .entry(*label)
-                    .or_insert(LabelInfo {
-                        is_defined: false,
-                        is_referenced: false,
-                        span: *span,
-                    });
+                let entry = self.function_labels.entry(*label).or_insert(LabelInfo {
+                    is_defined: false,
+                    is_referenced: false,
+                    span: *span,
+                });
                 if entry.is_defined {
                     self.diagnostics.error(
                         *span,
-                        format!(
-                            "duplicate label '{}'",
-                            self.interner.resolve(*label)
-                        ),
+                        format!("duplicate label '{}'", self.interner.resolve(*label)),
                     );
                 } else {
                     entry.is_defined = true;
@@ -924,10 +907,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 if self.scope_stack.define_label(*label, *span).is_err() {
                     self.diagnostics.error(
                         *span,
-                        format!(
-                            "duplicate label '{}'",
-                            self.interner.resolve(*label)
-                        ),
+                        format!("duplicate label '{}'", self.interner.resolve(*label)),
                     );
                 }
 
@@ -943,7 +923,8 @@ impl<'a> SemanticAnalyzer<'a> {
             Statement::Null { .. } => Ok(()),
 
             Statement::Error { span } => {
-                self.diagnostics.error(*span, "invalid statement".to_string());
+                self.diagnostics
+                    .error(*span, "invalid statement".to_string());
                 Err(())
             }
 
@@ -953,7 +934,12 @@ impl<'a> SemanticAnalyzer<'a> {
                 Ok(())
             }
 
-            Statement::CaseRange { low, high, body, span } => {
+            Statement::CaseRange {
+                low,
+                high,
+                body,
+                span,
+            } => {
                 if !self.in_switch {
                     self.diagnostics.error(
                         *span,
@@ -961,14 +947,17 @@ impl<'a> SemanticAnalyzer<'a> {
                     );
                 }
                 // Evaluate both range bounds.
-                if let Ok(low_val) = evaluate_constant_expression(low, self.diagnostics, self.target) {
-                    if let Ok(high_val) = evaluate_constant_expression(high, self.diagnostics, self.target) {
-                        if let (Some(lo), Some(hi)) = (low_val.as_integer(), high_val.as_integer()) {
+                if let Ok(low_val) =
+                    evaluate_constant_expression(low, self.diagnostics, self.target)
+                {
+                    if let Ok(high_val) =
+                        evaluate_constant_expression(high, self.diagnostics, self.target)
+                    {
+                        if let (Some(lo), Some(hi)) = (low_val.as_integer(), high_val.as_integer())
+                        {
                             if lo > hi {
-                                self.diagnostics.error(
-                                    *span,
-                                    format!("empty case range ({} ... {})", lo, hi),
-                                );
+                                self.diagnostics
+                                    .error(*span, format!("empty case range ({} ... {})", lo, hi));
                             }
                             // Insert all values in range for duplicate detection.
                             if let Some(case_set) = self.switch_case_values.last_mut() {
@@ -1012,10 +1001,7 @@ impl<'a> SemanticAnalyzer<'a> {
     ///
     /// Handles multi-keyword combinations like `unsigned long long int`,
     /// typedef names, struct/union/enum tags, and GCC extensions like `typeof`.
-    fn resolve_type_specifiers(
-        &mut self,
-        specifiers: &DeclarationSpecifiers,
-    ) -> CType {
+    fn resolve_type_specifiers(&mut self, specifiers: &DeclarationSpecifiers) -> CType {
         // Strategy: walk the specifiers list and accumulate into a CType.
         // C allows multi-keyword type specifiers, so we track signed/unsigned,
         // short/long counts, and the base type.
@@ -1043,15 +1029,33 @@ impl<'a> SemanticAnalyzer<'a> {
 
         for spec in type_specs {
             match spec {
-                TypeSpecifier::Signed => { is_signed = Some(true); }
-                TypeSpecifier::Unsigned => { is_signed = Some(false); }
-                TypeSpecifier::Short => { is_short = true; }
-                TypeSpecifier::Long => { long_count += 1; }
-                TypeSpecifier::Int => { _has_int = true; }
-                TypeSpecifier::Char => { has_char = true; }
-                TypeSpecifier::Double => { has_double = true; }
-                TypeSpecifier::Float => { has_float = true; }
-                TypeSpecifier::Complex => { is_complex = true; }
+                TypeSpecifier::Signed => {
+                    is_signed = Some(true);
+                }
+                TypeSpecifier::Unsigned => {
+                    is_signed = Some(false);
+                }
+                TypeSpecifier::Short => {
+                    is_short = true;
+                }
+                TypeSpecifier::Long => {
+                    long_count += 1;
+                }
+                TypeSpecifier::Int => {
+                    _has_int = true;
+                }
+                TypeSpecifier::Char => {
+                    has_char = true;
+                }
+                TypeSpecifier::Double => {
+                    has_double = true;
+                }
+                TypeSpecifier::Float => {
+                    has_float = true;
+                }
+                TypeSpecifier::Complex => {
+                    is_complex = true;
+                }
                 _ => {
                     // Unexpected specifier in a multi-keyword context; fall
                     // back to resolving the first specifier.
@@ -1104,10 +1108,7 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Resolves a single type specifier into a `CType`.
-    fn resolve_single_type_spec(
-        &mut self,
-        spec: &TypeSpecifier,
-    ) -> CType {
+    fn resolve_single_type_spec(&mut self, spec: &TypeSpecifier) -> CType {
         match spec {
             TypeSpecifier::Void => CType::Void,
             TypeSpecifier::Char => CType::Char { signed: true },
@@ -1119,22 +1120,16 @@ impl<'a> SemanticAnalyzer<'a> {
             TypeSpecifier::Signed => CType::Int { signed: true },
             TypeSpecifier::Unsigned => CType::Int { signed: false },
             TypeSpecifier::Bool => CType::Bool,
-            TypeSpecifier::Complex => {
-                CType::Complex(Box::new(CType::Double))
-            }
+            TypeSpecifier::Complex => CType::Complex(Box::new(CType::Double)),
             TypeSpecifier::Atomic(inner_type_name) => {
                 let inner_ty = self.resolve_type_name(inner_type_name);
                 CType::Atomic(Box::new(inner_ty))
             }
-            TypeSpecifier::Struct { name, fields, .. } => {
-                self.resolve_struct_spec(*name, fields)
-            }
-            TypeSpecifier::Union { name, fields, .. } => {
-                self.resolve_union_spec(*name, fields)
-            }
-            TypeSpecifier::Enum { name, enumerators, .. } => {
-                self.resolve_enum_spec(*name, enumerators)
-            }
+            TypeSpecifier::Struct { name, fields, .. } => self.resolve_struct_spec(*name, fields),
+            TypeSpecifier::Union { name, fields, .. } => self.resolve_union_spec(*name, fields),
+            TypeSpecifier::Enum {
+                name, enumerators, ..
+            } => self.resolve_enum_spec(*name, enumerators),
             TypeSpecifier::TypedefName { name: sym, .. } => {
                 // Look up the typedef name in the current scope.
                 if let Some(id) = self.scope_stack.lookup(*sym) {
@@ -1148,32 +1143,25 @@ impl<'a> SemanticAnalyzer<'a> {
                 } else {
                     self.diagnostics.error(
                         Span::DUMMY,
-                        format!(
-                            "unknown type name '{}'",
-                            self.interner.resolve(*sym)
-                        ),
+                        format!("unknown type name '{}'", self.interner.resolve(*sym)),
                     );
                     CType::Int { signed: true }
                 }
             }
-            TypeSpecifier::Typeof { operand, .. } => {
-                match operand {
-                    TypeofOperand::Expression(expr) => {
-                        let typed = check_expression(
-                            expr,
-                            &self.scope_stack,
-                            &self.symbol_table,
-                            self.target,
-                            self.diagnostics,
-                            self.current_function_return_type.as_ref(),
-                        );
-                        typed.ty
-                    }
-                    TypeofOperand::TypeName(tn) => {
-                        self.resolve_type_name(tn)
-                    }
+            TypeSpecifier::Typeof { operand, .. } => match operand {
+                TypeofOperand::Expression(expr) => {
+                    let typed = check_expression(
+                        expr,
+                        &self.scope_stack,
+                        &self.symbol_table,
+                        self.target,
+                        self.diagnostics,
+                        self.current_function_return_type.as_ref(),
+                    );
+                    typed.ty
                 }
-            }
+                TypeofOperand::TypeName(tn) => self.resolve_type_name(tn),
+            },
         }
     }
 
@@ -1376,10 +1364,7 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Resolves struct/union field declarations into `FieldDef` entries.
-    fn resolve_field_declarations(
-        &mut self,
-        fields: &[FieldDeclaration],
-    ) -> Vec<FieldDef> {
+    fn resolve_field_declarations(&mut self, fields: &[FieldDeclaration]) -> Vec<FieldDef> {
         let mut result = Vec::new();
         for field_decl in fields {
             let base_ty = self.resolve_type_specifiers(&field_decl.specifiers);
@@ -1427,10 +1412,7 @@ impl<'a> SemanticAnalyzer<'a> {
     }
 
     /// Resolves a specifier-qualifier list to a CType.
-    fn resolve_specifier_qualifier_list(
-        &mut self,
-        sql: &SpecifierQualifierList,
-    ) -> CType {
+    fn resolve_specifier_qualifier_list(&mut self, sql: &SpecifierQualifierList) -> CType {
         // Build a temporary DeclarationSpecifiers to reuse resolve_type_specifiers.
         let spec = DeclarationSpecifiers {
             storage_class: None,
@@ -1447,11 +1429,7 @@ impl<'a> SemanticAnalyzer<'a> {
 
     /// Applies an abstract declarator (pointer, array, function derivations)
     /// to a base type.
-    fn apply_abstract_declarator(
-        &mut self,
-        base_ty: CType,
-        abs: &AbstractDeclarator,
-    ) -> CType {
+    fn apply_abstract_declarator(&mut self, base_ty: CType, abs: &AbstractDeclarator) -> CType {
         self.apply_derived_declarators(base_ty, &abs.derived)
     }
 
@@ -1460,17 +1438,17 @@ impl<'a> SemanticAnalyzer<'a> {
     ///
     /// Example: `int *a[10]` has base=int, derived=[Array(10), Pointer]
     ///   → Pointer(Array(Int, 10))
-    fn apply_derived_declarators(
-        &mut self,
-        mut ty: CType,
-        derived: &[DerivedDeclarator],
-    ) -> CType {
+    fn apply_derived_declarators(&mut self, mut ty: CType, derived: &[DerivedDeclarator]) -> CType {
         for d in derived {
             match d {
                 DerivedDeclarator::Pointer { qualifiers: _ } => {
                     ty = CType::Pointer(Box::new(ty));
                 }
-                DerivedDeclarator::Array { size, is_static: _, qualifiers: _ } => {
+                DerivedDeclarator::Array {
+                    size,
+                    is_static: _,
+                    qualifiers: _,
+                } => {
                     let arr_size = size.as_ref().and_then(|s| {
                         match evaluate_constant_expression(s, self.diagnostics, self.target) {
                             Ok(cv) => cv.as_integer().map(|v| v as usize),
@@ -1552,10 +1530,8 @@ impl<'a> SemanticAnalyzer<'a> {
             self.interner,
             self.diagnostics,
         );
-        let all_attrs: Vec<ValidatedAttribute> = validated_attrs
-            .into_iter()
-            .chain(spec_attrs)
-            .collect();
+        let all_attrs: Vec<ValidatedAttribute> =
+            validated_attrs.into_iter().chain(spec_attrs).collect();
 
         // For multi-declarator declarations we return only the first.
         // In a real production compiler, we would emit multiple checked
@@ -1585,7 +1561,9 @@ impl<'a> SemanticAnalyzer<'a> {
 
             // Determine linkage based on storage class and scope level.
             let is_file_scope = self.scope_stack.in_file_scope();
-            let prior_linkage = self.scope_stack.lookup(name_sym)
+            let prior_linkage = self
+                .scope_stack
+                .lookup(name_sym)
                 .map(|id| self.symbol_table.get(id).linkage);
             let linkage = resolve_linkage(&sc, is_file_scope, prior_linkage);
 
@@ -1608,17 +1586,14 @@ impl<'a> SemanticAnalyzer<'a> {
                 if existing.is_definition && has_init && is_file_scope {
                     self.diagnostics.error(
                         span,
-                        format!(
-                            "redefinition of '{}'",
-                            self.interner.resolve(name_sym)
-                        ),
+                        format!("redefinition of '{}'", self.interner.resolve(name_sym)),
                     );
                 }
             }
 
             // Analyze initializer (if present).
             let checked_init = if let Some(ref init) = init_decl.initializer {
-                match analyze_initializer(
+                analyze_initializer(
                     init,
                     &final_ty,
                     self.diagnostics,
@@ -1626,24 +1601,16 @@ impl<'a> SemanticAnalyzer<'a> {
                     self.interner,
                     &self.scope_stack,
                     &self.symbol_table,
-                ) {
-                    Ok(ci) => Some(ci),
-                    Err(()) => None,
-                }
+                )
+                .ok()
             } else {
                 None
             };
 
             // Create and insert symbol table entry.
             let is_definition = has_init || (!is_file_scope && sc != StorageClass::Extern);
-            let mut entry = SymbolEntry::new(
-                name_sym,
-                final_ty.clone(),
-                linkage,
-                sc,
-                is_definition,
-                span,
-            );
+            let mut entry =
+                SymbolEntry::new(name_sym, final_ty.clone(), linkage, sc, is_definition, span);
             // Apply symbol-level attributes (weak, visibility, section, etc.).
             propagate_to_symbol(&all_attrs, &mut entry);
 
@@ -1669,7 +1636,8 @@ impl<'a> SemanticAnalyzer<'a> {
         }
 
         first_result.ok_or_else(|| {
-            self.diagnostics.error(span, "empty variable declaration".to_string());
+            self.diagnostics
+                .error(span, "empty variable declaration".to_string());
         })
     }
 
@@ -1690,17 +1658,15 @@ impl<'a> SemanticAnalyzer<'a> {
             .unwrap_or(StorageClass::Auto);
 
         let name_sym = declarator.name.ok_or_else(|| {
-            self.diagnostics.error(span, "function definition requires a name".to_string());
+            self.diagnostics
+                .error(span, "function definition requires a name".to_string());
         })?;
 
         // Extract the parameter list from the function declarator.
         let (param_list, variadic) = self.extract_function_params(&declarator.derived);
 
         // Build the function CType.
-        let param_types: Vec<CType> = param_list
-            .iter()
-            .map(|(_, ty, _)| ty.clone())
-            .collect();
+        let param_types: Vec<CType> = param_list.iter().map(|(_, ty, _)| ty.clone()).collect();
         let func_ty = TypeBuilder::new()
             .function(return_ty.clone(), param_types.clone(), variadic)
             .build();
@@ -1718,14 +1684,14 @@ impl<'a> SemanticAnalyzer<'a> {
             self.interner,
             self.diagnostics,
         );
-        let all_attrs: Vec<ValidatedAttribute> = validated_attrs
-            .into_iter()
-            .chain(spec_attrs)
-            .collect();
+        let all_attrs: Vec<ValidatedAttribute> =
+            validated_attrs.into_iter().chain(spec_attrs).collect();
 
         // Determine linkage.
         let is_file_scope = self.scope_stack.in_file_scope();
-        let prior_linkage = self.scope_stack.lookup(name_sym)
+        let prior_linkage = self
+            .scope_stack
+            .lookup(name_sym)
             .map(|id| self.symbol_table.get(id).linkage);
         let linkage = resolve_linkage(&sc, is_file_scope, prior_linkage);
 
@@ -1745,10 +1711,7 @@ impl<'a> SemanticAnalyzer<'a> {
 
         // Insert function symbol.
         let mut entry = SymbolEntry::new(
-            name_sym,
-            func_ty,
-            linkage,
-            sc,
+            name_sym, func_ty, linkage, sc,
             true, // Function definitions are always definitions.
             span,
         );
@@ -1843,7 +1806,8 @@ impl<'a> SemanticAnalyzer<'a> {
             .unwrap_or(StorageClass::Auto);
 
         let name_sym = declarator.name.ok_or_else(|| {
-            self.diagnostics.error(span, "function declaration requires a name".to_string());
+            self.diagnostics
+                .error(span, "function declaration requires a name".to_string());
         })?;
 
         let (param_list, variadic) = self.extract_function_params(&declarator.derived);
@@ -1866,14 +1830,14 @@ impl<'a> SemanticAnalyzer<'a> {
             self.interner,
             self.diagnostics,
         );
-        let all_attrs: Vec<ValidatedAttribute> = validated_attrs
-            .into_iter()
-            .chain(spec_attrs)
-            .collect();
+        let all_attrs: Vec<ValidatedAttribute> =
+            validated_attrs.into_iter().chain(spec_attrs).collect();
 
         // Linkage.
         let is_file_scope = self.scope_stack.in_file_scope();
-        let prior_linkage = self.scope_stack.lookup(name_sym)
+        let prior_linkage = self
+            .scope_stack
+            .lookup(name_sym)
             .map(|id| self.symbol_table.get(id).linkage);
         let linkage = resolve_linkage(&sc, is_file_scope, prior_linkage);
 
@@ -1893,11 +1857,7 @@ impl<'a> SemanticAnalyzer<'a> {
 
         // Insert into symbol table.
         let mut entry = SymbolEntry::new(
-            name_sym,
-            func_ty,
-            linkage,
-            sc,
-            false, // Declarations are not definitions.
+            name_sym, func_ty, linkage, sc, false, // Declarations are not definitions.
             span,
         );
         propagate_to_symbol(&all_attrs, &mut entry);
@@ -1940,10 +1900,8 @@ impl<'a> SemanticAnalyzer<'a> {
             let name_sym = match decl.name {
                 Some(s) => s,
                 None => {
-                    self.diagnostics.error(
-                        decl.span,
-                        "typedef requires a name".to_string(),
-                    );
+                    self.diagnostics
+                        .error(decl.span, "typedef requires a name".to_string());
                     continue;
                 }
             };
@@ -1973,7 +1931,8 @@ impl<'a> SemanticAnalyzer<'a> {
         }
 
         first_result.ok_or_else(|| {
-            self.diagnostics.error(span, "empty typedef declaration".to_string());
+            self.diagnostics
+                .error(span, "empty typedef declaration".to_string());
         })
     }
 
@@ -1996,9 +1955,15 @@ impl<'a> SemanticAnalyzer<'a> {
         );
 
         // Check for packed/aligned attributes for layout computation.
-        let is_packed = validated_attrs.iter().any(|a| matches!(a, ValidatedAttribute::Packed));
+        let is_packed = validated_attrs
+            .iter()
+            .any(|a| matches!(a, ValidatedAttribute::Packed));
         let min_align = validated_attrs.iter().find_map(|a| {
-            if let ValidatedAttribute::Aligned(Some(n)) = a { Some(*n as usize) } else { None }
+            if let ValidatedAttribute::Aligned(Some(n)) = a {
+                Some(*n as usize)
+            } else {
+                None
+            }
         });
 
         // Convert to FieldDef for layout computation.

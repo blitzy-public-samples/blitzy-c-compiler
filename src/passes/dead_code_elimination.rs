@@ -136,7 +136,12 @@ pub fn run_dead_global_elimination(module: &mut IrModule) -> bool {
         // strings may embed global symbol names (e.g., `".pushsection ..."`
         // or raw references in kernel code).  We conservatively mark every
         // global whose name appears as a substring of any template.
-        collect_inline_asm_refs_from_function(func, &module.globals, &module.declarations, &mut referenced_names);
+        collect_inline_asm_refs_from_function(
+            func,
+            &module.globals,
+            &module.declarations,
+            &mut referenced_names,
+        );
     }
 
     // Module-level inline assembly blocks are emitted verbatim and may
@@ -200,7 +205,9 @@ pub fn run_dead_global_elimination(module: &mut IrModule) -> bool {
     // If no function body references the declared name, the declaration is
     // dead and can be safely removed — it only occupies symbol table space.
     let original_decl_count = module.declarations.len();
-    module.declarations.retain(|d| referenced_names.contains(&d.name));
+    module
+        .declarations
+        .retain(|d| referenced_names.contains(&d.name));
     if module.declarations.len() != original_decl_count {
         changed = true;
     }

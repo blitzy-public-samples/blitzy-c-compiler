@@ -38,13 +38,14 @@
 //! implemented internally with zero external crate dependencies.
 
 use crate::backend::dwarf::abbrev::{
-    AbbrevEntry, DebugAbbrevBuilder,
-    // Tag constants needed for subrange registration
-    DW_TAG_SUBRANGE_TYPE,
+    AbbrevEntry,
+    DebugAbbrevBuilder,
     // Attribute constants needed for subrange registration
     DW_AT_COUNT,
     // Form constants needed for attribute encoding
     DW_FORM_UDATA,
+    // Tag constants needed for subrange registration
+    DW_TAG_SUBRANGE_TYPE,
 };
 use crate::backend::dwarf::debug_str::DebugStrTable;
 use crate::common::fx_hash::FxHashMap;
@@ -132,10 +133,7 @@ enum TypeKey {
     /// Anonymous structs are not cached (each instance gets a fresh DIE).
     Struct { name: String },
     /// Array type identified by element type DIE offset and element count.
-    Array {
-        element_offset: u32,
-        count: usize,
-    },
+    Array { element_offset: u32, count: usize },
 }
 
 // ===========================================================================
@@ -205,7 +203,6 @@ pub struct DebugInfoBuilder<'a> {
     // These are assigned during construction and remain constant for the
     // lifetime of the builder.
     // -----------------------------------------------------------------------
-
     /// Abbreviation code for `DW_TAG_compile_unit`.
     cu_abbrev_code: u32,
     /// Abbreviation code for `DW_TAG_subprogram` with a return type attribute.
@@ -488,12 +485,7 @@ impl<'a> DebugInfoBuilder<'a> {
     /// * `type_offset` — CU-relative offset of the parameter's type DIE.
     /// * `location_expr` — DWARF location expression bytes describing
     ///   where the parameter value is stored (e.g., `[DW_OP_FBREG, offset]`).
-    pub fn emit_formal_parameter(
-        &mut self,
-        name: &str,
-        type_offset: u32,
-        location_expr: &[u8],
-    ) {
+    pub fn emit_formal_parameter(&mut self, name: &str, type_offset: u32, location_expr: &[u8]) {
         // Abbreviation code (ULEB128)
         self.write_uleb128(self.formal_param_abbrev_code as u64);
 
@@ -529,12 +521,7 @@ impl<'a> DebugInfoBuilder<'a> {
     /// * `type_offset` — CU-relative offset of the variable's type DIE.
     /// * `location_expr` — DWARF location expression bytes describing
     ///   the variable's storage location.
-    pub fn emit_variable(
-        &mut self,
-        name: &str,
-        type_offset: u32,
-        location_expr: &[u8],
-    ) {
+    pub fn emit_variable(&mut self, name: &str, type_offset: u32, location_expr: &[u8]) {
         // Abbreviation code (ULEB128)
         self.write_uleb128(self.variable_abbrev_code as u64);
 
@@ -671,11 +658,7 @@ impl<'a> DebugInfoBuilder<'a> {
     /// # Returns
     ///
     /// CU-relative offset of the structure type DIE.
-    pub fn emit_struct_type(
-        &mut self,
-        name: Option<&str>,
-        fields: &[(String, u32, u32)],
-    ) -> u32 {
+    pub fn emit_struct_type(&mut self, name: Option<&str>, fields: &[(String, u32, u32)]) -> u32 {
         // Attempt cache lookup for named structs.
         if let Some(tag_name) = name {
             let key = TypeKey::Struct {
@@ -952,8 +935,7 @@ impl<'a> DebugInfoBuilder<'a> {
         // Sanity check: ELF class and pointer width must be consistent.
         // ELFCLASS32 (1) => 4-byte pointers, ELFCLASS64 (2) => 8-byte pointers.
         debug_assert!(
-            (self.target.elf_class() == 1 && pw == 4)
-                || (self.target.elf_class() == 2 && pw == 8),
+            (self.target.elf_class() == 1 && pw == 4) || (self.target.elf_class() == 2 && pw == 8),
             "ELF class and pointer width must be consistent"
         );
         pw
@@ -1216,11 +1198,7 @@ impl<'a> DebugInfoBuilder<'a> {
         let mut byte_offset: u32 = 0;
         for field in fields {
             let field_type_offset = self.emit_ctype_die(&field.ty);
-            let field_name = field
-                .name
-                .as_deref()
-                .unwrap_or("<anon>")
-                .to_owned();
+            let field_name = field.name.as_deref().unwrap_or("<anon>").to_owned();
             field_descs.push((field_name, field_type_offset, byte_offset));
             // Advance offset by the field size. For bit-fields, advance by
             // the underlying type size (conservative — DWARF bit-field
@@ -1244,11 +1222,7 @@ impl<'a> DebugInfoBuilder<'a> {
         let mut field_descs: Vec<(String, u32, u32)> = Vec::with_capacity(fields.len());
         for field in fields {
             let field_type_offset = self.emit_ctype_die(&field.ty);
-            let field_name = field
-                .name
-                .as_deref()
-                .unwrap_or("<anon>")
-                .to_owned();
+            let field_name = field.name.as_deref().unwrap_or("<anon>").to_owned();
             // All union members share storage at offset 0.
             field_descs.push((field_name, field_type_offset, 0));
         }
@@ -1312,8 +1286,7 @@ impl<'a> DebugInfoBuilder<'a> {
             }
             IrType::Struct { fields, .. } => {
                 // Anonymous IR struct — emit with synthesized field names.
-                let mut field_descs: Vec<(String, u32, u32)> =
-                    Vec::with_capacity(fields.len());
+                let mut field_descs: Vec<(String, u32, u32)> = Vec::with_capacity(fields.len());
                 let mut byte_offset: u32 = 0;
                 for (i, field_ty) in fields.iter().enumerate() {
                     let field_type_offset = self.emit_ir_type_die(field_ty);
@@ -1397,10 +1370,7 @@ impl<'a> DebugInfoBuilder<'a> {
             if !func.is_definition {
                 continue;
             }
-            let (low_pc, high_pc) = fn_addrs
-                .get(&func.name)
-                .copied()
-                .unwrap_or((0, 0));
+            let (low_pc, high_pc) = fn_addrs.get(&func.name).copied().unwrap_or((0, 0));
 
             self.generate_function_debug_info(func, low_pc, high_pc);
         }
@@ -1447,12 +1417,7 @@ impl<'a> DebugInfoBuilder<'a> {
     /// * `func` — The IR function to emit debug info for.
     /// * `low_pc` — Function start address in the compiled output.
     /// * `high_pc` — Function address range length.
-    pub fn generate_function_debug_info(
-        &mut self,
-        func: &IrFunction,
-        low_pc: u64,
-        high_pc: u64,
-    ) {
+    pub fn generate_function_debug_info(&mut self, func: &IrFunction, low_pc: u64, high_pc: u64) {
         // Skip non-definitions (extern function declarations).
         if !func.is_definition {
             return;
@@ -1466,19 +1431,10 @@ impl<'a> DebugInfoBuilder<'a> {
         };
 
         // Determine if the function has external linkage.
-        let is_external = matches!(
-            func.linkage,
-            Linkage::External | Linkage::Weak
-        );
+        let is_external = matches!(func.linkage, Linkage::External | Linkage::Weak);
 
         // Emit the DW_TAG_subprogram DIE.
-        self.emit_subprogram(
-            &func.name,
-            low_pc,
-            high_pc,
-            is_external,
-            return_type_offset,
-        );
+        self.emit_subprogram(&func.name, low_pc, high_pc, is_external, return_type_offset);
 
         // Emit DW_TAG_formal_parameter DIEs for each parameter.
         for (i, param) in func.params.iter().enumerate() {
@@ -1496,11 +1452,7 @@ impl<'a> DebugInfoBuilder<'a> {
             let mut loc_expr = vec![DW_OP_FBREG];
             Self::append_sleb128(&mut loc_expr, frame_offset);
 
-            self.emit_formal_parameter(
-                &param_name,
-                param_type_offset,
-                &loc_expr,
-            );
+            self.emit_formal_parameter(&param_name, param_type_offset, &loc_expr);
         }
 
         // Close the subprogram's child list with a null DIE.
@@ -1754,10 +1706,7 @@ mod tests {
             ("c".to_string(), 0, 8),
         ];
         assert_eq!(DebugInfoBuilder::estimate_struct_size(&fields), 9);
-        assert_eq!(
-            DebugInfoBuilder::estimate_struct_size(&[]),
-            0
-        );
+        assert_eq!(DebugInfoBuilder::estimate_struct_size(&[]), 0);
     }
 
     #[test]
@@ -1810,8 +1759,7 @@ mod tests {
         // x86-64 should write 8 bytes.
         assert_eq!(b.data.len(), 8);
         let addr = u64::from_le_bytes([
-            b.data[0], b.data[1], b.data[2], b.data[3], b.data[4], b.data[5], b.data[6],
-            b.data[7],
+            b.data[0], b.data[1], b.data[2], b.data[3], b.data[4], b.data[5], b.data[6], b.data[7],
         ]);
         assert_eq!(addr, 0x0000_7FFF_DEAD_BEEF);
     }
@@ -1974,7 +1922,10 @@ mod tests {
             params: vec![CType::Int { signed: true }],
             variadic: false,
         });
-        assert!(off > 0, "Function type → pointer should produce a non-zero offset");
+        assert!(
+            off > 0,
+            "Function type → pointer should produce a non-zero offset"
+        );
     }
 
     #[test]
@@ -2133,10 +2084,10 @@ mod tests {
 
     #[test]
     fn test_generate_function_debug_info() {
-        use crate::ir::function::{Parameter, IrFunction, Linkage};
-        use crate::ir::types::IrType;
         use crate::ir::basic_block::{BasicBlock, BasicBlockId};
         use crate::ir::function::{CallingConvention, FunctionAttributes, ValueId};
+        use crate::ir::function::{IrFunction, Linkage, Parameter};
+        use crate::ir::types::IrType;
 
         let mut str_table = DebugStrTable::new();
         let mut b = make_builder(&mut str_table);
@@ -2185,10 +2136,10 @@ mod tests {
 
     #[test]
     fn test_generate_function_skips_declaration() {
-        use crate::ir::function::{IrFunction, Linkage};
-        use crate::ir::types::IrType;
         use crate::ir::basic_block::{BasicBlock, BasicBlockId};
         use crate::ir::function::{CallingConvention, FunctionAttributes};
+        use crate::ir::function::{IrFunction, Linkage};
+        use crate::ir::types::IrType;
 
         let mut str_table = DebugStrTable::new();
         let mut b = make_builder(&mut str_table);

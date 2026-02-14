@@ -25,6 +25,12 @@
 /// and 5-bit hardware encoding extraction.
 pub mod registers;
 
+/// Built-in RISC-V 64 assembler — RV64IMAFDC instruction encoding in
+/// R/I/S/B/U/J formats with ELF relocation recording. Includes relocation
+/// type definitions with full linker relaxation support and compressed
+/// instruction relocation handling.
+pub mod assembler;
+
 /// Built-in RISC-V 64 linker — relocation application with relaxation support,
 /// producing ELF executables and shared objects for the RISC-V 64 target.
 pub mod linker;

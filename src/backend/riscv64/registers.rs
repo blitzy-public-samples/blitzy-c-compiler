@@ -368,17 +368,14 @@ pub const FLOAT_ARG_REGS: [PhysReg; 8] = [FA0, FA1, FA2, FA3, FA4, FA5, FA6, FA7
 /// These 12 registers must be preserved across function calls. The function
 /// prologue saves any of these that it clobbers, and the epilogue restores
 /// them before returning. s0 is also the conventional frame pointer.
-pub const CALLEE_SAVED_INT: [PhysReg; 12] = [
-    S0, S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11,
-];
+pub const CALLEE_SAVED_INT: [PhysReg; 12] = [S0, S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11];
 
 /// Callee-saved floating-point registers (fs0–fs11).
 ///
 /// These 12 FP registers follow the same save/restore contract as
 /// [`CALLEE_SAVED_INT`] — callee must preserve them if modified.
-pub const CALLEE_SAVED_FP: [PhysReg; 12] = [
-    FS0, FS1, FS2, FS3, FS4, FS5, FS6, FS7, FS8, FS9, FS10, FS11,
-];
+pub const CALLEE_SAVED_FP: [PhysReg; 12] =
+    [FS0, FS1, FS2, FS3, FS4, FS5, FS6, FS7, FS8, FS9, FS10, FS11];
 
 /// Caller-saved integer registers.
 ///
@@ -398,9 +395,8 @@ pub const CALLER_SAVED_INT: [PhysReg; 16] = [
 ///
 /// Layout: `[ft0..ft7, fa0..fa7, ft8..ft11]`
 pub const CALLER_SAVED_FP: [PhysReg; 20] = [
-    FT0, FT1, FT2, FT3, FT4, FT5, FT6, FT7,
-    FA0, FA1, FA2, FA3, FA4, FA5, FA6, FA7,
-    FT8, FT9, FT10, FT11,
+    FT0, FT1, FT2, FT3, FT4, FT5, FT6, FT7, FA0, FA1, FA2, FA3, FA4, FA5, FA6, FA7, FT8, FT9, FT10,
+    FT11,
 ];
 
 /// Integer registers available for the register allocator.
@@ -416,16 +412,12 @@ pub const CALLER_SAVED_FP: [PhysReg; 20] = [
 /// allocator treats callee-saved registers as higher spill-cost candidates.
 pub const ALLOCATABLE_INT: [PhysReg; 28] = [
     // Return address (callee may save/restore if needed)
-    X1,  // ra
+    X1, // ra
     // Temporaries t0–t2
-    X5, X6, X7,
-    // Saved registers s0–s1
-    X8, X9,
-    // Argument registers a0–a7
-    X10, X11, X12, X13, X14, X15, X16, X17,
-    // Saved registers s2–s11
-    X18, X19, X20, X21, X22, X23, X24, X25, X26, X27,
-    // Temporaries t3–t6
+    X5, X6, X7, // Saved registers s0–s1
+    X8, X9, // Argument registers a0–a7
+    X10, X11, X12, X13, X14, X15, X16, X17, // Saved registers s2–s11
+    X18, X19, X20, X21, X22, X23, X24, X25, X26, X27, // Temporaries t3–t6
     X28, X29, X30, X31,
 ];
 
@@ -435,10 +427,8 @@ pub const ALLOCATABLE_INT: [PhysReg; 28] = [
 /// the FP register file has no hardwired-zero or stack-pointer equivalent,
 /// so every register is available.
 pub const ALLOCATABLE_FP: [PhysReg; 32] = [
-    F0,  F1,  F2,  F3,  F4,  F5,  F6,  F7,
-    F8,  F9,  F10, F11, F12, F13, F14, F15,
-    F16, F17, F18, F19, F20, F21, F22, F23,
-    F24, F25, F26, F27, F28, F29, F30, F31,
+    F0, F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17, F18, F19, F20,
+    F21, F22, F23, F24, F25, F26, F27, F28, F29, F30, F31,
 ];
 
 // ===========================================================================
@@ -483,18 +473,16 @@ pub const CSR_FCSR: u16 = 0x003;
 /// These are the canonical names emitted in assembly output, matching the
 /// RISC-V ABI naming convention used by GCC and LLVM.
 const INT_REG_NAMES: [&str; 32] = [
-    "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
-    "s0",   "s1", "a0", "a1", "a2", "a3", "a4", "a5",
-    "a6",   "a7", "s2", "s3", "s4", "s5", "s6", "s7",
-    "s8",   "s9", "s10","s11","t3", "t4", "t5", "t6",
+    "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4",
+    "a5", "a6", "a7", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4",
+    "t5", "t6",
 ];
 
 /// Floating-point register ABI names indexed by hardware encoding (0–31).
 const FP_REG_NAMES: [&str; 32] = [
-    "ft0", "ft1", "ft2",  "ft3",  "ft4", "ft5", "ft6",  "ft7",
-    "fs0", "fs1", "fa0",  "fa1",  "fa2", "fa3", "fa4",  "fa5",
-    "fa6", "fa7", "fs2",  "fs3",  "fs4", "fs5", "fs6",  "fs7",
-    "fs8", "fs9", "fs10", "fs11", "ft8", "ft9", "ft10", "ft11",
+    "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fs0", "fs1", "fa0", "fa1", "fa2",
+    "fa3", "fa4", "fa5", "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7", "fs8", "fs9",
+    "fs10", "fs11", "ft8", "ft9", "ft10", "ft11",
 ];
 
 /// Returns the ABI name of an integer register.
@@ -514,7 +502,11 @@ const FP_REG_NAMES: [&str; 32] = [
 #[inline]
 pub fn int_reg_name(reg: PhysReg) -> &'static str {
     let idx = reg.0 as usize;
-    debug_assert!(idx < 32, "int_reg_name called with non-integer register PhysReg({})", reg.0);
+    debug_assert!(
+        idx < 32,
+        "int_reg_name called with non-integer register PhysReg({})",
+        reg.0
+    );
     if idx < 32 {
         INT_REG_NAMES[idx]
     } else {
@@ -541,9 +533,10 @@ pub fn fp_reg_name(reg: PhysReg) -> &'static str {
     let idx = reg.0 as usize;
     debug_assert!(
         (32..=63).contains(&idx),
-        "fp_reg_name called with non-FP register PhysReg({})", reg.0
+        "fp_reg_name called with non-FP register PhysReg({})",
+        reg.0
     );
-    if idx >= 32 && idx < 64 {
+    if (32..64).contains(&idx) {
         FP_REG_NAMES[idx - 32]
     } else {
         "<invalid-fp-reg>"
@@ -794,7 +787,11 @@ mod tests {
         assert_eq!(CALLER_SAVED_INT.len(), 16);
         // All caller-saved integer regs must NOT be callee-saved
         for reg in &CALLER_SAVED_INT {
-            assert!(!is_callee_saved(*reg), "Unexpected callee-saved in CALLER_SAVED_INT: {:?}", reg);
+            assert!(
+                !is_callee_saved(*reg),
+                "Unexpected callee-saved in CALLER_SAVED_INT: {:?}",
+                reg
+            );
         }
     }
 
@@ -802,7 +799,11 @@ mod tests {
     fn test_caller_saved_fp() {
         assert_eq!(CALLER_SAVED_FP.len(), 20);
         for reg in &CALLER_SAVED_FP {
-            assert!(!is_callee_saved(*reg), "Unexpected callee-saved in CALLER_SAVED_FP: {:?}", reg);
+            assert!(
+                !is_callee_saved(*reg),
+                "Unexpected callee-saved in CALLER_SAVED_FP: {:?}",
+                reg
+            );
         }
     }
 
@@ -811,7 +812,11 @@ mod tests {
         assert_eq!(ALLOCATABLE_INT.len(), 28);
         // x0, x2, x3, x4 must not appear
         for reg in &ALLOCATABLE_INT {
-            assert!(is_allocatable(*reg), "Non-allocatable in ALLOCATABLE_INT: {:?}", reg);
+            assert!(
+                is_allocatable(*reg),
+                "Non-allocatable in ALLOCATABLE_INT: {:?}",
+                reg
+            );
             assert_ne!(*reg, X0);
             assert_ne!(*reg, X2);
             assert_ne!(*reg, X3);
@@ -823,7 +828,11 @@ mod tests {
     fn test_allocatable_fp() {
         assert_eq!(ALLOCATABLE_FP.len(), 32);
         for reg in &ALLOCATABLE_FP {
-            assert!(is_allocatable(*reg), "Non-allocatable in ALLOCATABLE_FP: {:?}", reg);
+            assert!(
+                is_allocatable(*reg),
+                "Non-allocatable in ALLOCATABLE_FP: {:?}",
+                reg
+            );
         }
     }
 
@@ -887,12 +896,12 @@ mod tests {
     #[test]
     fn test_is_callee_saved_coverage() {
         // Non-callee-saved integer registers
-        assert!(!is_callee_saved(X0));   // zero
-        assert!(!is_callee_saved(RA));   // ra
-        assert!(!is_callee_saved(SP));   // sp
-        assert!(!is_callee_saved(T0));   // t0
-        assert!(!is_callee_saved(A0));   // a0
-        // Callee-saved integer registers
+        assert!(!is_callee_saved(X0)); // zero
+        assert!(!is_callee_saved(RA)); // ra
+        assert!(!is_callee_saved(SP)); // sp
+        assert!(!is_callee_saved(T0)); // t0
+        assert!(!is_callee_saved(A0)); // a0
+                                       // Callee-saved integer registers
         assert!(is_callee_saved(S0));
         assert!(is_callee_saved(S1));
         assert!(is_callee_saved(S11));
@@ -906,11 +915,11 @@ mod tests {
 
     #[test]
     fn test_is_allocatable_special_regs() {
-        assert!(!is_allocatable(X0));  // zero
-        assert!(!is_allocatable(SP));  // sp
-        assert!(!is_allocatable(GP));  // gp
-        assert!(!is_allocatable(TP));  // tp
-        assert!(is_allocatable(RA));   // ra is allocatable
+        assert!(!is_allocatable(X0)); // zero
+        assert!(!is_allocatable(SP)); // sp
+        assert!(!is_allocatable(GP)); // gp
+        assert!(!is_allocatable(TP)); // tp
+        assert!(is_allocatable(RA)); // ra is allocatable
         assert!(is_allocatable(T0));
         assert!(is_allocatable(A0));
         assert!(is_allocatable(S0));

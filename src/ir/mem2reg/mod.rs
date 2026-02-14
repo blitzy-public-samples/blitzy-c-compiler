@@ -52,7 +52,7 @@ pub mod phi_eliminate;
 
 // ── Convenience re-exports ──────────────────────────────────────────────────
 
-pub use dominator_tree::DominatorTree;
 pub use dominance_frontier::DominanceFrontier;
+pub use dominator_tree::DominatorTree;
 pub use phi_eliminate::{eliminate_phis, verify_no_phis};
 pub use ssa_builder::{rename_variables, AllocaSlot, SsaRenamer};

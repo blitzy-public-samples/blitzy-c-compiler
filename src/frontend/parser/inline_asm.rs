@@ -195,14 +195,12 @@ pub fn parse_asm_statement(parser: &mut Parser<'_>) -> Result<AsmStatement, Pars
                 }
 
                 // Fourth colon: goto labels (only valid when `goto` qualifier present).
-                if is_goto && parser.eat(TokenKind::Colon) {
-                    if !parser.check(TokenKind::RightParen) {
-                        match parse_goto_labels(parser) {
-                            Ok(l) => goto_labels = l,
-                            Err(e) => {
-                                skip_to_asm_end(parser);
-                                return Err(e);
-                            }
+                if is_goto && parser.eat(TokenKind::Colon) && !parser.check(TokenKind::RightParen) {
+                    match parse_goto_labels(parser) {
+                        Ok(l) => goto_labels = l,
+                        Err(e) => {
+                            skip_to_asm_end(parser);
+                            return Err(e);
                         }
                     }
                 }

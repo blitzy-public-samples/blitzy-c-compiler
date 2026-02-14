@@ -312,11 +312,7 @@ impl DominanceFrontier {
     ///
     /// O(1) expected — FxHashSet membership test.
     #[inline]
-    pub fn is_in_frontier(
-        &self,
-        block: BasicBlockId,
-        frontier_member: BasicBlockId,
-    ) -> bool {
+    pub fn is_in_frontier(&self, block: BasicBlockId, frontier_member: BasicBlockId) -> bool {
         self.frontier_of(block).contains(&frontier_member)
     }
 
@@ -347,11 +343,7 @@ impl DominanceFrontier {
     ///
     /// O(|V|² · |E|) — verification is expensive and intended for debug
     /// builds and testing only. Do not call in release-mode hot paths.
-    pub fn verify(
-        &self,
-        func: &IrFunction,
-        dom_tree: &DominatorTree,
-    ) -> bool {
+    pub fn verify(&self, func: &IrFunction, dom_tree: &DominatorTree) -> bool {
         let blocks = func.blocks();
 
         // ---- Pass 1: Soundness ----
@@ -363,9 +355,10 @@ impl DominanceFrontier {
             let x = block.id;
             for &y in self.frontier_of(x) {
                 let y_block: &BasicBlock = func.get_block(y);
-                let has_valid_pred = y_block.predecessors().iter().any(|&z| {
-                    dom_tree.dominates(x, z) && !dom_tree.strictly_dominates(x, y)
-                });
+                let has_valid_pred = y_block
+                    .predecessors()
+                    .iter()
+                    .any(|&z| dom_tree.dominates(x, z) && !dom_tree.strictly_dominates(x, y));
                 if !has_valid_pred {
                     return false;
                 }
@@ -388,10 +381,8 @@ impl DominanceFrontier {
                 if dom_tree.idom(succ).is_none() && succ != func.entry_block().id {
                     continue;
                 }
-                if dom_tree.idom(succ) != Some(x) {
-                    if !self.is_in_frontier(x, succ) {
-                        return false;
-                    }
+                if dom_tree.idom(succ) != Some(x) && !self.is_in_frontier(x, succ) {
+                    return false;
                 }
             }
         }
@@ -410,10 +401,8 @@ impl DominanceFrontier {
             let x = block.id;
             for &child in dom_tree.children(x) {
                 for &y in self.frontier_of(child) {
-                    if !dom_tree.strictly_dominates(x, y) {
-                        if !self.is_in_frontier(x, y) {
-                            return false;
-                        }
+                    if !dom_tree.strictly_dominates(x, y) && !self.is_in_frontier(x, y) {
+                        return false;
                     }
                 }
             }
@@ -674,38 +663,42 @@ mod tests {
         func.add_basic_block(bb3);
 
         // Add edges: bb0 -> bb1, bb0 -> bb2
-        func.get_block_mut(BasicBlockId(0)).add_successor(BasicBlockId(1));
-        func.get_block_mut(BasicBlockId(0)).add_successor(BasicBlockId(2));
-        func.get_block_mut(BasicBlockId(1)).add_predecessor(BasicBlockId(0));
-        func.get_block_mut(BasicBlockId(2)).add_predecessor(BasicBlockId(0));
+        func.get_block_mut(BasicBlockId(0))
+            .add_successor(BasicBlockId(1));
+        func.get_block_mut(BasicBlockId(0))
+            .add_successor(BasicBlockId(2));
+        func.get_block_mut(BasicBlockId(1))
+            .add_predecessor(BasicBlockId(0));
+        func.get_block_mut(BasicBlockId(2))
+            .add_predecessor(BasicBlockId(0));
 
         // Add edges: bb1 -> bb3, bb2 -> bb3
-        func.get_block_mut(BasicBlockId(1)).add_successor(BasicBlockId(3));
-        func.get_block_mut(BasicBlockId(2)).add_successor(BasicBlockId(3));
-        func.get_block_mut(BasicBlockId(3)).add_predecessor(BasicBlockId(1));
-        func.get_block_mut(BasicBlockId(3)).add_predecessor(BasicBlockId(2));
+        func.get_block_mut(BasicBlockId(1))
+            .add_successor(BasicBlockId(3));
+        func.get_block_mut(BasicBlockId(2))
+            .add_successor(BasicBlockId(3));
+        func.get_block_mut(BasicBlockId(3))
+            .add_predecessor(BasicBlockId(1));
+        func.get_block_mut(BasicBlockId(3))
+            .add_predecessor(BasicBlockId(2));
 
         // Add terminators to make the CFG well-formed.
-        func.get_block_mut(BasicBlockId(0)).set_terminator(
-            Instruction::CondBranch {
+        func.get_block_mut(BasicBlockId(0))
+            .set_terminator(Instruction::CondBranch {
                 condition: crate::ir::instructions::ValueId(0),
                 true_target: BasicBlockId(1),
                 false_target: BasicBlockId(2),
-            },
-        );
-        func.get_block_mut(BasicBlockId(1)).set_terminator(
-            Instruction::Branch {
+            });
+        func.get_block_mut(BasicBlockId(1))
+            .set_terminator(Instruction::Branch {
                 target: BasicBlockId(3),
-            },
-        );
-        func.get_block_mut(BasicBlockId(2)).set_terminator(
-            Instruction::Branch {
+            });
+        func.get_block_mut(BasicBlockId(2))
+            .set_terminator(Instruction::Branch {
                 target: BasicBlockId(3),
-            },
-        );
-        func.get_block_mut(BasicBlockId(3)).set_terminator(
-            Instruction::Return { value: None },
-        );
+            });
+        func.get_block_mut(BasicBlockId(3))
+            .set_terminator(Instruction::Return { value: None });
 
         let dom_tree = DominatorTree::compute(&func);
         let df = DominanceFrontier::compute(&func, &dom_tree);
@@ -740,9 +733,8 @@ mod tests {
         // Add a return terminator to the entry block.
         let _ = func.blocks()[0].clone(); // verify block exists
         let mut func = func;
-        func.get_block_mut(BasicBlockId(0)).set_terminator(
-            Instruction::Return { value: None },
-        );
+        func.get_block_mut(BasicBlockId(0))
+            .set_terminator(Instruction::Return { value: None });
 
         let dom_tree = DominatorTree::compute(&func);
         let df = DominanceFrontier::compute(&func, &dom_tree);

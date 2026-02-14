@@ -42,9 +42,9 @@ use crate::backend::traits::RelocationType;
 /// ensures the enum layout matches the ELF relocation type encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
+#[allow(non_camel_case_types)]
 pub enum RiscV64RelocationType {
     // -- Absolute / Dynamic relocations (0–11) --
-
     /// No relocation; placeholder entry.
     R_RISCV_NONE = 0,
     /// 32-bit absolute address — writes a 32-bit data value.
@@ -71,7 +71,6 @@ pub enum RiscV64RelocationType {
     R_RISCV_TLS_TPREL64 = 11,
 
     // -- PC-relative code relocations (16–19) --
-
     /// B-type branch offset — 13-bit signed, scrambled across B-type fields.
     /// Value must be 2-byte aligned. Range: −4096 to +4094.
     R_RISCV_BRANCH = 16,
@@ -86,7 +85,6 @@ pub enum RiscV64RelocationType {
     R_RISCV_CALL_PLT = 19,
 
     // -- GOT-relative / TLS GOT (20–22) --
-
     /// High 20 bits of GOT entry PC-relative offset (AUIPC targeting GOT).
     R_RISCV_GOT_HI20 = 20,
     /// TLS GOT entry for Initial Exec model.
@@ -95,7 +93,6 @@ pub enum RiscV64RelocationType {
     R_RISCV_TLS_GD_HI20 = 22,
 
     // -- PC-relative AUIPC-based addressing (23–25) --
-
     /// High 20 bits of PC-relative offset (for AUIPC instruction, U-type).
     R_RISCV_PCREL_HI20 = 23,
     /// Low 12 bits of PC-relative offset (I-type: loads, ADDI).
@@ -104,7 +101,6 @@ pub enum RiscV64RelocationType {
     R_RISCV_PCREL_LO12_S = 25,
 
     // -- Absolute LUI-based addressing (26–28) --
-
     /// High 20 bits of absolute address (for LUI instruction, U-type).
     R_RISCV_HI20 = 26,
     /// Low 12 bits of absolute address (I-type instruction).
@@ -113,7 +109,6 @@ pub enum RiscV64RelocationType {
     R_RISCV_LO12_S = 28,
 
     // -- Arithmetic relocations for DWARF / exception tables (33–40) --
-
     /// Add 8-bit value to relocation site.
     R_RISCV_ADD8 = 33,
     /// Add 16-bit value to relocation site.
@@ -132,7 +127,6 @@ pub enum RiscV64RelocationType {
     R_RISCV_SUB64 = 40,
 
     // -- Compressed instruction relocations (44–45) --
-
     /// Compressed branch offset (C.BEQZ / C.BNEZ), 9-bit signed, CB-type.
     /// Value must be 2-byte aligned. Range: −256 to +254.
     R_RISCV_RVC_BRANCH = 44,
@@ -141,14 +135,12 @@ pub enum RiscV64RelocationType {
     R_RISCV_RVC_JUMP = 45,
 
     // -- Linker relaxation marker --
-
     /// Marks the preceding relocation as eligible for linker relaxation.
     /// The linker may shrink the instruction sequence when the target is
     /// close enough (e.g., AUIPC+JALR → JAL, or GOT load → direct access).
     R_RISCV_RELAX = 51,
 
     // -- SET relocations for DWARF / exception tables (53–56) --
-
     /// Set low 6 bits at relocation site (preserves upper bits of the byte).
     R_RISCV_SET6 = 53,
     /// Set 8-bit value at relocation site.
@@ -305,31 +297,42 @@ impl RiscV64RelocationType {
     /// relocations (RELAX, ALIGN) return 0.
     pub fn bit_size(&self) -> u8 {
         match self {
-            Self::R_RISCV_NONE | Self::R_RISCV_COPY
-                | Self::R_RISCV_RELAX | Self::R_RISCV_ALIGN => 0,
+            Self::R_RISCV_NONE | Self::R_RISCV_COPY | Self::R_RISCV_RELAX | Self::R_RISCV_ALIGN => {
+                0
+            }
             Self::R_RISCV_SET6 => 6,
-            Self::R_RISCV_ADD8 | Self::R_RISCV_SUB8
-                | Self::R_RISCV_SET8 => 8,
+            Self::R_RISCV_ADD8 | Self::R_RISCV_SUB8 | Self::R_RISCV_SET8 => 8,
             Self::R_RISCV_RVC_BRANCH => 9,
-            Self::R_RISCV_PCREL_LO12_I | Self::R_RISCV_PCREL_LO12_S
-                | Self::R_RISCV_LO12_I | Self::R_RISCV_LO12_S
-                | Self::R_RISCV_RVC_JUMP => 12,
+            Self::R_RISCV_PCREL_LO12_I
+            | Self::R_RISCV_PCREL_LO12_S
+            | Self::R_RISCV_LO12_I
+            | Self::R_RISCV_LO12_S
+            | Self::R_RISCV_RVC_JUMP => 12,
             Self::R_RISCV_BRANCH => 13,
-            Self::R_RISCV_ADD16 | Self::R_RISCV_SUB16
-                | Self::R_RISCV_SET16 => 16,
-            Self::R_RISCV_PCREL_HI20 | Self::R_RISCV_HI20
-                | Self::R_RISCV_GOT_HI20 | Self::R_RISCV_TLS_GOT_HI20
-                | Self::R_RISCV_TLS_GD_HI20 => 20,
+            Self::R_RISCV_ADD16 | Self::R_RISCV_SUB16 | Self::R_RISCV_SET16 => 16,
+            Self::R_RISCV_PCREL_HI20
+            | Self::R_RISCV_HI20
+            | Self::R_RISCV_GOT_HI20
+            | Self::R_RISCV_TLS_GOT_HI20
+            | Self::R_RISCV_TLS_GD_HI20 => 20,
             Self::R_RISCV_JAL => 21,
-            Self::R_RISCV_32 | Self::R_RISCV_TLS_DTPMOD32
-                | Self::R_RISCV_TLS_DTPREL32 | Self::R_RISCV_TLS_TPREL32
-                | Self::R_RISCV_CALL | Self::R_RISCV_CALL_PLT
-                | Self::R_RISCV_ADD32 | Self::R_RISCV_SUB32
-                | Self::R_RISCV_SET32 => 32,
-            Self::R_RISCV_64 | Self::R_RISCV_RELATIVE
-                | Self::R_RISCV_JUMP_SLOT | Self::R_RISCV_TLS_DTPMOD64
-                | Self::R_RISCV_TLS_DTPREL64 | Self::R_RISCV_TLS_TPREL64
-                | Self::R_RISCV_ADD64 | Self::R_RISCV_SUB64 => 64,
+            Self::R_RISCV_32
+            | Self::R_RISCV_TLS_DTPMOD32
+            | Self::R_RISCV_TLS_DTPREL32
+            | Self::R_RISCV_TLS_TPREL32
+            | Self::R_RISCV_CALL
+            | Self::R_RISCV_CALL_PLT
+            | Self::R_RISCV_ADD32
+            | Self::R_RISCV_SUB32
+            | Self::R_RISCV_SET32 => 32,
+            Self::R_RISCV_64
+            | Self::R_RISCV_RELATIVE
+            | Self::R_RISCV_JUMP_SLOT
+            | Self::R_RISCV_TLS_DTPMOD64
+            | Self::R_RISCV_TLS_DTPREL64
+            | Self::R_RISCV_TLS_TPREL64
+            | Self::R_RISCV_ADD64
+            | Self::R_RISCV_SUB64 => 64,
         }
     }
 
@@ -375,10 +378,7 @@ impl RiscV64RelocationType {
     /// Returns `true` if this relocation requires a GOT (Global Offset Table)
     /// entry for the referenced symbol.
     pub fn requires_got_entry(&self) -> bool {
-        matches!(
-            self,
-            Self::R_RISCV_GOT_HI20 | Self::R_RISCV_TLS_GOT_HI20
-        )
+        matches!(self, Self::R_RISCV_GOT_HI20 | Self::R_RISCV_TLS_GOT_HI20)
     }
 
     /// Returns `true` if this relocation requires a PLT (Procedure Linkage
@@ -390,30 +390,47 @@ impl RiscV64RelocationType {
     /// Returns the byte size of the memory region this relocation patches.
     ///
     /// Used to populate the [`RelocationType::size`] field in the
-    /// architecture-agnostic relocation descriptor table.
-    fn byte_size(&self) -> u8 {
+    /// architecture-agnostic relocation descriptor table and for validation
+    /// that relocation site buffers are large enough.
+    pub fn byte_size(&self) -> u8 {
         match self {
-            Self::R_RISCV_NONE | Self::R_RISCV_COPY
-                | Self::R_RISCV_RELAX | Self::R_RISCV_ALIGN => 0,
-            Self::R_RISCV_SET6 | Self::R_RISCV_SET8
-                | Self::R_RISCV_ADD8 | Self::R_RISCV_SUB8 => 1,
-            Self::R_RISCV_ADD16 | Self::R_RISCV_SUB16
-                | Self::R_RISCV_SET16 | Self::R_RISCV_RVC_BRANCH
-                | Self::R_RISCV_RVC_JUMP => 2,
-            Self::R_RISCV_32 | Self::R_RISCV_TLS_DTPMOD32
-                | Self::R_RISCV_TLS_DTPREL32 | Self::R_RISCV_TLS_TPREL32
-                | Self::R_RISCV_BRANCH | Self::R_RISCV_JAL
-                | Self::R_RISCV_PCREL_HI20 | Self::R_RISCV_PCREL_LO12_I
-                | Self::R_RISCV_PCREL_LO12_S | Self::R_RISCV_HI20
-                | Self::R_RISCV_LO12_I | Self::R_RISCV_LO12_S
-                | Self::R_RISCV_GOT_HI20 | Self::R_RISCV_TLS_GOT_HI20
-                | Self::R_RISCV_TLS_GD_HI20 | Self::R_RISCV_ADD32
-                | Self::R_RISCV_SUB32 | Self::R_RISCV_SET32 => 4,
-            Self::R_RISCV_64 | Self::R_RISCV_RELATIVE
-                | Self::R_RISCV_JUMP_SLOT | Self::R_RISCV_TLS_DTPMOD64
-                | Self::R_RISCV_TLS_DTPREL64 | Self::R_RISCV_TLS_TPREL64
-                | Self::R_RISCV_CALL | Self::R_RISCV_CALL_PLT
-                | Self::R_RISCV_ADD64 | Self::R_RISCV_SUB64 => 8,
+            Self::R_RISCV_NONE | Self::R_RISCV_COPY | Self::R_RISCV_RELAX | Self::R_RISCV_ALIGN => {
+                0
+            }
+            Self::R_RISCV_SET6 | Self::R_RISCV_SET8 | Self::R_RISCV_ADD8 | Self::R_RISCV_SUB8 => 1,
+            Self::R_RISCV_ADD16
+            | Self::R_RISCV_SUB16
+            | Self::R_RISCV_SET16
+            | Self::R_RISCV_RVC_BRANCH
+            | Self::R_RISCV_RVC_JUMP => 2,
+            Self::R_RISCV_32
+            | Self::R_RISCV_TLS_DTPMOD32
+            | Self::R_RISCV_TLS_DTPREL32
+            | Self::R_RISCV_TLS_TPREL32
+            | Self::R_RISCV_BRANCH
+            | Self::R_RISCV_JAL
+            | Self::R_RISCV_PCREL_HI20
+            | Self::R_RISCV_PCREL_LO12_I
+            | Self::R_RISCV_PCREL_LO12_S
+            | Self::R_RISCV_HI20
+            | Self::R_RISCV_LO12_I
+            | Self::R_RISCV_LO12_S
+            | Self::R_RISCV_GOT_HI20
+            | Self::R_RISCV_TLS_GOT_HI20
+            | Self::R_RISCV_TLS_GD_HI20
+            | Self::R_RISCV_ADD32
+            | Self::R_RISCV_SUB32
+            | Self::R_RISCV_SET32 => 4,
+            Self::R_RISCV_64
+            | Self::R_RISCV_RELATIVE
+            | Self::R_RISCV_JUMP_SLOT
+            | Self::R_RISCV_TLS_DTPMOD64
+            | Self::R_RISCV_TLS_DTPREL64
+            | Self::R_RISCV_TLS_TPREL64
+            | Self::R_RISCV_CALL
+            | Self::R_RISCV_CALL_PLT
+            | Self::R_RISCV_ADD64
+            | Self::R_RISCV_SUB64 => 8,
         }
     }
 }
@@ -563,8 +580,7 @@ fn write_le32(bytes: &mut [u8], val: u32) {
 #[inline(always)]
 fn read_le64(bytes: &[u8]) -> u64 {
     u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
     ])
 }
 
@@ -670,19 +686,15 @@ fn apply_b_type(bytes: &mut [u8], value: i64) -> Result<(), RelocationError> {
     check_alignment(value, 2)?;
 
     let v = value as u32;
-    let imm12   = (v >> 12) & 0x1;
+    let imm12 = (v >> 12) & 0x1;
     let imm10_5 = (v >> 5) & 0x3F;
-    let imm4_1  = (v >> 1) & 0xF;
-    let imm11   = (v >> 11) & 0x1;
+    let imm4_1 = (v >> 1) & 0xF;
+    let imm11 = (v >> 11) & 0x1;
 
     let instr = read_le32(bytes);
     // Mask clears: bit 31, bits 30:25, bits 11:8, bit 7
     let mask: u32 = (0x1 << 31) | (0x3F << 25) | (0xF << 8) | (0x1 << 7);
-    let patched = (instr & !mask)
-        | (imm12 << 31)
-        | (imm10_5 << 25)
-        | (imm4_1 << 8)
-        | (imm11 << 7);
+    let patched = (instr & !mask) | (imm12 << 31) | (imm10_5 << 25) | (imm4_1 << 8) | (imm11 << 7);
     write_le32(bytes, patched);
     Ok(())
 }
@@ -699,19 +711,16 @@ fn apply_j_type(bytes: &mut [u8], value: i64) -> Result<(), RelocationError> {
     check_alignment(value, 2)?;
 
     let v = value as u32;
-    let imm20    = (v >> 20) & 0x1;
-    let imm10_1  = (v >> 1) & 0x3FF;
-    let imm11    = (v >> 11) & 0x1;
+    let imm20 = (v >> 20) & 0x1;
+    let imm10_1 = (v >> 1) & 0x3FF;
+    let imm11 = (v >> 11) & 0x1;
     let imm19_12 = (v >> 12) & 0xFF;
 
     let instr = read_le32(bytes);
     // Mask clears: bit 31, bits 30:21, bit 20, bits 19:12
     let mask: u32 = (0x1 << 31) | (0x3FF << 21) | (0x1 << 20) | (0xFF << 12);
-    let patched = (instr & !mask)
-        | (imm20 << 31)
-        | (imm10_1 << 21)
-        | (imm11 << 20)
-        | (imm19_12 << 12);
+    let patched =
+        (instr & !mask) | (imm20 << 31) | (imm10_1 << 21) | (imm11 << 20) | (imm19_12 << 12);
     write_le32(bytes, patched);
     Ok(())
 }
@@ -746,7 +755,7 @@ fn apply_i_type_imm(bytes: &mut [u8], lo: i32) -> Result<(), RelocationError> {
 fn apply_s_type_imm(bytes: &mut [u8], lo: i32) -> Result<(), RelocationError> {
     let v = (lo as u32) & 0xFFF;
     let imm11_5 = (v >> 5) & 0x7F;
-    let imm4_0  = v & 0x1F;
+    let imm4_0 = v & 0x1F;
 
     let instr = read_le32(bytes);
     let mask: u32 = (0x7F << 25) | (0x1F << 7);
@@ -770,11 +779,11 @@ fn apply_cb_type(bytes: &mut [u8], value: i64) -> Result<(), RelocationError> {
 
     let v = value as u32;
     let mut imm: u16 = 0;
-    imm |= (((v >> 8) & 0x1) as u16) << 12;  // offset[8] → inst[12]
-    imm |= (((v >> 3) & 0x3) as u16) << 10;  // offset[4:3] → inst[11:10]
-    imm |= (((v >> 6) & 0x3) as u16) << 5;   // offset[7:6] → inst[6:5]
-    imm |= (((v >> 1) & 0x3) as u16) << 3;   // offset[2:1] → inst[4:3]
-    imm |= (((v >> 5) & 0x1) as u16) << 2;   // offset[5] → inst[2]
+    imm |= (((v >> 8) & 0x1) as u16) << 12; // offset[8] → inst[12]
+    imm |= (((v >> 3) & 0x3) as u16) << 10; // offset[4:3] → inst[11:10]
+    imm |= (((v >> 6) & 0x3) as u16) << 5; // offset[7:6] → inst[6:5]
+    imm |= (((v >> 1) & 0x3) as u16) << 3; // offset[2:1] → inst[4:3]
+    imm |= (((v >> 5) & 0x1) as u16) << 2; // offset[5] → inst[2]
 
     let instr = read_le16(bytes);
     // Mask covers bits 12, 11:10, 6:5, 4:3, 2
@@ -802,14 +811,14 @@ fn apply_cj_type(bytes: &mut [u8], value: i64) -> Result<(), RelocationError> {
 
     let v = value as u32;
     let mut imm: u16 = 0;
-    imm |= (((v >> 11) & 0x1) as u16) << 12;  // offset[11] → inst[12]
-    imm |= (((v >> 4) & 0x1) as u16) << 11;   // offset[4]  → inst[11]
-    imm |= (((v >> 8) & 0x3) as u16) << 9;    // offset[9:8] → inst[10:9]
-    imm |= (((v >> 10) & 0x1) as u16) << 8;   // offset[10] → inst[8]
-    imm |= (((v >> 6) & 0x1) as u16) << 7;    // offset[6]  → inst[7]
-    imm |= (((v >> 7) & 0x1) as u16) << 6;    // offset[7]  → inst[6]
-    imm |= (((v >> 1) & 0x7) as u16) << 3;    // offset[3:1] → inst[5:3]
-    imm |= (((v >> 5) & 0x1) as u16) << 2;    // offset[5]  → inst[2]
+    imm |= (((v >> 11) & 0x1) as u16) << 12; // offset[11] → inst[12]
+    imm |= (((v >> 4) & 0x1) as u16) << 11; // offset[4]  → inst[11]
+    imm |= (((v >> 8) & 0x3) as u16) << 9; // offset[9:8] → inst[10:9]
+    imm |= (((v >> 10) & 0x1) as u16) << 8; // offset[10] → inst[8]
+    imm |= (((v >> 6) & 0x1) as u16) << 7; // offset[6]  → inst[7]
+    imm |= (((v >> 7) & 0x1) as u16) << 6; // offset[7]  → inst[6]
+    imm |= (((v >> 1) & 0x7) as u16) << 3; // offset[3:1] → inst[5:3]
+    imm |= (((v >> 5) & 0x1) as u16) << 2; // offset[5]  → inst[2]
 
     let instr = read_le16(bytes);
     // Mask covers bits 12:2 = 0x1FFC
@@ -858,9 +867,7 @@ pub fn apply_relocation(
         // ----------------------------------------------------------------
         // Dynamic-only relocations (handled by runtime linker, not patchable)
         // ----------------------------------------------------------------
-        RiscV64RelocationType::R_RISCV_COPY => {
-            Err(RelocationError::UnsupportedType(reloc_type))
-        }
+        RiscV64RelocationType::R_RISCV_COPY => Err(RelocationError::UnsupportedType(reloc_type)),
 
         // ----------------------------------------------------------------
         // Absolute data relocations
@@ -916,23 +923,18 @@ pub fn apply_relocation(
         // ----------------------------------------------------------------
         // B-type branch
         // ----------------------------------------------------------------
-        RiscV64RelocationType::R_RISCV_BRANCH => {
-            apply_b_type(instruction_bytes, value)
-        }
+        RiscV64RelocationType::R_RISCV_BRANCH => apply_b_type(instruction_bytes, value),
 
         // ----------------------------------------------------------------
         // J-type jump (JAL)
         // ----------------------------------------------------------------
-        RiscV64RelocationType::R_RISCV_JAL => {
-            apply_j_type(instruction_bytes, value)
-        }
+        RiscV64RelocationType::R_RISCV_JAL => apply_j_type(instruction_bytes, value),
 
         // ----------------------------------------------------------------
         // AUIPC+JALR call pair (CALL / CALL_PLT)
         // Bytes [0..4]: AUIPC (U-type), bytes [4..8]: JALR (I-type)
         // ----------------------------------------------------------------
-        RiscV64RelocationType::R_RISCV_CALL
-        | RiscV64RelocationType::R_RISCV_CALL_PLT => {
+        RiscV64RelocationType::R_RISCV_CALL | RiscV64RelocationType::R_RISCV_CALL_PLT => {
             check_signed_range(value, 32, reloc_type)?;
             let (hi, lo) = split_hi_lo(value);
             apply_u_type(&mut instruction_bytes[0..4], hi)?;
@@ -957,8 +959,7 @@ pub fn apply_relocation(
         // I-type LO12 relocations (PC-relative / absolute)
         // The caller passes the full offset; we split and encode lo.
         // ----------------------------------------------------------------
-        RiscV64RelocationType::R_RISCV_PCREL_LO12_I
-        | RiscV64RelocationType::R_RISCV_LO12_I => {
+        RiscV64RelocationType::R_RISCV_PCREL_LO12_I | RiscV64RelocationType::R_RISCV_LO12_I => {
             let (_hi, lo) = split_hi_lo(value);
             apply_i_type_imm(instruction_bytes, lo)
         }
@@ -966,8 +967,7 @@ pub fn apply_relocation(
         // ----------------------------------------------------------------
         // S-type LO12 relocations (PC-relative / absolute)
         // ----------------------------------------------------------------
-        RiscV64RelocationType::R_RISCV_PCREL_LO12_S
-        | RiscV64RelocationType::R_RISCV_LO12_S => {
+        RiscV64RelocationType::R_RISCV_PCREL_LO12_S | RiscV64RelocationType::R_RISCV_LO12_S => {
             let (_hi, lo) = split_hi_lo(value);
             apply_s_type_imm(instruction_bytes, lo)
         }
@@ -975,16 +975,12 @@ pub fn apply_relocation(
         // ----------------------------------------------------------------
         // Compressed branch (CB-type)
         // ----------------------------------------------------------------
-        RiscV64RelocationType::R_RISCV_RVC_BRANCH => {
-            apply_cb_type(instruction_bytes, value)
-        }
+        RiscV64RelocationType::R_RISCV_RVC_BRANCH => apply_cb_type(instruction_bytes, value),
 
         // ----------------------------------------------------------------
         // Compressed jump (CJ-type)
         // ----------------------------------------------------------------
-        RiscV64RelocationType::R_RISCV_RVC_JUMP => {
-            apply_cj_type(instruction_bytes, value)
-        }
+        RiscV64RelocationType::R_RISCV_RVC_JUMP => apply_cj_type(instruction_bytes, value),
 
         // ----------------------------------------------------------------
         // Arithmetic ADD relocations: add `value` to existing data
@@ -996,12 +992,18 @@ pub fn apply_relocation(
         }
         RiscV64RelocationType::R_RISCV_ADD16 => {
             let existing = read_le16(instruction_bytes) as i16;
-            write_le16(instruction_bytes, existing.wrapping_add(value as i16) as u16);
+            write_le16(
+                instruction_bytes,
+                existing.wrapping_add(value as i16) as u16,
+            );
             Ok(())
         }
         RiscV64RelocationType::R_RISCV_ADD32 => {
             let existing = read_le32(instruction_bytes) as i32;
-            write_le32(instruction_bytes, existing.wrapping_add(value as i32) as u32);
+            write_le32(
+                instruction_bytes,
+                existing.wrapping_add(value as i32) as u32,
+            );
             Ok(())
         }
         RiscV64RelocationType::R_RISCV_ADD64 => {
@@ -1020,12 +1022,18 @@ pub fn apply_relocation(
         }
         RiscV64RelocationType::R_RISCV_SUB16 => {
             let existing = read_le16(instruction_bytes) as i16;
-            write_le16(instruction_bytes, existing.wrapping_sub(value as i16) as u16);
+            write_le16(
+                instruction_bytes,
+                existing.wrapping_sub(value as i16) as u16,
+            );
             Ok(())
         }
         RiscV64RelocationType::R_RISCV_SUB32 => {
             let existing = read_le32(instruction_bytes) as i32;
-            write_le32(instruction_bytes, existing.wrapping_sub(value as i32) as u32);
+            write_le32(
+                instruction_bytes,
+                existing.wrapping_sub(value as i32) as u32,
+            );
             Ok(())
         }
         RiscV64RelocationType::R_RISCV_SUB64 => {
@@ -1082,8 +1090,9 @@ pub fn apply_relocation(
 ///   Exec model for statically linked executables.
 pub fn relaxation_target(reloc_type: RiscV64RelocationType) -> Option<RelaxationKind> {
     match reloc_type {
-        RiscV64RelocationType::R_RISCV_CALL
-        | RiscV64RelocationType::R_RISCV_CALL_PLT => Some(RelaxationKind::CallToJal),
+        RiscV64RelocationType::R_RISCV_CALL | RiscV64RelocationType::R_RISCV_CALL_PLT => {
+            Some(RelaxationKind::CallToJal)
+        }
         RiscV64RelocationType::R_RISCV_GOT_HI20 => Some(RelaxationKind::GotToLocal),
         RiscV64RelocationType::R_RISCV_TLS_GD_HI20 => Some(RelaxationKind::TlsGdToLe),
         RiscV64RelocationType::R_RISCV_TLS_GOT_HI20 => Some(RelaxationKind::TlsIeToLe),
@@ -1108,47 +1117,252 @@ pub fn relaxation_target(reloc_type: RiscV64RelocationType) -> Option<Relaxation
 /// - `is_pc_relative`: whether the relocation is PC-relative
 /// - `size`: byte size of the patched region
 pub const RISCV64_RELOCATION_TYPES: &[RelocationType] = &[
-    RelocationType { name: "R_RISCV_NONE",         value:  0, is_pc_relative: false, size: 0 },
-    RelocationType { name: "R_RISCV_32",           value:  1, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_64",           value:  2, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_RISCV_RELATIVE",     value:  3, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_RISCV_COPY",         value:  4, is_pc_relative: false, size: 0 },
-    RelocationType { name: "R_RISCV_JUMP_SLOT",    value:  5, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_RISCV_TLS_DTPMOD32", value:  6, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_TLS_DTPMOD64", value:  7, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_RISCV_TLS_DTPREL32", value:  8, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_TLS_DTPREL64", value:  9, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_RISCV_TLS_TPREL32",  value: 10, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_TLS_TPREL64",  value: 11, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_RISCV_BRANCH",       value: 16, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_RISCV_JAL",          value: 17, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_RISCV_CALL",         value: 18, is_pc_relative: true,  size: 8 },
-    RelocationType { name: "R_RISCV_CALL_PLT",     value: 19, is_pc_relative: true,  size: 8 },
-    RelocationType { name: "R_RISCV_GOT_HI20",     value: 20, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_RISCV_TLS_GOT_HI20", value: 21, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_RISCV_TLS_GD_HI20",  value: 22, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_RISCV_PCREL_HI20",   value: 23, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_RISCV_PCREL_LO12_I", value: 24, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_RISCV_PCREL_LO12_S", value: 25, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_RISCV_HI20",         value: 26, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_LO12_I",       value: 27, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_LO12_S",       value: 28, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_ADD8",          value: 33, is_pc_relative: false, size: 1 },
-    RelocationType { name: "R_RISCV_ADD16",         value: 34, is_pc_relative: false, size: 2 },
-    RelocationType { name: "R_RISCV_ADD32",         value: 35, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_ADD64",         value: 36, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_RISCV_SUB8",          value: 37, is_pc_relative: false, size: 1 },
-    RelocationType { name: "R_RISCV_SUB16",         value: 38, is_pc_relative: false, size: 2 },
-    RelocationType { name: "R_RISCV_SUB32",         value: 39, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_SUB64",         value: 40, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_RISCV_RVC_BRANCH",   value: 44, is_pc_relative: true,  size: 2 },
-    RelocationType { name: "R_RISCV_RVC_JUMP",     value: 45, is_pc_relative: true,  size: 2 },
-    RelocationType { name: "R_RISCV_RELAX",         value: 51, is_pc_relative: false, size: 0 },
-    RelocationType { name: "R_RISCV_SET6",          value: 53, is_pc_relative: false, size: 1 },
-    RelocationType { name: "R_RISCV_SET8",          value: 54, is_pc_relative: false, size: 1 },
-    RelocationType { name: "R_RISCV_SET16",         value: 55, is_pc_relative: false, size: 2 },
-    RelocationType { name: "R_RISCV_SET32",         value: 56, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_RISCV_ALIGN",         value: 57, is_pc_relative: false, size: 0 },
+    RelocationType {
+        name: "R_RISCV_NONE",
+        value: 0,
+        is_pc_relative: false,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_RISCV_32",
+        value: 1,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_64",
+        value: 2,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_RELATIVE",
+        value: 3,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_COPY",
+        value: 4,
+        is_pc_relative: false,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_RISCV_JUMP_SLOT",
+        value: 5,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_TLS_DTPMOD32",
+        value: 6,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_TLS_DTPMOD64",
+        value: 7,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_TLS_DTPREL32",
+        value: 8,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_TLS_DTPREL64",
+        value: 9,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_TLS_TPREL32",
+        value: 10,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_TLS_TPREL64",
+        value: 11,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_BRANCH",
+        value: 16,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_JAL",
+        value: 17,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_CALL",
+        value: 18,
+        is_pc_relative: true,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_CALL_PLT",
+        value: 19,
+        is_pc_relative: true,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_GOT_HI20",
+        value: 20,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_TLS_GOT_HI20",
+        value: 21,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_TLS_GD_HI20",
+        value: 22,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_PCREL_HI20",
+        value: 23,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_PCREL_LO12_I",
+        value: 24,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_PCREL_LO12_S",
+        value: 25,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_HI20",
+        value: 26,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_LO12_I",
+        value: 27,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_LO12_S",
+        value: 28,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_ADD8",
+        value: 33,
+        is_pc_relative: false,
+        size: 1,
+    },
+    RelocationType {
+        name: "R_RISCV_ADD16",
+        value: 34,
+        is_pc_relative: false,
+        size: 2,
+    },
+    RelocationType {
+        name: "R_RISCV_ADD32",
+        value: 35,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_ADD64",
+        value: 36,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_SUB8",
+        value: 37,
+        is_pc_relative: false,
+        size: 1,
+    },
+    RelocationType {
+        name: "R_RISCV_SUB16",
+        value: 38,
+        is_pc_relative: false,
+        size: 2,
+    },
+    RelocationType {
+        name: "R_RISCV_SUB32",
+        value: 39,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_SUB64",
+        value: 40,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_RISCV_RVC_BRANCH",
+        value: 44,
+        is_pc_relative: true,
+        size: 2,
+    },
+    RelocationType {
+        name: "R_RISCV_RVC_JUMP",
+        value: 45,
+        is_pc_relative: true,
+        size: 2,
+    },
+    RelocationType {
+        name: "R_RISCV_RELAX",
+        value: 51,
+        is_pc_relative: false,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_RISCV_SET6",
+        value: 53,
+        is_pc_relative: false,
+        size: 1,
+    },
+    RelocationType {
+        name: "R_RISCV_SET8",
+        value: 54,
+        is_pc_relative: false,
+        size: 1,
+    },
+    RelocationType {
+        name: "R_RISCV_SET16",
+        value: 55,
+        is_pc_relative: false,
+        size: 2,
+    },
+    RelocationType {
+        name: "R_RISCV_SET32",
+        value: 56,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_RISCV_ALIGN",
+        value: 57,
+        is_pc_relative: false,
+        size: 0,
+    },
 ];
 
 // ============================================================================
@@ -1324,7 +1538,10 @@ mod tests {
             &mut bytes,
             3, // odd → not 2-byte aligned
         );
-        assert!(matches!(result, Err(RelocationError::AlignmentError { .. })));
+        assert!(matches!(
+            result,
+            Err(RelocationError::AlignmentError { .. })
+        ));
     }
 
     // -- J-type relocation --
@@ -1354,8 +1571,8 @@ mod tests {
     fn test_apply_call_zero() {
         // AUIPC x1, 0 (U-type) + JALR x1, x1, 0 (I-type)
         let mut bytes = [
-            0x97, 0x00, 0x00, 0x00,  // AUIPC (opcode 0x17 with rd=x1 → 0x97)
-            0x67, 0x80, 0x00, 0x00,  // JALR  (opcode 0x67 with rd=x1, rs1=x1)
+            0x97, 0x00, 0x00, 0x00, // AUIPC (opcode 0x17 with rd=x1 → 0x97)
+            0x67, 0x80, 0x00, 0x00, // JALR  (opcode 0x67 with rd=x1, rs1=x1)
         ];
         apply_relocation(RiscV64RelocationType::R_RISCV_CALL, &mut bytes, 0).unwrap();
         let auipc = read_le32(&bytes[0..4]);
@@ -1380,7 +1597,8 @@ mod tests {
             RiscV64RelocationType::R_RISCV_64,
             &mut bytes,
             0x123456789ABCDEF0_u64 as i64,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(read_le64(&bytes), 0x123456789ABCDEF0);
     }
 
@@ -1481,11 +1699,7 @@ mod tests {
     #[test]
     fn test_unsupported_type() {
         let mut bytes = [0x00; 8];
-        let result = apply_relocation(
-            RiscV64RelocationType::R_RISCV_COPY,
-            &mut bytes,
-            0,
-        );
+        let result = apply_relocation(RiscV64RelocationType::R_RISCV_COPY, &mut bytes, 0);
         assert!(matches!(result, Err(RelocationError::UnsupportedType(_))));
     }
 }

@@ -388,9 +388,7 @@ pub fn rename_variables(
     remove_promoted_instructions(func, &promoted_alloca_ids, &renamer.value_map);
 
     // ---- Step 7: Build def-use chains ----
-    let def_use_map = build_def_use_map(func, dom_tree);
-
-    def_use_map
+    build_def_use_map(func, dom_tree)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,7 +454,10 @@ fn rename_block(
 
             match inst {
                 Instruction::Store {
-                    value, ptr, volatile, ..
+                    value,
+                    ptr,
+                    volatile,
+                    ..
                 } if !*volatile && renamer.is_promoted_alloca(*ptr) => {
                     let slot = renamer.get_slot(*ptr).unwrap();
                     actions.push(InstrAction::PromotedStore {
@@ -465,7 +466,10 @@ fn rename_block(
                     });
                 }
                 Instruction::Load {
-                    result, ptr, volatile, ..
+                    result,
+                    ptr,
+                    volatile,
+                    ..
                 } if !*volatile && renamer.is_promoted_alloca(*ptr) => {
                     let slot = renamer.get_slot(*ptr).unwrap();
                     actions.push(InstrAction::PromotedLoad {
@@ -524,8 +528,8 @@ fn rename_block(
     // ---- 6. Restore reaching-definition stack depths ----
     // Pop all definitions pushed during this block's processing so that
     // sibling subtrees in the dominator tree do not see them.
-    for i in 0..num_slots {
-        renamer.reaching_defs[i].truncate(saved_depths[i]);
+    for (i, &depth) in saved_depths.iter().enumerate().take(num_slots) {
+        renamer.reaching_defs[i].truncate(depth);
     }
 }
 
@@ -628,20 +632,16 @@ pub fn remove_promoted_instructions(
                 let should_remove = if inst.is_alloca() {
                     // Remove promoted alloca instructions. Use is_alloca()
                     // for fast classification, then check result membership.
-                    inst.result()
-                        .map_or(false, |r| promoted_allocas.contains(&r))
+                    inst.result().is_some_and(|r| promoted_allocas.contains(&r))
                 } else {
                     match inst {
                         // Remove loads from promoted allocas (their results
                         // are now in the value replacement map).
                         Instruction::Load { result, ptr, .. } => {
-                            promoted_allocas.contains(ptr)
-                                || load_replacements.contains_key(result)
+                            promoted_allocas.contains(ptr) || load_replacements.contains_key(result)
                         }
                         // Remove stores to promoted allocas.
-                        Instruction::Store { ptr, .. } => {
-                            promoted_allocas.contains(ptr)
-                        }
+                        Instruction::Store { ptr, .. } => promoted_allocas.contains(ptr),
                         _ => false,
                     }
                 };
@@ -706,7 +706,7 @@ fn build_def_use_map(
                     for &(val, _source_block) in operands {
                         def_use_map
                             .entry(val)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push((block_id, inst_idx));
                     }
                 }
@@ -715,7 +715,7 @@ fn build_def_use_map(
                 for used_val in used_values {
                     def_use_map
                         .entry(used_val)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push((block_id, inst_idx));
                 }
             }
@@ -849,7 +849,9 @@ mod tests {
                 ty: IrType::I32,
                 volatile: false,
             });
-            block.set_terminator(Instruction::Return { value: Some(load_result) });
+            block.set_terminator(Instruction::Return {
+                value: Some(load_result),
+            });
         }
 
         // Create alloca slot.
@@ -873,10 +875,17 @@ mod tests {
         let instructions = block.instructions();
 
         // Only the return instruction should remain.
-        assert_eq!(instructions.len(), 1, "Expected only the return instruction");
+        assert_eq!(
+            instructions.len(),
+            1,
+            "Expected only the return instruction"
+        );
         match &instructions[0] {
             Instruction::Return { value: Some(v) } => {
-                assert_eq!(*v, val, "Return should use the stored value, not the load result");
+                assert_eq!(
+                    *v, val,
+                    "Return should use the stored value, not the load result"
+                );
             }
             other => panic!("Expected Return instruction, got: {:?}", other),
         }

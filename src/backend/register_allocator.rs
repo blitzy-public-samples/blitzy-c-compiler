@@ -64,8 +64,7 @@ use std::cmp::{Ordering, Reverse};
 use std::fmt;
 
 use crate::backend::traits::{
-    ArchCodegen, MachineFunction, MachineInstr, MachineOperand, PhysReg,
-    RegisterClass,
+    ArchCodegen, MachineFunction, MachineInstr, MachineOperand, PhysReg, RegisterClass,
 };
 use crate::common::fx_hash::{fx_hash_map, fx_hash_set, FxHashMap, FxHashSet};
 use crate::common::target::Target;
@@ -291,8 +290,10 @@ impl RegisterSet {
     /// by callee-saved registers, **excluding** the stack pointer and frame
     /// pointer which are never available for general allocation.
     pub fn integer_set(arch: &dyn ArchCodegen) -> Self {
-        let callee_saved_set: FxHashSet<PhysReg> = arch.callee_saved_registers().iter().copied().collect();
-        let caller_saved_set: FxHashSet<PhysReg> = arch.caller_saved_registers().iter().copied().collect();
+        let callee_saved_set: FxHashSet<PhysReg> =
+            arch.callee_saved_registers().iter().copied().collect();
+        let caller_saved_set: FxHashSet<PhysReg> =
+            arch.caller_saved_registers().iter().copied().collect();
 
         let sp = arch.stack_pointer();
         let fp = arch.frame_pointer();
@@ -342,8 +343,10 @@ impl RegisterSet {
     /// example, if there are 16 integer registers numbered 0–15, the first
     /// floating-point register is 16.
     pub fn float_set(arch: &dyn ArchCodegen) -> Self {
-        let callee_saved_all: FxHashSet<PhysReg> = arch.callee_saved_registers().iter().copied().collect();
-        let caller_saved_all: FxHashSet<PhysReg> = arch.caller_saved_registers().iter().copied().collect();
+        let callee_saved_all: FxHashSet<PhysReg> =
+            arch.callee_saved_registers().iter().copied().collect();
+        let caller_saved_all: FxHashSet<PhysReg> =
+            arch.caller_saved_registers().iter().copied().collect();
 
         let int_count = arch.integer_register_count() as u16;
         let total_count = int_count + arch.float_register_count() as u16;
@@ -525,8 +528,8 @@ impl RegisterAllocator {
         }
 
         // Stack alignment and spill slot sizing.
-        let stack_align = target.stack_alignment() as u32;
-        let ptr_width = target.pointer_width() as u32;
+        let stack_align = target.stack_alignment();
+        let ptr_width = target.pointer_width();
         // Each spill slot holds up to 8 bytes (enough for an f64 / i64 value),
         // rounded up to the target's stack alignment.
         let spill_slot_bytes = align_up(ptr_width.max(8), stack_align);
@@ -645,9 +648,9 @@ impl RegisterAllocator {
                         last_seen.insert(key, instr_idx);
 
                         // Determine register class from IR type if not cached
-                        value_classes.entry(key).or_insert_with(|| {
-                            Self::classify_value(*vid, ir_func)
-                        });
+                        value_classes
+                            .entry(key)
+                            .or_insert_with(|| Self::classify_value(*vid, ir_func));
                     }
                 }
 
@@ -681,7 +684,9 @@ impl RegisterAllocator {
             // Half-open: end is one past the last use so the value is still
             // live at the last use instruction.
             let end = end_inclusive + 1;
-            let rc = *value_classes.get(&vid_key).unwrap_or(&RegisterClass::GeneralPurpose);
+            let rc = *value_classes
+                .get(&vid_key)
+                .unwrap_or(&RegisterClass::GeneralPurpose);
 
             let interval = LiveInterval {
                 value_id: ValueId(vid_key),
@@ -740,7 +745,8 @@ impl RegisterAllocator {
 
         // Free register pools — one per register class.
         let mut free_int: Vec<PhysReg> = self.int_regs.available.iter().copied().rev().collect();
-        let mut free_float: Vec<PhysReg> = self.float_regs.available.iter().copied().rev().collect();
+        let mut free_float: Vec<PhysReg> =
+            self.float_regs.available.iter().copied().rev().collect();
 
         // We need to iterate by index because we mutate intervals in place.
         let n = self.intervals.len();
@@ -776,12 +782,7 @@ impl RegisterAllocator {
             if cur_fixed {
                 if let Some(reg) = self.intervals[i].register {
                     // Remove this register from the free pool if present
-                    Self::remove_from_free(
-                        reg,
-                        cur_class,
-                        &mut free_int,
-                        &mut free_float,
-                    );
+                    Self::remove_from_free(reg, cur_class, &mut free_int, &mut free_float);
                     self.track_callee_saved_usage(reg);
                     active.push(i);
                 }
@@ -860,15 +861,9 @@ impl RegisterAllocator {
         let mut assignment: FxHashMap<u32, AllocationResult> = fx_hash_map();
         for interval in &self.intervals {
             if let Some(reg) = interval.register {
-                assignment.insert(
-                    interval.value_id.0,
-                    AllocationResult::Register(reg),
-                );
+                assignment.insert(interval.value_id.0, AllocationResult::Register(reg));
             } else if let Some(slot) = interval.spill_slot {
-                assignment.insert(
-                    interval.value_id.0,
-                    AllocationResult::Spilled(slot),
-                );
+                assignment.insert(interval.value_id.0, AllocationResult::Spilled(slot));
             }
         }
 
@@ -928,8 +923,7 @@ impl RegisterAllocator {
         // Pass 2: Insert spill pseudo-instructions.
         // Process edits in reverse order so that insertion indices remain valid.
         edits.sort_by(|a, b| {
-            a.0.cmp(&b.0)
-                .then_with(|| b.1.cmp(&a.1)) // reverse instr order within block
+            a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)) // reverse instr order within block
         });
 
         // Group edits by block and apply in reverse instruction order.
@@ -938,7 +932,7 @@ impl RegisterAllocator {
         for (bi, ii, kind, slot, reg) in edits {
             block_edits
                 .entry(bi)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((ii, kind, slot, reg));
         }
 
@@ -1181,14 +1175,14 @@ impl RegisterAllocator {
     /// earliest-ending interval when the list is treated as a max-heap-like
     /// structure (though we currently linear-scan instead).
     #[allow(dead_code)]
-    fn sort_active_by_end(&self, active: &mut Vec<usize>) {
+    fn sort_active_by_end(&self, active: &mut [usize]) {
         active.sort_by_key(|&idx| self.intervals[idx].end);
     }
 
     /// Sort active interval indices by end position descending (latest first)
     /// so that the earliest-ending interval is at the back for efficient pop.
     #[allow(dead_code)]
-    fn sort_active_by_end_desc(&self, active: &mut Vec<usize>) {
+    fn sort_active_by_end_desc(&self, active: &mut [usize]) {
         active.sort_by_key(|&idx| Reverse(self.intervals[idx].end));
     }
 
@@ -1229,7 +1223,11 @@ impl fmt::Display for RegisterAllocator {
         writeln!(f, "  target: {:?}", self.target)?;
         writeln!(f, "  frame_size: {} bytes", self.frame_size)?;
         writeln!(f, "  spill_slots: {}", self.next_spill_slot)?;
-        writeln!(f, "  callee_saved_used: {} regs", self.used_callee_saved.len())?;
+        writeln!(
+            f,
+            "  callee_saved_used: {} regs",
+            self.used_callee_saved.len()
+        )?;
         writeln!(f, "  intervals: {} total", self.intervals.len())?;
         for (i, interval) in self.intervals.iter().enumerate() {
             writeln!(f, "    [{}] {}", i, interval)?;
@@ -1328,7 +1326,7 @@ mod tests {
         let mut iv = make_interval(0, 10, 30);
         assert!(iv.split_at(10).is_none()); // at start
         assert!(iv.split_at(30).is_none()); // at end
-        assert!(iv.split_at(5).is_none());  // before start
+        assert!(iv.split_at(5).is_none()); // before start
         assert!(iv.split_at(35).is_none()); // after end
     }
 

@@ -1309,7 +1309,7 @@ mod tests {
     fn test_derive_traits() {
         let a = I686RelocType::R386Pc32;
         let b = a; // Copy
-        let c = a.clone(); // Clone
+        let c = a; // Copy (I686RelocType is Copy)
         assert_eq!(a, b);
         assert_eq!(a, c);
         assert_ne!(a, I686RelocType::R386_32);

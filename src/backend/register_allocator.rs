@@ -1336,7 +1336,7 @@ mod tests {
         let b = make_interval(1, 10, 20);
         let c = make_interval(2, 5, 20); // same start as a, later end
 
-        let mut intervals = vec![b.clone(), c.clone(), a.clone()];
+        let mut intervals = [b.clone(), c.clone(), a.clone()];
         intervals.sort();
         assert_eq!(intervals[0].value_id.0, 0); // a: start 5, end 15
         assert_eq!(intervals[1].value_id.0, 2); // c: start 5, end 20

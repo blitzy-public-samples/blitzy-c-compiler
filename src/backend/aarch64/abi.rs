@@ -264,6 +264,13 @@ impl AbiState {
 /// ```
 pub struct AArch64Abi;
 
+impl Default for AArch64Abi {
+    /// Provides a default `AArch64Abi` instance, equivalent to [`AArch64Abi::new()`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AArch64Abi {
     // -----------------------------------------------------------------------
     // Construction
@@ -436,7 +443,7 @@ impl AArch64Abi {
         let mut classifications = Vec::with_capacity(params.len());
 
         // Use target stack alignment (16 for AArch64)
-        let sp_align = target.stack_alignment() as u32;
+        let sp_align = target.stack_alignment();
 
         for ty in params {
             let cls = self.classify_arg_with_state(ty, target, &mut state);
@@ -909,7 +916,7 @@ fn is_hfa_inner(canonical: &CType) -> Option<(CType, u8)> {
                     // Array of structs that are themselves HFA
                     let (base, inner) = is_hfa_inner(elem_c)?;
                     let total = (count as u8).checked_mul(inner)?;
-                    if total >= 1 && total <= MAX_HFA_MEMBERS {
+                    if (1..=MAX_HFA_MEMBERS).contains(&total) {
                         Some((base, total))
                     } else {
                         None
@@ -997,7 +1004,7 @@ fn hfa_from_fields(fields: &[FieldDef], kind: FieldAggKind) -> Option<(CType, u8
     }
 
     let base = base_type?;
-    if accumulated_count >= 1 && accumulated_count <= MAX_HFA_MEMBERS {
+    if (1..=MAX_HFA_MEMBERS).contains(&accumulated_count) {
         Some((base, accumulated_count))
     } else {
         None
@@ -1428,11 +1435,8 @@ mod tests {
         let layout = abi.compute_stack_layout(&params, &target());
         assert_eq!(layout.arg_classifications.len(), 9);
 
-        for i in 0..8 {
-            assert_eq!(
-                layout.arg_classifications[i],
-                ArgClassification::IntegerReg(INTEGER_ARG_REGS[i]),
-            );
+        for (cls, &reg) in layout.arg_classifications.iter().zip(INTEGER_ARG_REGS.iter()).take(8) {
+            assert_eq!(*cls, ArgClassification::IntegerReg(reg));
         }
         match &layout.arg_classifications[8] {
             ArgClassification::Stack { offset, size } => {

@@ -707,7 +707,7 @@ mod tests {
         apply_security_mitigations(&mut mf, &config);
 
         // Should have inserted probe instructions.
-        assert!(mf.blocks[0].instructions.len() > 0);
+        assert!(!mf.blocks[0].instructions.is_empty());
     }
 
     #[test]

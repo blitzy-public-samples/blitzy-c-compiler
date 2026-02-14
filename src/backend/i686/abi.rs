@@ -272,6 +272,13 @@ pub struct StackLayout {
 /// ```
 pub struct I686Abi;
 
+impl Default for I686Abi {
+    /// Provides a default `I686Abi` instance, equivalent to [`I686Abi::new()`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl I686Abi {
     // -------------------------------------------------------------------
     // Construction
@@ -504,6 +511,7 @@ impl I686Abi {
     ///   complex types that must reside in memory.
     /// - [`ParamClass::NoClass`] — `void` and function types that cannot
     ///   be passed or returned in a meaningful register class.
+    #[allow(clippy::only_used_in_recursion)]
     pub fn classify_type(&self, ty: &CType, target: &Target) -> ParamClass {
         let canonical = ty.canonical();
 

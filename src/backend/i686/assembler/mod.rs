@@ -388,6 +388,14 @@ pub struct I686Assembler {
     diagnostics: DiagnosticEngine,
 }
 
+impl Default for I686Assembler {
+    /// Provides a default i686 assembler with empty buffers and non-PIC
+    /// configuration, equivalent to [`I686Assembler::new()`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl I686Assembler {
     // -----------------------------------------------------------------------
     // Construction
@@ -862,7 +870,7 @@ impl I686Assembler {
                 FixupKind::Rel8 => {
                     // Check for rel8 overflow: displacement must fit in
                     // a signed 8-bit value [-128, +127].
-                    if displacement < -128 || displacement > 127 {
+                    if !(-128..=127).contains(&displacement) {
                         self.diagnostics.warning(
                             Span::DUMMY,
                             format!(
@@ -1004,7 +1012,7 @@ pub fn format_operand_debug(operand: &MachineOperand) -> String {
             if registers::is_gpr(*reg) {
                 let enc = registers::encoding(*reg);
                 format!("%{} (enc={})", registers::reg_name(*reg), enc)
-            } else if idx >= 24 && idx < 32 {
+            } else if (24..32).contains(&idx) {
                 // x87 FPU register
                 format!("%{}", registers::reg_name(*reg))
             } else if idx < 24 {
@@ -1085,11 +1093,7 @@ pub fn validate_i686_register(reg: PhysReg) -> bool {
     //   16–23: 8-bit sub-registers (AL–BH)
     //   24–31: x87 FPU (ST0–ST7)
     //   32:    EFLAGS
-    if idx <= 32 {
-        true
-    } else {
-        false
-    }
+    idx <= 32
 }
 
 /// Validate all register operands in a [`MachineInstr`] are valid i686

@@ -1740,7 +1740,7 @@ fn extract_reg_offset(
     match ops.get(base_idx) {
         Some(MachineOperand::Memory { base, index, scale, .. }) => {
             let rn = encoding(*base);
-            let rm = index.map_or(0, |r| encoding(r));
+            let rm = index.map_or(0, encoding);
             (rn, rm, ExtendType::LSL, *scale > 0)
         }
         Some(MachineOperand::Register(base_reg)) => {

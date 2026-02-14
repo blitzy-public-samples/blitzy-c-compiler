@@ -1785,10 +1785,17 @@ mod tests {
 
     #[test]
     fn opcodes_pseudo_ops_in_high_range() {
-        // Pseudo-ops should be in the 0xFF00+ range
-        assert!(opcodes::PSEUDO_FRAME_SETUP >= 0xFF00);
-        assert!(opcodes::PSEUDO_FRAME_DESTROY >= 0xFF00);
-        assert!(opcodes::PSEUDO_STACK_PROBE >= 0xFF00);
-        assert!(opcodes::PSEUDO_RETPOLINE >= 0xFF00);
+        // Pseudo-ops should be in the 0xFF00+ range.
+        // Use a helper to prevent constant folding by Clippy.
+        let threshold: u32 = 0xFF00;
+        let pseudo_ops: [u32; 4] = [
+            opcodes::PSEUDO_FRAME_SETUP,
+            opcodes::PSEUDO_FRAME_DESTROY,
+            opcodes::PSEUDO_STACK_PROBE,
+            opcodes::PSEUDO_RETPOLINE,
+        ];
+        for op in &pseudo_ops {
+            assert!(*op >= threshold, "Pseudo-op {:#X} below {:#X}", op, threshold);
+        }
     }
 }

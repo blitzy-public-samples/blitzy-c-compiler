@@ -452,7 +452,7 @@ fn encode_reg_imm(
     imm: i32,
 ) {
     let dst_enc = reg_encoding(dst);
-    if imm >= -128 && imm <= 127 {
+    if (-128..=127).contains(&imm) {
         // Short form: opcode_imm8 ModR/M imm8
         buf.push(opcode_imm8);
         buf.push(encode_modrm(0b11, ext, dst_enc));
@@ -968,7 +968,7 @@ fn encode_push(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
         }
         MachineOperand::Immediate(imm) => {
             let val = *imm as i32;
-            if val >= -128 && val <= 127 {
+            if (-128..=127).contains(&val) {
                 buf.push(0x6A);
                 buf.push(val as i8 as u8);
             } else {
@@ -1045,7 +1045,7 @@ fn encode_alu(
         (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Immediate(imm)) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             let val = *imm as i32;
-            if val >= -128 && val <= 127 {
+            if (-128..=127).contains(&val) {
                 encode_mem_ext(buf, &[op_imm8], ext, &mem, ctx);
                 buf.push(val as i8 as u8);
             } else {
@@ -1119,7 +1119,7 @@ fn encode_imul(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
             ) = (&ops[0], &ops[1], &ops[2])
             {
                 let val = *imm as i32;
-                if val >= -128 && val <= 127 {
+                if (-128..=127).contains(&val) {
                     buf.push(0x6B);
                     buf.push(encode_modrm(0b11, reg_encoding(*dst), reg_encoding(*src)));
                     buf.push(val as i8 as u8);
@@ -1452,7 +1452,7 @@ fn extract_fpu_index(instr: &MachineInstr, operand_idx: usize) -> u8 {
     if let Some(MachineOperand::Register(reg)) = instr.operands.get(operand_idx) {
         let idx = reg.index();
         // FPU registers are at indices 24–31; extract the ST(i) position
-        if idx >= 24 && idx < 32 {
+        if (24..32).contains(&idx) {
             (idx - 24) as u8
         } else {
             0 // Default to ST(0)
@@ -1488,7 +1488,7 @@ fn encode_fld(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
         MachineOperand::Register(reg) => {
             // FLD ST(i)
             let st_i = reg.index();
-            if st_i >= 24 && st_i < 32 {
+            if (24..32).contains(&st_i) {
                 buf.push(0xD9);
                 buf.push(0xC0 + (st_i - 24) as u8);
             }
@@ -1530,7 +1530,7 @@ fn encode_fst_fstp(
         MachineOperand::Register(reg) if is_pop => {
             // FSTP ST(i): DD D8+i
             let st_i = reg.index();
-            if st_i >= 24 && st_i < 32 {
+            if (24..32).contains(&st_i) {
                 buf.push(0xDD);
                 buf.push(0xD8 + (st_i - 24) as u8);
             }

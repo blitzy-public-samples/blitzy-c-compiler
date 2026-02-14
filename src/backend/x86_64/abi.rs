@@ -791,11 +791,8 @@ mod tests {
             .collect();
         let locs = compute_param_locations(&params);
         assert_eq!(locs.len(), 7);
-        for i in 0..6 {
-            assert_eq!(
-                locs[i],
-                ParamLocation::IntReg(registers::ARG_REGS_INT[i])
-            );
+        for (loc, &reg) in locs.iter().zip(registers::ARG_REGS_INT.iter()).take(6) {
+            assert_eq!(*loc, ParamLocation::IntReg(reg));
         }
         assert!(matches!(locs[6], ParamLocation::Stack { .. }));
     }

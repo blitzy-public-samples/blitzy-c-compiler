@@ -27,6 +27,12 @@
 /// register name lookup, property queries, and 5-bit A64 encoding helpers.
 pub mod registers;
 
+/// AAPCS64 (Procedure Call Standard for the Arm 64-bit Architecture) ABI
+/// implementation — parameter passing conventions, return value handling,
+/// HFA/HVA composite type classification, and stack frame layout for
+/// AArch64 code generation.
+pub mod abi;
+
 /// Built-in AArch64 assembler producing relocatable object code from
 /// `MachineFunction` output without invoking any external tools.
 /// Contains the A64 instruction encoder and AArch64-specific ELF

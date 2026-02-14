@@ -20,13 +20,13 @@
 //! - **Platform register:** X18 (usable on Linux, reserved on some other OSes)
 
 use crate::backend::aarch64::registers::{
-    self, CALLEE_SAVED_FP, CALLEE_SAVED_INT, FLOAT_ARG_REGS, FP, INDIRECT_RESULT_REG,
-    INTEGER_ARG_REGS, LR, SP, V0, V1, X0, X1, X8,
+    CALLEE_SAVED_FP, CALLEE_SAVED_INT, FLOAT_ARG_REGS, FP, INDIRECT_RESULT_REG,
+    INTEGER_ARG_REGS, LR, SP, V0, V1, X0, X1,
     v_to_d, v_to_s,
 };
 use crate::backend::traits::{ParamClass, PhysReg};
 use crate::common::target::Target;
-use crate::common::types::{self, align_of, size_of, CType, FieldDef};
+use crate::common::types::{align_of, size_of, CType, FieldDef};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1085,6 +1085,7 @@ fn round_up_i32(value: i32, align: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::aarch64::registers::X8;
 
     /// Helper: build an AArch64 target for testing.
     fn target() -> Target {

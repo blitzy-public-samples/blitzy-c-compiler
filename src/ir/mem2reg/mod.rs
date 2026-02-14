@@ -512,7 +512,7 @@ fn build_phi_placement_map(
         let alloca_ty = &alloca_infos[alloca_idx].ty;
         for &block_id in phi_blocks {
             map.entry(block_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push((alloca_idx, alloca_ty.clone()));
         }
     }

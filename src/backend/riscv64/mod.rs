@@ -25,6 +25,11 @@
 /// and 5-bit hardware encoding extraction.
 pub mod registers;
 
+/// RISC-V LP64D ABI implementation — argument/return classification, struct
+/// flattening, variadic function handling, and stack frame layout computation
+/// following the RISC-V ELF psABI Specification for the LP64D data model.
+pub mod abi;
+
 /// Built-in RISC-V 64 assembler — RV64IMAFDC instruction encoding in
 /// R/I/S/B/U/J formats with ELF relocation recording. Includes relocation
 /// type definitions with full linker relaxation support and compressed

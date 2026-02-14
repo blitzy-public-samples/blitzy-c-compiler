@@ -309,6 +309,12 @@ enum FlatFieldKind {
 /// ```
 pub struct RiscV64Abi;
 
+impl Default for RiscV64Abi {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RiscV64Abi {
     /// Creates a new LP64D ABI handler.
     #[inline]
@@ -533,7 +539,7 @@ impl RiscV64Abi {
                 let has_fp = flat
                     .iter()
                     .any(|f| *f == FlatFieldKind::Float32 || *f == FlatFieldKind::Float64);
-                let has_int = flat.iter().any(|f| *f == FlatFieldKind::Integer);
+                let has_int = flat.contains(&FlatFieldKind::Integer);
 
                 if all_fp {
                     ParamClass::SSE
@@ -799,7 +805,7 @@ impl RiscV64Abi {
         &self,
         fields: &[FieldDef],
         type_size: usize,
-        target: &Target,
+        _target: &Target,
     ) -> ArgClassification {
         if type_size > XLEN2 {
             return ArgClassification::Indirect(registers::A0);
@@ -852,7 +858,7 @@ impl RiscV64Abi {
         &self,
         fields: &[FieldDef],
         type_size: usize,
-        target: &Target,
+        _target: &Target,
     ) -> ReturnClassification {
         if type_size > XLEN2 {
             return ReturnClassification::Indirect(registers::A0);
@@ -979,7 +985,7 @@ impl RiscV64Abi {
     fn flatten_into(
         &self,
         fields: &[FieldDef],
-        target: &Target,
+        _target: &Target,
         result: &mut Vec<FlatFieldKind>,
     ) {
         for field in fields {
@@ -1003,7 +1009,7 @@ impl RiscV64Abi {
                     result.push(kind);
                 }
                 CType::Struct { fields: sub, .. } => {
-                    self.flatten_into(sub, target, result);
+                    self.flatten_into(sub, _target, result);
                 }
                 CType::Union { fields: sub, .. } => {
                     if self.is_homogeneous_fp_union(sub) {
@@ -1038,7 +1044,7 @@ impl RiscV64Abi {
                         ty: inner.as_ref().clone(),
                         bit_width: None,
                     };
-                    self.flatten_into(&[fd], target, result);
+                    self.flatten_into(&[fd], _target, result);
                 }
                 CType::Typedef { underlying, .. } => {
                     let fd = FieldDef {
@@ -1046,7 +1052,7 @@ impl RiscV64Abi {
                         ty: underlying.as_ref().clone(),
                         bit_width: None,
                     };
-                    self.flatten_into(&[fd], target, result);
+                    self.flatten_into(&[fd], _target, result);
                 }
             }
         }
@@ -1166,33 +1172,31 @@ impl RiscV64Abi {
         // Single float field
         if flat.len() == 1
             && matches!(flat[0], FlatFieldKind::Float32 | FlatFieldKind::Float64)
+            && *fp_idx < NUM_FP_ARG_REGS
         {
-            if *fp_idx < NUM_FP_ARG_REGS {
-                let reg = registers::FLOAT_ARG_REGS[*fp_idx];
-                *fp_idx += 1;
-                return ArgClassification::FloatReg(reg);
-            }
-            // FP regs exhausted — fall through to integer
+            let reg = registers::FLOAT_ARG_REGS[*fp_idx];
+            *fp_idx += 1;
+            return ArgClassification::FloatReg(reg);
         }
+        // FP regs exhausted for single-float struct — fall through to integer
 
         // Two float fields
         if flat.len() == 2
             && flat
                 .iter()
                 .all(|f| matches!(f, FlatFieldKind::Float32 | FlatFieldKind::Float64))
+            && *fp_idx + 1 < NUM_FP_ARG_REGS
         {
-            if *fp_idx + 1 < NUM_FP_ARG_REGS {
-                let r1 = registers::FLOAT_ARG_REGS[*fp_idx];
-                let r2 = registers::FLOAT_ARG_REGS[*fp_idx + 1];
-                *fp_idx += 2;
-                return ArgClassification::FloatRegPair(r1, r2);
-            }
-            // Fall through to integer
+            let r1 = registers::FLOAT_ARG_REGS[*fp_idx];
+            let r2 = registers::FLOAT_ARG_REGS[*fp_idx + 1];
+            *fp_idx += 2;
+            return ArgClassification::FloatRegPair(r1, r2);
         }
+        // Fall through to integer for two-float struct
 
         // Mixed int + float (exactly 2 fields, one of each)
         if flat.len() == 2 {
-            let has_int = flat.iter().any(|f| *f == FlatFieldKind::Integer);
+            let has_int = flat.contains(&FlatFieldKind::Integer);
             let has_fp = flat
                 .iter()
                 .any(|f| matches!(f, FlatFieldKind::Float32 | FlatFieldKind::Float64));

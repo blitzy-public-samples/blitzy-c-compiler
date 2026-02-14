@@ -739,8 +739,8 @@ impl EncodedInstr {
 // ============================================================================
 
 /// Validates that `imm` fits in a 12-bit signed immediate field (−2048..2047).
-fn validate_imm12(imm: i32) -> Result<(), EncoderError> {
-    if imm < -2048 || imm > 2047 {
+pub fn validate_imm12(imm: i32) -> Result<(), EncoderError> {
+    if !(-2048..=2047).contains(&imm) {
         Err(EncoderError::ImmediateOutOfRange {
             value: imm as i64,
             bits: 12,
@@ -753,11 +753,11 @@ fn validate_imm12(imm: i32) -> Result<(), EncoderError> {
 /// Validates that `imm` is a valid 20-bit upper immediate value.
 /// The upper 20 bits of the instruction encode bits [31:12] of the target
 /// address, so the effective range is 0..0xFFFFF (unsigned).
-fn validate_imm20(imm: i32) -> Result<(), EncoderError> {
+pub fn validate_imm20(imm: i32) -> Result<(), EncoderError> {
     // The upper immediate is treated as the 20-bit value placed in bits [31:12].
     // Accept any 32-bit value where only the upper 20 bits are significant.
     let u = imm as u32;
-    if u > 0xFFFFF && (imm < -(1 << 19) || imm >= (1 << 19)) {
+    if u > 0xFFFFF && !(-(1 << 19)..(1 << 19)).contains(&imm) {
         Err(EncoderError::ImmediateOutOfRange {
             value: imm as i64,
             bits: 20,
@@ -769,14 +769,14 @@ fn validate_imm20(imm: i32) -> Result<(), EncoderError> {
 
 /// Validates a B-type branch offset: 13-bit signed, must be even (2-byte aligned).
 /// Valid range: −4096..4094 (inclusive), and `offset & 1 == 0`.
-fn validate_branch_offset(offset: i32) -> Result<(), EncoderError> {
+pub fn validate_branch_offset(offset: i32) -> Result<(), EncoderError> {
     if (offset & 1) != 0 {
         return Err(EncoderError::AlignmentError {
             value: offset as i64,
             required: 2,
         });
     }
-    if offset < -4096 || offset > 4094 {
+    if !(-4096..=4094).contains(&offset) {
         Err(EncoderError::ImmediateOutOfRange {
             value: offset as i64,
             bits: 13,
@@ -788,14 +788,14 @@ fn validate_branch_offset(offset: i32) -> Result<(), EncoderError> {
 
 /// Validates a J-type JAL offset: 21-bit signed, must be even (2-byte aligned).
 /// Valid range: −1048576..1048574 (inclusive), and `offset & 1 == 0`.
-fn validate_jal_offset(offset: i32) -> Result<(), EncoderError> {
+pub fn validate_jal_offset(offset: i32) -> Result<(), EncoderError> {
     if (offset & 1) != 0 {
         return Err(EncoderError::AlignmentError {
             value: offset as i64,
             required: 2,
         });
     }
-    if offset < -1_048_576 || offset > 1_048_574 {
+    if !(-1_048_576..=1_048_574).contains(&offset) {
         Err(EncoderError::ImmediateOutOfRange {
             value: offset as i64,
             bits: 21,
@@ -815,7 +815,7 @@ fn validate_jal_offset(offset: i32) -> Result<(), EncoderError> {
 /// numbering scheme (integer 0–31, FP 32–63) to the 5-bit field value
 /// placed in rd/rs1/rs2/rs3 positions of RISC-V instructions.
 #[inline]
-fn encode_register(reg: PhysReg) -> u8 {
+pub fn encode_register(reg: PhysReg) -> u8 {
     encoding(reg)
 }
 
@@ -825,11 +825,11 @@ fn encode_register(reg: PhysReg) -> u8 {
 /// instruction format. Returns `Some(0..7)` for valid compressed registers,
 /// or `None` if the register cannot be used in a compressed instruction.
 #[inline]
-fn encode_compressed_register(reg: PhysReg) -> Option<u8> {
+pub fn encode_compressed_register(reg: PhysReg) -> Option<u8> {
     let hw = encoding(reg);
     // In compressed format, registers x8-x15 map to 3-bit encoding 0-7.
     // This applies only to integer registers (PhysReg 0-31).
-    if reg.0 < 32 && hw >= 8 && hw <= 15 {
+    if reg.0 < 32 && (8..=15).contains(&hw) {
         Some(hw - 8)
     } else {
         None
@@ -2257,7 +2257,7 @@ impl RiscV64Encoder {
             (rs1, rs2)
         };
         // Default aq=0, rl=0 (can be extended via additional operand if needed)
-        let funct7 = (funct5 << 2) | 0b00; // aq=0, rl=0
+        let funct7 = funct5 << 2; // aq=0, rl=0
         Ok(EncodedInstr::Word(self.encode_r_type(AMO, rd, funct3, rs1, rs2, funct7)))
     }
 
@@ -2279,7 +2279,7 @@ impl RiscV64Encoder {
     fn encode_li(&self, rd: u8, imm: i64) -> Result<EncodedInstr, EncoderError> {
         let imm32 = imm as i32;
         // Check if fits in 12-bit signed immediate
-        if imm32 >= -2048 && imm32 <= 2047 {
+        if (-2048..=2047).contains(&imm32) {
             Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_ADD, 0, imm32)))
         } else {
             // Split into upper 20 bits (LUI) and lower 12 bits (ADDI).

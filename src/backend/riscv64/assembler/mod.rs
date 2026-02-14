@@ -19,3 +19,10 @@
 /// Includes support for linker relaxation markers (`R_RISCV_RELAX`) and
 /// compressed instruction relocations (`R_RISCV_RVC_BRANCH`, `R_RISCV_RVC_JUMP`).
 pub mod relocations;
+
+/// RISC-V 64-bit instruction encoder — encodes all RV64IMAFDC instructions
+/// in R/I/S/B/U/J/R4 formats plus 16-bit compressed (RVC) formats. Provides
+/// the primary encoding entry point [`encoder::RiscV64Encoder::encode_instruction`],
+/// immediate validation, register encoding helpers, relocation type inference,
+/// and pseudo-instruction expansion (LI, LA, CALL, TAIL, RET, NOP, etc.).
+pub mod encoder;

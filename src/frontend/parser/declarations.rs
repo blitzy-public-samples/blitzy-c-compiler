@@ -1,38 +1,48 @@
-//! Declaration parsing module for the BCC C11 parser.
-//!
-//! Implements parsing for all forms of C11 declarations:
-//! - Variable/object declarations with optional initialisers
-//! - Function definitions and forward declarations (prototypes)
-//! - Typedefs
-//! - Struct / union / enum definitions
-//! - `_Static_assert`
-//! - `_Alignas` specifiers
-//! - GCC `__extension__` prefix on declarations
-//! - GCC `__attribute__` annotations on declarations and declarators
-//!
-//! # Architecture
-//!
-//! All public functions accept a `&mut Parser` and return
-//! `Result<Declaration, ParseError>`.
-//!
-//! The central entry point for file-scope declarations is
-//! [`parse_external_declaration`]. For block-scope declarations (inside
-//! compound statements) the same [`parse_declaration`] function is used.
+// =============================================================================
+// src/frontend/parser/declarations.rs — C11 Declaration Parsing
+// =============================================================================
+//
+// This module implements parsing for all C11 declaration forms:
+//
+// - Variable declarations with initializers
+// - Function declarations (prototypes) and function definitions
+// - Typedef declarations
+// - Struct/union declarations with field lists and bitfields
+// - Enum declarations with enumerator lists
+// - Storage class specifiers: auto, register, static, extern, typedef,
+//   _Thread_local
+// - _Static_assert compile-time assertions
+// - _Alignas alignment specifiers
+// - Anonymous struct/union members (C11)
+// - Function parameter lists with ellipsis for variadic functions
+// - Abstract declarators for type names in casts, sizeof, _Generic
+// - GCC __attribute__((...)) annotations at all applicable positions
+// - __extension__ prefix handling for declarations
+//
+// The complex "declaration mirrors use" C syntax is handled via the
+// declarator → direct-declarator recursion with pointer, array, and
+// function derivations.
+//
+// All functions produce AST nodes defined in `super::ast`.
+// =============================================================================
 
 use super::ast::{
-    AlignasSpecifier, Attribute, Declaration, DeclarationSpecifiers, Declarator, DerivedDeclarator,
-    Enumerator, FieldDeclaration, FieldDeclarator, FunctionSpecifiers, InitDeclarator, Initializer,
-    InitializerItem, Parameter, ParameterList, Span, StorageClass, TypeQualifiers, TypeSpecifier,
+    AbstractDeclarator, AlignasSpecifier, Attribute, Declaration, DeclarationSpecifiers,
+    Declarator, DerivedDeclarator, Designator, Enumerator, FieldDeclaration, FieldDeclarator,
+    FunctionSpecifiers, InitDeclarator, Initializer, InitializerItem, Parameter, ParameterList,
+    SpecifierQualifierList, Span, Statement, StorageClass, TypeName, TypeQualifiers,
+    TypeSpecifier, TypeofOperand,
 };
-use super::{ParseError, Parser};
+use super::Parser;
 use crate::common::string_interner::Symbol;
 use crate::frontend::lexer::token::TokenKind;
+use crate::frontend::parser::ParseError;
 
-// ===========================================================================
-// Helpers
-// ===========================================================================
+// =============================================================================
+// Internal helpers
+// =============================================================================
 
-/// Extracts the source span from a `TypeSpecifier` variant, if available.
+/// Extracts the span from a `TypeSpecifier` variant that carries one.
 fn type_specifier_span(spec: &TypeSpecifier) -> Option<Span> {
     match spec {
         TypeSpecifier::Struct { span, .. }
@@ -40,302 +50,1112 @@ fn type_specifier_span(spec: &TypeSpecifier) -> Option<Span> {
         | TypeSpecifier::Enum { span, .. }
         | TypeSpecifier::TypedefName { span, .. }
         | TypeSpecifier::Typeof { span, .. } => Some(*span),
-        // Keyword specifiers (Void, Int, etc.) don't carry their own span.
         _ => None,
     }
 }
 
-// ===========================================================================
-// External declaration (file-scope entry point)
-// ===========================================================================
+/// Heuristic to determine if a declarator's derived list represents a
+/// function declaration (vs. a function-pointer variable declaration).
+///
+/// A declarator is a function declaration when the outermost (last) derived
+/// element is `DerivedDeclarator::Function` and the name was parsed without
+/// grouping parentheses (i.e., `int f(int)` not `int (*f)(int)`).
+fn is_function_declaration(derived: &[DerivedDeclarator], has_grouping: bool) -> bool {
+    if has_grouping {
+        return false;
+    }
+    matches!(derived.last(), Some(DerivedDeclarator::Function { .. }))
+}
 
-/// Parses an external (file-scope) declaration.
+/// Returns `true` if the current token could begin a type specifier or
+/// qualifier (used for specifier-qualifier-list parsing context).
+fn is_specifier_qualifier_start(parser: &Parser<'_>) -> bool {
+    match &parser.current().kind {
+        // Type specifier keywords
+        TokenKind::Void
+        | TokenKind::Char
+        | TokenKind::Short
+        | TokenKind::Int
+        | TokenKind::Long
+        | TokenKind::Float
+        | TokenKind::Double
+        | TokenKind::Signed
+        | TokenKind::Unsigned
+        | TokenKind::Bool
+        | TokenKind::Complex => true,
+
+        // struct / union / enum
+        TokenKind::Struct | TokenKind::Union | TokenKind::Enum => true,
+
+        // Type qualifiers
+        TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict | TokenKind::Atomic => true,
+
+        // GCC extensions used as type specifiers
+        TokenKind::TypeofKeyword | TokenKind::Attribute | TokenKind::Extension => true,
+
+        // Typedef name
+        TokenKind::Identifier(sym) => parser.is_typedef_name(*sym),
+
+        _ => false,
+    }
+}
+
+/// Returns `true` if the current token could begin an abstract declarator.
+fn can_start_abstract_declarator(parser: &Parser<'_>) -> bool {
+    matches!(
+        parser.current().kind,
+        TokenKind::Star | TokenKind::LeftParen | TokenKind::LeftBracket
+    )
+}
+
+/// Helper to extract an identifier `Symbol` from the current token.
+/// Emits a diagnostic and returns `Err` if the current token is not an
+/// identifier.
+fn expect_identifier(parser: &mut Parser<'_>, context: &str) -> Result<Symbol, ParseError> {
+    match &parser.current().kind {
+        TokenKind::Identifier(sym) => {
+            let name = *sym;
+            parser.advance();
+            Ok(name)
+        }
+        _ => {
+            let span = parser.current().span;
+            let msg = format!("expected identifier in {context}, found '{}'", parser.current().kind);
+            parser.diagnostics.error(span, &msg);
+            Err(ParseError {
+                span,
+                message: msg,
+                expected: Some("identifier".to_string()),
+            })
+        }
+    }
+}
+
+// =============================================================================
+// §1: Top-level Entry Points
+// =============================================================================
+
+/// Parse an external (file-scope) declaration or function definition.
 ///
-/// ```text
-/// external-declaration:
-///     function-definition
-///     declaration
-///     ';'              (empty declaration)
-/// ```
+/// At file scope, declarations can be:
+/// - Variable declarations: `int x = 5;`
+/// - Function definitions: `int main(void) { return 0; }`
+/// - Function prototypes: `extern int printf(const char *, ...);`
+/// - Typedef declarations: `typedef unsigned long size_t;`
+/// - Struct/union/enum definitions: `struct point { int x; int y; };`
+/// - `_Static_assert(cond, "msg");`
+/// - Empty declarations: `;`
 ///
-/// A function-definition is distinguished from a declaration only after
-/// parsing declaration specifiers and the declarator — if a `{` follows
-/// rather than `=`, `,`, or `;`, it is a function definition.
+/// This function also handles `__extension__` prefixes by delegating to
+/// `gcc_extensions::parse_extension_decl`.
 pub fn parse_external_declaration(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
-    // Empty declaration
+    let start = parser.current().span;
+
+    // Handle __extension__ prefix
+    if parser.check(TokenKind::Extension) {
+        if super::gcc_extensions::is_gcc_extension_start(&parser.current().kind) {
+            return super::gcc_extensions::parse_extension_decl(parser);
+        }
+    }
+
+    // Handle _Static_assert
+    if parser.check(TokenKind::StaticAssert) {
+        return parse_static_assert(parser);
+    }
+
+    // Handle empty declaration (lone semicolon)
     if parser.check(TokenKind::Semicolon) {
         let span = parser.advance();
         return Ok(Declaration::Empty { span });
     }
 
-    // _Static_assert
+    // Parse declaration specifiers
+    let specifiers = match parse_declaration_specifiers(parser) {
+        Ok(s) => s,
+        Err(_) => {
+            // Error recovery: skip to synchronization point and return error node
+            parser.synchronize();
+            return Ok(Declaration::Error {
+                span: Span::merge(start, parser.current().span),
+            });
+        }
+    };
+
+    // After specifiers, we might have:
+    // - A semicolon (standalone struct/union/enum definition or declaration with no declarator)
+    // - A declarator (variable, function, typedef, etc.)
+
+    // Standalone tag definition followed by semicolon
+    if parser.check(TokenKind::Semicolon) {
+        let end_span = parser.advance();
+        return make_standalone_tag_declaration(specifiers, start, end_span);
+    }
+
+    // Collect pre-declarator attributes
+    let attrs = if parser.check(TokenKind::Attribute) {
+        super::attributes::parse_attribute_list(parser)?
+    } else {
+        vec![]
+    };
+
+    // Parse the first declarator
+    let (first_declarator, has_grouping) = parse_declarator_inner(parser)?;
+
+    // Collect post-declarator attributes
+    let mut all_attrs = attrs;
+    if parser.check(TokenKind::Attribute) {
+        all_attrs.extend(super::attributes::parse_attribute_list(parser)?);
+    }
+
+    // Check for function definition: specifiers declarator { body }
+    if parser.check(TokenKind::LeftBrace) {
+        let body = super::statements::parse_compound_statement(parser)?;
+        let end_span = match &body {
+            Statement::Compound { span, .. } => *span,
+            _ => parser.current().span,
+        };
+        return Ok(Declaration::FunctionDef {
+            specifiers,
+            declarator: first_declarator,
+            attrs: all_attrs,
+            body: Box::new(body),
+            span: Span::merge(start, end_span),
+        });
+    }
+
+    // Otherwise, it's a declaration (variable, function prototype, or typedef)
+    parse_declaration_rest(parser, specifiers, first_declarator, all_attrs, has_grouping, start)
+}
+
+/// Parse a declaration in block (local) scope.
+///
+/// Block-scope declarations are similar to external declarations but cannot
+/// be function definitions (those are only valid at file scope).
+///
+/// Handles:
+/// - Variable declarations with initializers
+/// - Typedef declarations
+/// - Struct/union/enum definitions
+/// - _Static_assert
+/// - Empty declarations
+/// - __extension__ prefixed declarations
+pub fn parse_declaration(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
+    let start = parser.current().span;
+
+    // Handle __extension__ prefix
+    if parser.check(TokenKind::Extension) {
+        if super::gcc_extensions::is_gcc_extension_start(&parser.current().kind) {
+            return super::gcc_extensions::parse_extension_decl(parser);
+        }
+    }
+
+    // Handle _Static_assert
     if parser.check(TokenKind::StaticAssert) {
         return parse_static_assert(parser);
+    }
+
+    // Handle empty declaration
+    if parser.check(TokenKind::Semicolon) {
+        let span = parser.advance();
+        return Ok(Declaration::Empty { span });
     }
 
     // Parse declaration specifiers
     let specifiers = parse_declaration_specifiers(parser)?;
 
-    // Check for struct/union/enum standing alone (tag definition without declarator)
+    // Standalone tag definition followed by semicolon
     if parser.check(TokenKind::Semicolon) {
-        let end = parser.advance();
-        let span = Span::merge(specifiers.span, end);
-        return Ok(Declaration::Variable {
-            specifiers,
-            declarators: Vec::new(),
-            attrs: Vec::new(),
-            span,
-        });
+        let end_span = parser.advance();
+        return make_standalone_tag_declaration(specifiers, start, end_span);
     }
 
-    // Parse first declarator
-    let declarator = parse_declarator(parser)?;
-
-    // Trailing attributes
+    // Collect pre-declarator attributes
     let attrs = if parser.check(TokenKind::Attribute) {
         super::attributes::parse_attribute_list(parser)?
     } else {
-        Vec::new()
+        vec![]
     };
 
-    // Function definition: specifiers declarator { body }
-    if parser.check(TokenKind::LeftBrace) {
-        let body = super::statements::parse_compound_statement(parser)?;
-        let span = Span::merge(specifiers.span, body.span());
+    // Parse the first declarator
+    let (first_declarator, has_grouping) = parse_declarator_inner(parser)?;
 
-        // If typedef storage class was present, register the name
-        if specifiers.storage_class == Some(StorageClass::Typedef) {
-            if let Some(name) = declarator.name {
-                parser.register_typedef(name);
+    // Collect post-declarator attributes
+    let mut all_attrs = attrs;
+    if parser.check(TokenKind::Attribute) {
+        all_attrs.extend(super::attributes::parse_attribute_list(parser)?);
+    }
+
+    // Parse the rest (init-declarator-list and semicolon)
+    parse_declaration_rest(parser, specifiers, first_declarator, all_attrs, has_grouping, start)
+}
+
+/// Given declaration specifiers with no declarator (followed by `;`),
+/// determine if this is a standalone struct/union/enum definition and
+/// produce the appropriate `Declaration` variant.
+fn make_standalone_tag_declaration(
+    specifiers: DeclarationSpecifiers,
+    start: Span,
+    end_span: Span,
+) -> Result<Declaration, ParseError> {
+    // Check if the type specifiers contain a struct/union/enum definition
+    if specifiers.type_specifiers.len() == 1 {
+        match &specifiers.type_specifiers[0] {
+            TypeSpecifier::Struct {
+                name,
+                fields: Some(f),
+                attrs,
+                span: _,
+            } => {
+                return Ok(Declaration::StructDef {
+                    name: *name,
+                    fields: f.clone(),
+                    attrs: attrs.clone(),
+                    span: Span::merge(start, end_span),
+                });
             }
+            TypeSpecifier::Union {
+                name,
+                fields: Some(f),
+                attrs,
+                span: _,
+            } => {
+                return Ok(Declaration::UnionDef {
+                    name: *name,
+                    fields: f.clone(),
+                    attrs: attrs.clone(),
+                    span: Span::merge(start, end_span),
+                });
+            }
+            TypeSpecifier::Enum {
+                name,
+                enumerators: Some(e),
+                attrs,
+                span: _,
+            } => {
+                return Ok(Declaration::EnumDef {
+                    name: *name,
+                    enumerators: e.clone(),
+                    attrs: attrs.clone(),
+                    span: Span::merge(start, end_span),
+                });
+            }
+            _ => {}
         }
-
-        return Ok(Declaration::FunctionDef {
-            specifiers,
-            declarator,
-            attrs,
-            body: Box::new(body),
-            span,
-        });
     }
 
-    // Variable declaration or function prototype
-    parse_declaration_rest(parser, specifiers, declarator, attrs)
+    // Forward reference or declaration with no declarators (e.g., `struct foo;`)
+    Ok(Declaration::Variable {
+        specifiers,
+        declarators: vec![],
+        attrs: vec![],
+        span: Span::merge(start, end_span),
+    })
 }
 
-/// Parses a block-scope declaration.
+// =============================================================================
+// §2: Declaration Specifiers
+// =============================================================================
+
+/// Parse declaration specifiers — the prefix of a declaration before the
+/// declarator list.
 ///
-/// ```text
-/// declaration:
-///     declaration-specifiers init-declarator-list? ';'
-///     _Static_assert ( ... ) ;
-/// ```
-pub fn parse_declaration(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
-    // _Static_assert
-    if parser.check(TokenKind::StaticAssert) {
-        return parse_static_assert(parser);
-    }
-
-    let specifiers = parse_declaration_specifiers(parser)?;
-
-    // Lone specifiers (e.g., `struct foo;`)
-    if parser.check(TokenKind::Semicolon) {
-        let end = parser.advance();
-        let span = Span::merge(specifiers.span, end);
-        return Ok(Declaration::Variable {
-            specifiers,
-            declarators: Vec::new(),
-            attrs: Vec::new(),
-            span,
-        });
-    }
-
-    let declarator = parse_declarator(parser)?;
-
-    let attrs = if parser.check(TokenKind::Attribute) {
-        super::attributes::parse_attribute_list(parser)?
-    } else {
-        Vec::new()
-    };
-
-    parse_declaration_rest(parser, specifiers, declarator, attrs)
-}
-
-// ===========================================================================
-// Declaration specifiers
-// ===========================================================================
-
-/// Parses declaration specifiers: storage class, type specifiers, type
-/// qualifiers, function specifiers, _Alignas, __attribute__, __extension__.
+/// Collects:
+/// - Storage class specifiers: `auto`, `register`, `static`, `extern`,
+///   `typedef`, `_Thread_local`
+/// - Type specifiers: `void`, `char`, `int`, `long`, etc., plus struct/union/
+///   enum, typedef names, `typeof`
+/// - Type qualifiers: `const`, `volatile`, `restrict`, `_Atomic`
+/// - Function specifiers: `inline`, `_Noreturn`
+/// - Alignment specifiers: `_Alignas(type-name)` or `_Alignas(constant-expr)`
+/// - GCC `__attribute__((...))`
+/// - `__extension__` marker
 ///
-/// Specifiers are accumulated in a loop until we see a token that cannot
-/// be part of the specifier list.
+/// At least one specifier must be present. If none are found, an error is
+/// emitted.
 pub fn parse_declaration_specifiers(
     parser: &mut Parser<'_>,
 ) -> Result<DeclarationSpecifiers, ParseError> {
     let start = parser.current().span;
     let mut storage_class: Option<StorageClass> = None;
     let mut type_specifiers: Vec<TypeSpecifier> = Vec::new();
-    let mut qualifiers = TypeQualifiers::default();
-    let mut func_specs = FunctionSpecifiers::default();
+    let mut type_qualifiers = TypeQualifiers::default();
+    let mut func_specifiers = FunctionSpecifiers::default();
     let mut alignment: Option<AlignasSpecifier> = None;
     let mut attrs: Vec<Attribute> = Vec::new();
     let mut has_extension = false;
     let mut last_span = start;
+    let mut count = 0usize;
 
     loop {
-        match parser.current().kind.clone() {
+        match &parser.current().kind {
+            // -----------------------------------------------------------
             // Storage class specifiers
+            // -----------------------------------------------------------
             TokenKind::Auto => {
-                storage_class = Some(StorageClass::Auto);
+                set_storage_class(parser, &mut storage_class, StorageClass::Auto);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Register => {
-                storage_class = Some(StorageClass::Register);
+                set_storage_class(parser, &mut storage_class, StorageClass::Register);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Static => {
-                storage_class = Some(StorageClass::Static);
+                set_storage_class(parser, &mut storage_class, StorageClass::Static);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Extern => {
-                storage_class = Some(StorageClass::Extern);
+                set_storage_class(parser, &mut storage_class, StorageClass::Extern);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Typedef => {
-                storage_class = Some(StorageClass::Typedef);
+                set_storage_class(parser, &mut storage_class, StorageClass::Typedef);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::ThreadLocal => {
-                // _Thread_local can combine with static/extern
+                set_storage_class(parser, &mut storage_class, StorageClass::ThreadLocal);
                 last_span = parser.advance();
+                count += 1;
             }
 
-            // Type specifiers (keywords)
+            // -----------------------------------------------------------
+            // Type specifier keywords
+            // -----------------------------------------------------------
             TokenKind::Void => {
                 type_specifiers.push(TypeSpecifier::Void);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Char => {
                 type_specifiers.push(TypeSpecifier::Char);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Short => {
                 type_specifiers.push(TypeSpecifier::Short);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Int => {
                 type_specifiers.push(TypeSpecifier::Int);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Long => {
                 type_specifiers.push(TypeSpecifier::Long);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Float => {
                 type_specifiers.push(TypeSpecifier::Float);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Double => {
                 type_specifiers.push(TypeSpecifier::Double);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Signed => {
                 type_specifiers.push(TypeSpecifier::Signed);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Unsigned => {
                 type_specifiers.push(TypeSpecifier::Unsigned);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Bool => {
                 type_specifiers.push(TypeSpecifier::Bool);
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Complex => {
                 type_specifiers.push(TypeSpecifier::Complex);
                 last_span = parser.advance();
+                count += 1;
             }
 
-            // struct / union / enum
+            // -----------------------------------------------------------
+            // Type qualifiers
+            // -----------------------------------------------------------
+            TokenKind::Const => {
+                type_qualifiers.is_const = true;
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Volatile => {
+                type_qualifiers.is_volatile = true;
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Restrict => {
+                type_qualifiers.is_restrict = true;
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Atomic => {
+                // _Atomic can be either a type qualifier or a type specifier
+                // _Atomic(type-name). If followed by '(', it's a type specifier.
+                if parser.peek_ahead(1).is(TokenKind::LeftParen) {
+                    parser.advance(); // consume _Atomic
+                    parser.advance(); // consume (
+                    let inner_type = parse_type_name(parser)?;
+                    let end = parser.expect(TokenKind::RightParen)?;
+                    type_specifiers.push(TypeSpecifier::Atomic(Box::new(inner_type)));
+                    last_span = end;
+                    count += 1;
+                } else {
+                    type_qualifiers.is_atomic = true;
+                    last_span = parser.advance();
+                    count += 1;
+                }
+            }
+
+            // -----------------------------------------------------------
+            // Function specifiers
+            // -----------------------------------------------------------
+            TokenKind::Inline => {
+                func_specifiers.is_inline = true;
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Noreturn => {
+                func_specifiers.is_noreturn = true;
+                last_span = parser.advance();
+                count += 1;
+            }
+
+            // -----------------------------------------------------------
+            // Alignment specifier: _Alignas
+            // -----------------------------------------------------------
+            TokenKind::Alignas => {
+                alignment = Some(parse_alignas_specifier(parser)?);
+                count += 1;
+            }
+
+            // -----------------------------------------------------------
+            // Struct / Union / Enum
+            // -----------------------------------------------------------
             TokenKind::Struct => {
                 let spec = parse_struct_or_union_specifier(parser, true)?;
-                last_span = type_specifier_span(&spec).unwrap_or(last_span);
+                if let Some(sp) = type_specifier_span(&spec) {
+                    last_span = sp;
+                }
                 type_specifiers.push(spec);
+                count += 1;
             }
             TokenKind::Union => {
                 let spec = parse_struct_or_union_specifier(parser, false)?;
-                last_span = type_specifier_span(&spec).unwrap_or(last_span);
+                if let Some(sp) = type_specifier_span(&spec) {
+                    last_span = sp;
+                }
                 type_specifiers.push(spec);
+                count += 1;
             }
             TokenKind::Enum => {
                 let spec = parse_enum_specifier(parser)?;
-                last_span = type_specifier_span(&spec).unwrap_or(last_span);
+                if let Some(sp) = type_specifier_span(&spec) {
+                    last_span = sp;
+                }
                 type_specifiers.push(spec);
+                count += 1;
+            }
+
+            // -----------------------------------------------------------
+            // typeof / __typeof__
+            // -----------------------------------------------------------
+            TokenKind::TypeofKeyword => {
+                let spec = parse_typeof_specifier(parser)?;
+                if let Some(sp) = type_specifier_span(&spec) {
+                    last_span = sp;
+                }
+                type_specifiers.push(spec);
+                count += 1;
+            }
+
+            // -----------------------------------------------------------
+            // GCC __attribute__((...))
+            // -----------------------------------------------------------
+            TokenKind::Attribute => {
+                let new_attrs = super::attributes::parse_attribute_list(parser)?;
+                attrs.extend(new_attrs);
+                count += 1;
+            }
+
+            // -----------------------------------------------------------
+            // __extension__
+            // -----------------------------------------------------------
+            TokenKind::Extension => {
+                has_extension = true;
+                last_span = parser.advance();
+                count += 1;
+            }
+
+            // -----------------------------------------------------------
+            // Typedef name (identifier registered as typedef)
+            // -----------------------------------------------------------
+            TokenKind::Identifier(sym) if parser.is_typedef_name(*sym) => {
+                // Only consume typedef name if we haven't seen another type
+                // specifier yet (avoids misinterpreting variable names as types
+                // in declarations like `int size_t;`).
+                if type_specifiers.is_empty() {
+                    let name = *sym;
+                    let span = parser.current().span;
+                    type_specifiers.push(TypeSpecifier::TypedefName { name, span });
+                    last_span = parser.advance();
+                    count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // -----------------------------------------------------------
+            // Not a declaration specifier — stop
+            // -----------------------------------------------------------
+            _ => break,
+        }
+    }
+
+    if count == 0 {
+        let span = parser.current().span;
+        let msg = format!(
+            "expected declaration specifiers, found '{}'",
+            parser.current().kind
+        );
+        parser.diagnostics.error(span, &msg);
+        return Err(ParseError {
+            span,
+            message: msg,
+            expected: Some("declaration specifier".to_string()),
+        });
+    }
+
+    Ok(DeclarationSpecifiers {
+        storage_class,
+        type_specifiers,
+        type_qualifiers,
+        function_specifiers: func_specifiers,
+        alignment,
+        attrs,
+        has_extension,
+        span: Span::merge(start, last_span),
+    })
+}
+
+/// Helper to set storage class with duplicate detection.
+fn set_storage_class(
+    parser: &mut Parser<'_>,
+    current: &mut Option<StorageClass>,
+    new: StorageClass,
+) {
+    if let Some(existing) = current {
+        // _Thread_local can combine with static or extern
+        let is_thread_local_combo = matches!(
+            (&existing, &new),
+            (StorageClass::Static, StorageClass::ThreadLocal)
+                | (StorageClass::Extern, StorageClass::ThreadLocal)
+                | (StorageClass::ThreadLocal, StorageClass::Static)
+                | (StorageClass::ThreadLocal, StorageClass::Extern)
+        );
+        if !is_thread_local_combo {
+            parser.diagnostics.warning(
+                parser.current().span,
+                "multiple storage class specifiers in declaration",
+            );
+        }
+    }
+    *current = Some(new);
+}
+
+// =============================================================================
+// §3: Declarator Parsing
+// =============================================================================
+
+/// Parse a declarator (named) — the core of C declaration syntax.
+///
+/// A declarator consists of optional pointer derivations followed by a
+/// direct declarator (identifier with optional array/function postfix).
+///
+/// # Grammar
+///
+/// ```text
+/// declarator: pointer? direct-declarator
+/// pointer: * type-qualifier-list? | * type-qualifier-list? pointer
+/// ```
+pub fn parse_declarator(parser: &mut Parser<'_>) -> Result<Declarator, ParseError> {
+    let (declarator, _has_grouping) = parse_declarator_inner(parser)?;
+    Ok(declarator)
+}
+
+/// Internal version of `parse_declarator` that also returns whether the
+/// declarator used grouping parentheses (needed for function-declaration
+/// vs. function-pointer disambiguation).
+fn parse_declarator_inner(
+    parser: &mut Parser<'_>,
+) -> Result<(Declarator, bool), ParseError> {
+    let start = parser.current().span;
+    let mut derived: Vec<DerivedDeclarator> = Vec::new();
+
+    // Parse pointer derivations: * [qualifiers]*
+    while parser.check(TokenKind::Star) {
+        parser.advance();
+        let quals = parse_type_qualifier_list(parser);
+        derived.push(DerivedDeclarator::Pointer { qualifiers: quals });
+    }
+
+    // Parse direct declarator (name + postfix derivations)
+    let (name, mut postfix_derived, has_grouping, name_span) =
+        parse_direct_declarator(parser)?;
+
+    // Combine: pointer derivations come first (outermost), then postfix
+    derived.append(&mut postfix_derived);
+
+    // Collect trailing attributes on the declarator
+    let decl_attrs = if parser.check(TokenKind::Attribute) {
+        super::attributes::parse_attribute_list(parser)?
+    } else {
+        vec![]
+    };
+
+    let end_span = if !derived.is_empty() || name.is_some() {
+        name_span.unwrap_or(start)
+    } else {
+        start
+    };
+
+    Ok((
+        Declarator {
+            name,
+            derived,
+            attrs: decl_attrs,
+            span: Span::merge(start, end_span),
+        },
+        has_grouping,
+    ))
+}
+
+/// Parse a direct declarator: identifier, grouped `(declarator)`, or
+/// abstract (no name), followed by optional postfix `[...]` and `(...)`.
+///
+/// Returns (name, postfix_derived, has_grouping, last_span).
+fn parse_direct_declarator(
+    parser: &mut Parser<'_>,
+) -> Result<(Option<Symbol>, Vec<DerivedDeclarator>, bool, Option<Span>), ParseError> {
+    let mut derived: Vec<DerivedDeclarator> = Vec::new();
+    let mut name: Option<Symbol> = None;
+    let mut has_grouping = false;
+    let mut last_span: Option<Span> = None;
+
+    // Match the core of the direct declarator
+    match &parser.current().kind {
+        // Named declarator: identifier
+        TokenKind::Identifier(sym) if !parser.is_typedef_name(*sym) => {
+            name = Some(*sym);
+            last_span = Some(parser.current().span);
+            parser.advance();
+        }
+
+        // Grouped declarator: ( declarator )
+        // Disambiguate from function parameter list by peeking:
+        // If after '(' we see '*', or another '(' that looks like grouped,
+        // or an identifier that isn't a type name, it's grouped.
+        TokenKind::LeftParen => {
+            let next_kind = &parser.peek_ahead(1).kind;
+            let is_grouped = matches!(
+                next_kind,
+                TokenKind::Star
+                    | TokenKind::LeftParen
+                    | TokenKind::Attribute
+            ) || matches!(next_kind, TokenKind::Identifier(sym) if !parser.is_typedef_name(*sym));
+
+            if is_grouped {
+                has_grouping = true;
+                parser.advance(); // consume '('
+                let (inner_decl, inner_grouping) = parse_declarator_inner(parser)?;
+                parser.expect(TokenKind::RightParen)?;
+                name = inner_decl.name;
+                // Inner derived declarators come first (closer to name)
+                derived.extend(inner_decl.derived);
+                if inner_grouping {
+                    has_grouping = true;
+                }
+                last_span = Some(parser.current().span);
+            }
+            // If not grouped, name stays None (abstract declarator case)
+        }
+
+        // No name — abstract declarator context
+        _ => {}
+    }
+
+    // Parse postfix derivations: [] and ()
+    loop {
+        match parser.current().kind {
+            TokenKind::LeftBracket => {
+                let arr = parse_array_declarator(parser)?;
+                derived.push(arr);
+                last_span = Some(parser.current().span);
+            }
+            TokenKind::LeftParen => {
+                // Function parameter list postfix
+                let func = parse_function_declarator(parser)?;
+                derived.push(func);
+                last_span = Some(parser.current().span);
+            }
+            _ => break,
+        }
+    }
+
+    Ok((name, derived, has_grouping, last_span))
+}
+
+/// Parse an array declarator: `[ [static] [qualifiers] [size-expr] ]`
+///
+/// Supports C11 array declarator syntax including:
+/// - `[]` — incomplete array / flexible array member
+/// - `[10]` — fixed-size array
+/// - `[static 10]` — parameter array with guaranteed minimum size
+/// - `[const 10]` — qualified array (parameter context)
+/// - `[*]` — variable-length array with unspecified size
+fn parse_array_declarator(parser: &mut Parser<'_>) -> Result<DerivedDeclarator, ParseError> {
+    parser.expect(TokenKind::LeftBracket)?;
+
+    let mut is_static = false;
+
+    // Check for `static` before qualifiers
+    if parser.check(TokenKind::Static) {
+        is_static = true;
+        parser.advance();
+    }
+
+    // Parse optional type qualifiers inside brackets
+    let qualifiers = parse_type_qualifier_list(parser);
+
+    // Check for `static` after qualifiers (if not already seen)
+    if !is_static && parser.check(TokenKind::Static) {
+        is_static = true;
+        parser.advance();
+    }
+
+    // Parse size expression (or `*` for VLA)
+    let size = if parser.check(TokenKind::RightBracket) {
+        None
+    } else if parser.check(TokenKind::Star) && parser.peek_ahead(1).is(TokenKind::RightBracket) {
+        // [*] — VLA with unspecified size
+        parser.advance();
+        None
+    } else {
+        let size_expr = super::expressions::parse_assignment_expression(parser)?;
+        // Validate zero-length array extension
+        super::gcc_extensions::validate_zero_length_array(parser, &size_expr);
+        Some(Box::new(size_expr))
+    };
+
+    parser.expect(TokenKind::RightBracket)?;
+
+    Ok(DerivedDeclarator::Array {
+        size,
+        is_static,
+        qualifiers,
+    })
+}
+
+// =============================================================================
+// §4: Abstract Declarator and Type Name
+// =============================================================================
+
+/// Parse an abstract declarator — a declarator without a name.
+///
+/// Used in type names (casts, sizeof, _Generic, _Alignas, _Atomic),
+/// and in parameter declarations where the name is omitted.
+///
+/// # Grammar
+///
+/// ```text
+/// abstract-declarator: pointer | pointer? direct-abstract-declarator
+/// ```
+pub fn parse_abstract_declarator(
+    parser: &mut Parser<'_>,
+) -> Result<AbstractDeclarator, ParseError> {
+    let start = parser.current().span;
+    let mut derived: Vec<DerivedDeclarator> = Vec::new();
+
+    // Parse pointer derivations
+    while parser.check(TokenKind::Star) {
+        parser.advance();
+        let quals = parse_type_qualifier_list(parser);
+        derived.push(DerivedDeclarator::Pointer { qualifiers: quals });
+    }
+
+    // Parse direct abstract declarator (optional)
+    let end_span = parse_direct_abstract_declarator(parser, &mut derived)?;
+
+    let final_span = end_span.unwrap_or(start);
+    Ok(AbstractDeclarator {
+        derived,
+        span: Span::merge(start, final_span),
+    })
+}
+
+/// Parse the direct part of an abstract declarator.
+///
+/// ```text
+/// direct-abstract-declarator:
+///     ( abstract-declarator )
+///     direct-abstract-declarator? [ ... ]
+///     direct-abstract-declarator? ( parameter-type-list? )
+/// ```
+///
+/// Returns the span of the last parsed component, or `None` if nothing
+/// was parsed.
+fn parse_direct_abstract_declarator(
+    parser: &mut Parser<'_>,
+    derived: &mut Vec<DerivedDeclarator>,
+) -> Result<Option<Span>, ParseError> {
+    let mut last_span: Option<Span> = None;
+
+    // Check for grouped abstract declarator: ( abstract-declarator )
+    if parser.check(TokenKind::LeftParen) {
+        let next_kind = &parser.peek_ahead(1).kind;
+        // If next token is '*', '[', or '(' it's a grouped abstract declarator
+        let is_grouped = matches!(
+            next_kind,
+            TokenKind::Star | TokenKind::LeftBracket | TokenKind::LeftParen
+        );
+
+        if is_grouped {
+            parser.advance(); // consume '('
+            let inner = parse_abstract_declarator(parser)?;
+            let end = parser.expect(TokenKind::RightParen)?;
+            derived.extend(inner.derived);
+            last_span = Some(end);
+        }
+    }
+
+    // Parse postfix: [] and ()
+    loop {
+        match parser.current().kind {
+            TokenKind::LeftBracket => {
+                let arr = parse_array_declarator(parser)?;
+                derived.push(arr);
+                last_span = Some(parser.current().span);
+            }
+            TokenKind::LeftParen => {
+                // Disambiguate: is this another grouped abstract declarator
+                // or a function parameter list?
+                // In postfix position, '(' always starts a function parameter list.
+                let func = parse_function_declarator(parser)?;
+                derived.push(func);
+                last_span = Some(parser.current().span);
+            }
+            _ => break,
+        }
+    }
+
+    Ok(last_span)
+}
+
+/// Parse a type name — specifier-qualifier list plus optional abstract
+/// declarator.
+///
+/// Used in cast expressions, sizeof/alignof, compound literals, _Atomic,
+/// _Generic, and _Alignas.
+///
+/// # Grammar
+///
+/// ```text
+/// type-name: specifier-qualifier-list abstract-declarator?
+/// ```
+pub fn parse_type_name(parser: &mut Parser<'_>) -> Result<TypeName, ParseError> {
+    let start = parser.current().span;
+    let specifiers = parse_specifier_qualifier_list(parser)?;
+
+    let declarator = if can_start_abstract_declarator(parser) {
+        Some(parse_abstract_declarator(parser)?)
+    } else {
+        None
+    };
+
+    let end_span = declarator
+        .as_ref()
+        .map(|d| d.span)
+        .unwrap_or(specifiers.span);
+
+    Ok(TypeName {
+        specifiers,
+        declarator,
+        span: Span::merge(start, end_span),
+    })
+}
+
+/// Parse a specifier-qualifier list — type specifiers and qualifiers only,
+/// without storage class, function specifiers, or alignment.
+///
+/// Used in struct/union field declarations and type names.
+fn parse_specifier_qualifier_list(
+    parser: &mut Parser<'_>,
+) -> Result<SpecifierQualifierList, ParseError> {
+    let start = parser.current().span;
+    let mut specifiers: Vec<TypeSpecifier> = Vec::new();
+    let mut qualifiers = TypeQualifiers::default();
+    let mut last_span = start;
+    let mut count = 0usize;
+
+    loop {
+        match &parser.current().kind {
+            // Type specifier keywords
+            TokenKind::Void => {
+                specifiers.push(TypeSpecifier::Void);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Char => {
+                specifiers.push(TypeSpecifier::Char);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Short => {
+                specifiers.push(TypeSpecifier::Short);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Int => {
+                specifiers.push(TypeSpecifier::Int);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Long => {
+                specifiers.push(TypeSpecifier::Long);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Float => {
+                specifiers.push(TypeSpecifier::Float);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Double => {
+                specifiers.push(TypeSpecifier::Double);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Signed => {
+                specifiers.push(TypeSpecifier::Signed);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Unsigned => {
+                specifiers.push(TypeSpecifier::Unsigned);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Bool => {
+                specifiers.push(TypeSpecifier::Bool);
+                last_span = parser.advance();
+                count += 1;
+            }
+            TokenKind::Complex => {
+                specifiers.push(TypeSpecifier::Complex);
+                last_span = parser.advance();
+                count += 1;
             }
 
             // Type qualifiers
             TokenKind::Const => {
                 qualifiers.is_const = true;
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Volatile => {
                 qualifiers.is_volatile = true;
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Restrict => {
                 qualifiers.is_restrict = true;
                 last_span = parser.advance();
+                count += 1;
             }
             TokenKind::Atomic => {
-                qualifiers.is_atomic = true;
-                last_span = parser.advance();
+                if parser.peek_ahead(1).is(TokenKind::LeftParen) {
+                    let _atom = parser.advance(); // consume _Atomic
+                    parser.advance(); // consume (
+                    let inner_type = parse_type_name(parser)?;
+                    let end = parser.expect(TokenKind::RightParen)?;
+                    specifiers.push(TypeSpecifier::Atomic(Box::new(inner_type)));
+                    last_span = end;
+                    count += 1;
+                } else {
+                    qualifiers.is_atomic = true;
+                    last_span = parser.advance();
+                    count += 1;
+                }
             }
 
-            // Function specifiers
-            TokenKind::Inline => {
-                func_specs.is_inline = true;
-                last_span = parser.advance();
+            // Struct / Union / Enum
+            TokenKind::Struct => {
+                let spec = parse_struct_or_union_specifier(parser, true)?;
+                if let Some(sp) = type_specifier_span(&spec) {
+                    last_span = sp;
+                }
+                specifiers.push(spec);
+                count += 1;
             }
-            TokenKind::Noreturn => {
-                func_specs.is_noreturn = true;
-                last_span = parser.advance();
+            TokenKind::Union => {
+                let spec = parse_struct_or_union_specifier(parser, false)?;
+                if let Some(sp) = type_specifier_span(&spec) {
+                    last_span = sp;
+                }
+                specifiers.push(spec);
+                count += 1;
             }
-
-            // _Alignas
-            TokenKind::Alignas => {
-                let align = parse_alignas_specifier(parser)?;
-                alignment = Some(align);
+            TokenKind::Enum => {
+                let spec = parse_enum_specifier(parser)?;
+                if let Some(sp) = type_specifier_span(&spec) {
+                    last_span = sp;
+                }
+                specifiers.push(spec);
+                count += 1;
             }
 
             // typeof / __typeof__
             TokenKind::TypeofKeyword => {
                 let spec = parse_typeof_specifier(parser)?;
-                last_span = type_specifier_span(&spec).unwrap_or(last_span);
-                type_specifiers.push(spec);
+                if let Some(sp) = type_specifier_span(&spec) {
+                    last_span = sp;
+                }
+                specifiers.push(spec);
+                count += 1;
             }
 
-            // __attribute__
+            // GCC __attribute__
             TokenKind::Attribute => {
-                let mut new_attrs = super::attributes::parse_attribute_list(parser)?;
-                attrs.append(&mut new_attrs);
+                // In specifier-qualifier context, attributes are consumed but
+                // typically apply to the declared type rather than the specifiers.
+                let _attrs = super::attributes::parse_attribute_list(parser)?;
+                count += 1;
             }
 
             // __extension__
             TokenKind::Extension => {
-                has_extension = true;
                 last_span = parser.advance();
+                count += 1;
             }
 
-            // typedef name (an identifier previously registered as typedef)
-            TokenKind::Identifier(sym) => {
-                if type_specifiers.is_empty() && parser.is_typedef_name(sym) {
-                    let tspan = parser.current().span;
-                    type_specifiers.push(TypeSpecifier::TypedefName {
-                        name: sym,
-                        span: tspan,
-                    });
+            // Typedef name
+            TokenKind::Identifier(sym) if parser.is_typedef_name(*sym) => {
+                if specifiers.is_empty() {
+                    let name = *sym;
+                    let span = parser.current().span;
+                    specifiers.push(TypeSpecifier::TypedefName { name, span });
                     last_span = parser.advance();
+                    count += 1;
                 } else {
                     break;
                 }
@@ -345,250 +1165,203 @@ pub fn parse_declaration_specifiers(
         }
     }
 
-    let span = Span::merge(start, last_span);
-    Ok(DeclarationSpecifiers {
-        storage_class,
-        type_specifiers,
-        type_qualifiers: qualifiers,
-        function_specifiers: func_specs,
-        alignment,
-        attrs,
-        has_extension,
-        span,
-    })
-}
-
-// ===========================================================================
-// Declarators
-// ===========================================================================
-
-/// Parses a declarator: `pointer? direct-declarator`.
-pub fn parse_declarator(parser: &mut Parser<'_>) -> Result<Declarator, ParseError> {
-    let start = parser.current().span;
-    let mut derived: Vec<DerivedDeclarator> = Vec::new();
-
-    // Parse pointer derivations: `* [qualifiers] * [qualifiers] ...`
-    while parser.check(TokenKind::Star) {
-        parser.advance();
-        let quals = parse_type_qualifier_list(parser);
-        derived.push(DerivedDeclarator::Pointer { qualifiers: quals });
+    if count == 0 {
+        let span = parser.current().span;
+        let msg = format!(
+            "expected type specifier or qualifier, found '{}'",
+            parser.current().kind
+        );
+        parser.diagnostics.error(span, &msg);
+        return Err(ParseError {
+            span,
+            message: msg,
+            expected: Some("type specifier".to_string()),
+        });
     }
 
-    // Parse direct declarator
-    let (name, mut postfix_derived) = parse_direct_declarator(parser)?;
-
-    // Combine: pointer derivations come first, then postfix (array/function)
-    derived.append(&mut postfix_derived);
-
-    // Trailing attributes
-    let attrs = if parser.check(TokenKind::Attribute) {
-        super::attributes::parse_attribute_list(parser)?
-    } else {
-        Vec::new()
-    };
-
-    let end = parser.current().span;
-    let span = Span::merge(start, end);
-
-    Ok(Declarator {
-        name,
-        derived,
-        attrs,
-        span,
+    Ok(SpecifierQualifierList {
+        specifiers,
+        qualifiers,
+        span: Span::merge(start, last_span),
     })
 }
 
-/// Parses a direct declarator: `identifier | '(' declarator ')' |
-/// direct-declarator '[' ... ']' | direct-declarator '(' ... ')'`.
+// =============================================================================
+// §5: Parameter Lists
+// =============================================================================
+
+/// Parse a parameter type list (without enclosing parentheses).
 ///
-/// Returns the identifier (if any) and accumulated postfix derivations.
-fn parse_direct_declarator(
+/// # Grammar
+///
+/// ```text
+/// parameter-type-list: parameter-list | parameter-list , ...
+/// parameter-list: parameter-declaration | parameter-list , parameter-declaration
+/// ```
+pub fn parse_parameter_type_list(
     parser: &mut Parser<'_>,
-) -> Result<(Option<Symbol>, Vec<DerivedDeclarator>), ParseError> {
-    let mut name: Option<Symbol> = None;
-    let mut derived: Vec<DerivedDeclarator> = Vec::new();
+) -> Result<ParameterList, ParseError> {
+    let start = parser.current().span;
+    let mut params: Vec<Parameter> = Vec::new();
+    let mut variadic = false;
 
-    // Identifier or parenthesized declarator
-    match &parser.current().kind {
-        TokenKind::Identifier(sym) => {
-            name = Some(*sym);
+    // Handle void parameter: (void) means no parameters
+    if parser.check(TokenKind::Void) && parser.peek_ahead(1).is(TokenKind::RightParen) {
+        let void_span = parser.advance();
+        return Ok(ParameterList {
+            params: vec![],
+            variadic: false,
+            span: Span::merge(start, void_span),
+        });
+    }
+
+    // Parse first parameter
+    if !parser.check(TokenKind::RightParen) && !parser.check(TokenKind::Ellipsis) {
+        let param = parse_parameter_declaration(parser)?;
+        params.push(param);
+    }
+
+    // Parse remaining parameters
+    while parser.eat(TokenKind::Comma) {
+        if parser.check(TokenKind::Ellipsis) {
+            variadic = true;
             parser.advance();
+            break;
         }
-        TokenKind::LeftParen => {
-            // Could be a function parameter list or a grouped declarator.
-            // Heuristic: if the next token after `(` is a `*` or is another `(`,
-            // or is an identifier that is not a declaration start, treat as grouped.
-            if matches!(parser.peek_ahead(1).kind, TokenKind::Star) {
-                parser.advance(); // consume `(`
-                let inner = parse_declarator(parser)?;
-                parser.expect(TokenKind::RightParen)?;
-                name = inner.name;
-                // The inner's derived modifiers are "inner" — they should be
-                // applied inside any postfix derivations we parse next.
-                // For simplicity in this initial implementation, we prepend them.
-                derived.extend(inner.derived);
-            }
-            // Otherwise, fall through — no name, postfix will pick up params
-        }
-        _ => {
-            // Abstract declarator (no name) — valid in parameter declarations
-        }
+        let param = parse_parameter_declaration(parser)?;
+        params.push(param);
     }
 
-    // Postfix: array subscripts and function parameter lists
-    loop {
-        match parser.current().kind {
-            TokenKind::LeftBracket => {
-                let arr = parse_array_declarator(parser)?;
-                derived.push(arr);
-            }
-            TokenKind::LeftParen => {
-                let func = parse_function_declarator(parser)?;
-                derived.push(func);
-            }
-            _ => break,
-        }
+    // Handle standalone ellipsis (old-style variadic)
+    if !variadic && parser.check(TokenKind::Ellipsis) {
+        variadic = true;
+        parser.advance();
     }
 
-    Ok((name, derived))
-}
-
-/// Parses an array declarator: `[ expression? ]` or `[ static expression ]`
-/// or `[ * ]`.
-fn parse_array_declarator(parser: &mut Parser<'_>) -> Result<DerivedDeclarator, ParseError> {
-    parser.expect(TokenKind::LeftBracket)?;
-
-    let quals = parse_type_qualifier_list(parser);
-    let mut is_static = false;
-
-    if parser.eat(TokenKind::Static) {
-        is_static = true;
-    }
-
-    let size = if parser.check(TokenKind::RightBracket) {
-        None
-    } else if parser.check(TokenKind::Star) {
-        parser.advance(); // VLA: [*]
-        None
+    let last_span = if let Some(last) = params.last() {
+        last.span
     } else {
-        // Check for zero-length array (GCC extension)
-        let expr = super::expressions::parse_assignment_expression(parser)?;
-        super::gcc_extensions::validate_zero_length_array(parser, &expr);
-        Some(Box::new(expr))
+        start
     };
 
-    parser.expect(TokenKind::RightBracket)?;
-
-    Ok(DerivedDeclarator::Array {
-        size,
-        is_static,
-        qualifiers: quals,
+    Ok(ParameterList {
+        params,
+        variadic,
+        span: Span::merge(start, last_span),
     })
 }
 
-/// Parses a function declarator: `( parameter-type-list )` or
-/// `( identifier-list? )`.
+/// Parse a function declarator: `( parameter-type-list )`
+///
+/// Handles:
+/// - `(void)` — no parameters
+/// - `(int x, int y)` — named parameters
+/// - `(int, int)` — unnamed parameters
+/// - `(int x, ...)` — variadic
+/// - `()` — unspecified parameters (K&R style)
 pub(super) fn parse_function_declarator(
     parser: &mut Parser<'_>,
 ) -> Result<DerivedDeclarator, ParseError> {
-    let start = parser.expect(TokenKind::LeftParen)?;
+    let start = parser.current().span;
+    parser.expect(TokenKind::LeftParen)?;
 
     // Empty parameter list: ()
     if parser.check(TokenKind::RightParen) {
         let end = parser.advance();
-        let span = Span::merge(start, end);
         return Ok(DerivedDeclarator::Function {
             params: ParameterList {
-                params: Vec::new(),
+                params: vec![],
                 variadic: false,
-                span,
+                span: Span::merge(start, end),
             },
         });
     }
 
-    // (void) — explicitly no parameters
-    if parser.check(TokenKind::Void) && parser.peek_ahead(1).kind == TokenKind::RightParen {
-        parser.advance(); // consume `void`
-        let end = parser.advance(); // consume `)`
-        let span = Span::merge(start, end);
-        return Ok(DerivedDeclarator::Function {
-            params: ParameterList {
-                params: Vec::new(),
-                variadic: false,
-                span,
-            },
-        });
-    }
-
-    // Parse parameter list
-    let mut params = Vec::new();
-    let mut variadic = false;
-
-    loop {
-        if parser.check(TokenKind::Ellipsis) {
-            parser.advance();
-            variadic = true;
-            break;
-        }
-
-        let param = parse_parameter_declaration(parser)?;
-        params.push(param);
-
-        if !parser.eat(TokenKind::Comma) {
-            break;
-        }
-
-        // After comma, check for `...`
-        if parser.check(TokenKind::Ellipsis) {
-            parser.advance();
-            variadic = true;
-            break;
-        }
-    }
-
+    let mut param_list = parse_parameter_type_list(parser)?;
     let end = parser.expect(TokenKind::RightParen)?;
-    let span = Span::merge(start, end);
+    param_list.span = Span::merge(start, end);
+
+    // Collect trailing attributes after the function declarator
+    if parser.check(TokenKind::Attribute) {
+        let _attrs = super::attributes::parse_attribute_list(parser)?;
+        // Attributes after function declarator are typically applied to the
+        // function type itself; they are consumed here but the caller may
+        // need to handle them.
+    }
 
     Ok(DerivedDeclarator::Function {
-        params: ParameterList {
-            params,
-            variadic,
-            span,
-        },
+        params: param_list,
     })
 }
 
-/// Parses a single parameter declaration: `declaration-specifiers declarator?`.
+/// Parse a single parameter declaration.
+///
+/// # Grammar
+///
+/// ```text
+/// parameter-declaration:
+///     declaration-specifiers declarator
+///     declaration-specifiers abstract-declarator?
+/// ```
 fn parse_parameter_declaration(parser: &mut Parser<'_>) -> Result<Parameter, ParseError> {
     let start = parser.current().span;
     let specifiers = parse_declaration_specifiers(parser)?;
 
-    // Optional declarator (may be abstract, may be omitted)
+    // Try to parse a declarator. The tricky part is distinguishing between
+    // a named declarator and an abstract declarator (no name).
     let declarator = if parser.check(TokenKind::Comma)
         || parser.check(TokenKind::RightParen)
         || parser.check(TokenKind::Ellipsis)
     {
+        // No declarator follows — abstract declarator omitted
         None
+    } else if can_start_abstract_declarator(parser)
+        && !matches!(&parser.current().kind, TokenKind::Identifier(sym) if !parser.is_typedef_name(*sym))
+    {
+        // Looks like an abstract declarator (starts with *, (, or [)
+        // but not a plain identifier (which would be a named declarator)
+        let abs = parse_abstract_declarator(parser)?;
+        Some(Declarator {
+            name: None,
+            derived: abs.derived,
+            attrs: vec![],
+            span: abs.span,
+        })
     } else {
-        Some(parse_declarator(parser)?)
+        // Try named declarator
+        match parse_declarator(parser) {
+            Ok(decl) => Some(decl),
+            Err(_) => None,
+        }
     };
 
-    let end_span = declarator.as_ref().map_or(specifiers.span, |d| d.span);
-    let span = Span::merge(start, end_span);
+    let end_span = declarator
+        .as_ref()
+        .map(|d| d.span)
+        .unwrap_or(specifiers.span);
 
     Ok(Parameter {
         specifiers,
         declarator,
-        span,
+        span: Span::merge(start, end_span),
     })
 }
 
-// ===========================================================================
-// Initializers
-// ===========================================================================
+// =============================================================================
+// §6: Initializers
+// =============================================================================
 
-/// Parses an initializer: `= expression` or `= { initializer-list }`.
-fn parse_initializer(parser: &mut Parser<'_>) -> Result<Initializer, ParseError> {
+/// Parse an initializer expression or brace-enclosed initializer list.
+///
+/// # Grammar
+///
+/// ```text
+/// initializer:
+///     assignment-expression
+///     { initializer-list }
+///     { initializer-list , }
+/// ```
+pub fn parse_initializer(parser: &mut Parser<'_>) -> Result<Initializer, ParseError> {
     if parser.check(TokenKind::LeftBrace) {
         parse_brace_initializer(parser)
     } else {
@@ -597,43 +1370,382 @@ fn parse_initializer(parser: &mut Parser<'_>) -> Result<Initializer, ParseError>
     }
 }
 
-/// Parses a brace-enclosed initializer list: `{ item, item, ... }`.
+/// Parse a brace-enclosed initializer list: `{ initializer-list [,] }`
+///
+/// Supports designated initializers:
+/// - `.field = value` (struct field designator)
+/// - `[index] = value` (array index designator)
+/// - Nested designators: `.field.subfield = value`
 fn parse_brace_initializer(parser: &mut Parser<'_>) -> Result<Initializer, ParseError> {
-    let start = parser.expect(TokenKind::LeftBrace)?;
+    let start = parser.current().span;
+    parser.expect(TokenKind::LeftBrace)?;
+
     let mut items: Vec<InitializerItem> = Vec::new();
 
-    while !parser.check(TokenKind::RightBrace) && !parser.at_end() {
-        let item_start = parser.current().span;
-        let mut designators = Vec::new();
+    // Handle empty initializer: {}
+    if parser.check(TokenKind::RightBrace) {
+        let end = parser.advance();
+        return Ok(Initializer::List {
+            items,
+            span: Span::merge(start, end),
+        });
+    }
 
-        // Parse designators: `.field` or `[index]`
+    loop {
+        if parser.check(TokenKind::RightBrace) || parser.at_end() {
+            break;
+        }
+
+        let item_start = parser.current().span;
+        let mut designators: Vec<Designator> = Vec::new();
+
+        // Parse designator chain: .field, [index], or nested
         while parser.check(TokenKind::Dot) || parser.check(TokenKind::LeftBracket) {
-            if parser.eat(TokenKind::Dot) {
-                // Field designator: `.field`
-                let field = expect_identifier(parser, "designator field name")?;
-                designators.push(super::ast::Designator::Field(field));
+            if parser.check(TokenKind::Dot) {
+                parser.advance(); // consume '.'
+                let field_name = expect_identifier(parser, "designator")?;
+                designators.push(Designator::Field(field_name));
             } else {
-                // Array index designator: `[expr]`
-                parser.advance(); // consume `[`
-                let index = super::expressions::parse_conditional_expression(parser)?;
+                // [index]
+                parser.advance(); // consume '['
+                let index_expr = super::expressions::parse_constant_expression(parser)?;
                 parser.expect(TokenKind::RightBracket)?;
-                designators.push(super::ast::Designator::Index(Box::new(index)));
+                designators.push(Designator::Index(Box::new(index_expr)));
             }
         }
 
-        // After designators, expect `=`
+        // Consume '=' after designators (required if designators present)
         if !designators.is_empty() {
             parser.expect(TokenKind::Assign)?;
         }
 
-        let init = parse_initializer(parser)?;
-        let item_end = parser.current().span;
-        let item_span = Span::merge(item_start, item_end);
+        // Parse the initializer value
+        let initializer = parse_initializer(parser)?;
+        let item_end = match &initializer {
+            Initializer::Expression(_) => item_start, // approximate span
+            Initializer::List { span, .. } => *span,
+        };
 
         items.push(InitializerItem {
             designators,
-            initializer: init,
-            span: item_span,
+            initializer,
+            span: Span::merge(item_start, item_end),
+        });
+
+        // Trailing comma is optional; eat it if present
+        if !parser.eat(TokenKind::Comma) {
+            break;
+        }
+    }
+
+    let end = parser.expect(TokenKind::RightBrace)?;
+    Ok(Initializer::List {
+        items,
+        span: Span::merge(start, end),
+    })
+}
+
+// =============================================================================
+// §7: Struct / Union Parsing
+// =============================================================================
+
+/// Parse a struct or union as a standalone declaration.
+///
+/// Expects the current token to be `struct` or `union`. Returns:
+/// - `Declaration::StructDef` / `Declaration::UnionDef` for definitions
+/// - `Declaration::Variable` with tag specifier for forward references
+///
+/// This is a public convenience entry point. For use within declaration
+/// specifiers, `parse_struct_or_union_specifier` is called internally.
+pub fn parse_struct_or_union(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
+    let start = parser.current().span;
+    let is_struct = match parser.current().kind {
+        TokenKind::Struct => true,
+        TokenKind::Union => false,
+        _ => {
+            let span = parser.current().span;
+            let msg = format!("expected 'struct' or 'union', found '{}'", parser.current().kind);
+            parser.diagnostics.error(span, &msg);
+            return Err(ParseError {
+                span,
+                message: msg,
+                expected: Some("struct or union".to_string()),
+            });
+        }
+    };
+
+    let spec = parse_struct_or_union_specifier(parser, is_struct)?;
+
+    // Collect trailing attributes
+    let trailing_attrs = if parser.check(TokenKind::Attribute) {
+        super::attributes::parse_attribute_list(parser)?
+    } else {
+        vec![]
+    };
+
+    // Determine which Declaration variant to produce
+    match spec {
+        TypeSpecifier::Struct {
+            name,
+            fields: Some(f),
+            attrs: tag_attrs,
+            span,
+        } => {
+            let mut all_attrs = tag_attrs;
+            all_attrs.extend(trailing_attrs);
+            Ok(Declaration::StructDef {
+                name,
+                fields: f,
+                attrs: all_attrs,
+                span: Span::merge(start, span),
+            })
+        }
+        TypeSpecifier::Union {
+            name,
+            fields: Some(f),
+            attrs: tag_attrs,
+            span,
+        } => {
+            let mut all_attrs = tag_attrs;
+            all_attrs.extend(trailing_attrs);
+            Ok(Declaration::UnionDef {
+                name,
+                fields: f,
+                attrs: all_attrs,
+                span: Span::merge(start, span),
+            })
+        }
+        _ => {
+            // Forward reference — wrap as variable declaration
+            let end_span = type_specifier_span(&spec).unwrap_or(start);
+            let specifiers = DeclarationSpecifiers {
+                storage_class: None,
+                type_specifiers: vec![spec],
+                type_qualifiers: TypeQualifiers::default(),
+                function_specifiers: FunctionSpecifiers::default(),
+                alignment: None,
+                attrs: vec![],
+                has_extension: false,
+                span: Span::merge(start, end_span),
+            };
+            Ok(Declaration::Variable {
+                specifiers,
+                declarators: vec![],
+                attrs: trailing_attrs,
+                span: Span::merge(start, end_span),
+            })
+        }
+    }
+}
+
+/// Parse a struct or union type specifier.
+///
+/// # Grammar
+///
+/// ```text
+/// struct-or-union-specifier:
+///     struct-or-union attributes? identifier? { struct-declaration-list }
+///     struct-or-union attributes? identifier
+/// ```
+///
+/// `is_struct` — `true` for `struct`, `false` for `union`.
+pub(super) fn parse_struct_or_union_specifier(
+    parser: &mut Parser<'_>,
+    is_struct: bool,
+) -> Result<TypeSpecifier, ParseError> {
+    let start = parser.current().span;
+    // Consume 'struct' or 'union' keyword
+    parser.advance();
+
+    // Optional attributes before the tag name
+    let mut tag_attrs = if parser.check(TokenKind::Attribute) {
+        super::attributes::parse_attribute_list(parser)?
+    } else {
+        vec![]
+    };
+
+    // Optional tag name
+    let name = if parser.check(TokenKind::Identifier(Symbol::EMPTY)) {
+        Some(expect_identifier(parser, "struct/union tag")?)
+    } else {
+        None
+    };
+
+    // Optional attributes after the tag name
+    if parser.check(TokenKind::Attribute) {
+        tag_attrs.extend(super::attributes::parse_attribute_list(parser)?);
+    }
+
+    // Field list: { struct-declaration-list }
+    let fields = if parser.check(TokenKind::LeftBrace) {
+        parser.advance(); // consume '{'
+        let mut field_list: Vec<FieldDeclaration> = Vec::new();
+
+        while !parser.check(TokenKind::RightBrace) && !parser.at_end() {
+            match parse_struct_field(parser) {
+                Ok(field) => field_list.push(field),
+                Err(_) => {
+                    // Error recovery: skip to next field or closing brace
+                    parser.synchronize();
+                    if parser.check(TokenKind::Semicolon) {
+                        parser.advance();
+                    }
+                }
+            }
+        }
+        let end = parser.expect(TokenKind::RightBrace)?;
+
+        // Validate flexible array member if present
+        if is_struct && !field_list.is_empty() {
+            let temp_decl = Declaration::StructDef {
+                name,
+                fields: field_list.clone(),
+                attrs: tag_attrs.clone(),
+                span: Span::merge(start, end),
+            };
+            super::gcc_extensions::validate_flexible_array_member(parser, &temp_decl);
+        }
+
+        Some(field_list)
+    } else {
+        // Forward reference: must have a name
+        if name.is_none() {
+            let span = parser.current().span;
+            let tag = if is_struct { "struct" } else { "union" };
+            parser
+                .diagnostics
+                .error(span, &format!("{tag} without name or body"));
+        }
+        None
+    };
+
+    let end_span = parser.current().span;
+    if is_struct {
+        Ok(TypeSpecifier::Struct {
+            name,
+            fields,
+            attrs: tag_attrs,
+            span: Span::merge(start, end_span),
+        })
+    } else {
+        Ok(TypeSpecifier::Union {
+            name,
+            fields,
+            attrs: tag_attrs,
+            span: Span::merge(start, end_span),
+        })
+    }
+}
+
+/// Parse a single struct or union field declaration.
+///
+/// # Grammar
+///
+/// ```text
+/// struct-declaration:
+///     specifier-qualifier-list struct-declarator-list? ;
+///     _Static_assert-declaration
+/// ```
+///
+/// Supports:
+/// - Regular fields: `int x;`
+/// - Bitfields: `unsigned int flags : 3;`
+/// - Anonymous bitfields: `int : 5;`
+/// - Anonymous struct/union members (C11): `struct { int x; };`
+/// - GCC attributes on fields
+fn parse_struct_field(parser: &mut Parser<'_>) -> Result<FieldDeclaration, ParseError> {
+    let start = parser.current().span;
+
+    // Handle _Static_assert inside struct (C11 §6.7.2.1)
+    if parser.check(TokenKind::StaticAssert) {
+        // _Static_assert inside a struct — parse and wrap as a field with
+        // empty declarators. The actual assertion is handled at semantic level.
+        let _sa = parse_static_assert(parser)?;
+        return Ok(FieldDeclaration {
+            specifiers: DeclarationSpecifiers {
+                storage_class: None,
+                type_specifiers: vec![],
+                type_qualifiers: TypeQualifiers::default(),
+                function_specifiers: FunctionSpecifiers::default(),
+                alignment: None,
+                attrs: vec![],
+                has_extension: false,
+                span: start,
+            },
+            declarators: vec![],
+            attrs: vec![],
+            span: Span::merge(start, parser.current().span),
+        });
+    }
+
+    // Parse specifier-qualifier-list
+    let spec_quals = parse_specifier_qualifier_list(parser)?;
+    let specifiers = DeclarationSpecifiers {
+        storage_class: None,
+        type_specifiers: spec_quals.specifiers,
+        type_qualifiers: spec_quals.qualifiers,
+        function_specifiers: FunctionSpecifiers::default(),
+        alignment: None,
+        attrs: vec![],
+        has_extension: false,
+        span: spec_quals.span,
+    };
+
+    // Check for anonymous struct/union member (C11): just specifiers followed by ';'
+    if parser.check(TokenKind::Semicolon) {
+        let end = parser.advance();
+        return Ok(FieldDeclaration {
+            specifiers,
+            declarators: vec![],
+            attrs: vec![],
+            span: Span::merge(start, end),
+        });
+    }
+
+    // Parse field declarator list
+    let mut declarators: Vec<FieldDeclarator> = Vec::new();
+
+    loop {
+        let field_start = parser.current().span;
+
+        // Optional declarator (absent for anonymous bitfields like `int : 5;`)
+        let declarator = if parser.check(TokenKind::Colon) {
+            None
+        } else {
+            match parse_declarator(parser) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    // If we can't parse a declarator, try bitfield
+                    if parser.check(TokenKind::Colon) {
+                        None
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
+        };
+
+        // Optional bitfield width: `: constant-expression`
+        let bit_width = if parser.eat(TokenKind::Colon) {
+            Some(Box::new(
+                super::expressions::parse_constant_expression(parser)?,
+            ))
+        } else {
+            None
+        };
+
+        // Optional attributes on the field declarator
+        let _field_attrs = if parser.check(TokenKind::Attribute) {
+            super::attributes::parse_attribute_list(parser)?
+        } else {
+            vec![]
+        };
+
+        let field_end = parser.current().span;
+        declarators.push(FieldDeclarator {
+            declarator,
+            bit_width,
+            span: Span::merge(field_start, field_end),
         });
 
         if !parser.eat(TokenKind::Comma) {
@@ -641,262 +1753,226 @@ fn parse_brace_initializer(parser: &mut Parser<'_>) -> Result<Initializer, Parse
         }
     }
 
-    let end = parser.expect(TokenKind::RightBrace)?;
-    let span = Span::merge(start, end);
-    Ok(Initializer::List { items, span })
-}
-
-// ===========================================================================
-// Struct / Union / Enum specifiers
-// ===========================================================================
-
-/// Parses a struct-or-union specifier.
-///
-/// ```text
-/// struct-or-union-specifier:
-///     struct-or-union identifier? { struct-declaration-list }
-///     struct-or-union identifier
-/// ```
-pub(super) fn parse_struct_or_union_specifier(
-    parser: &mut Parser<'_>,
-    is_struct: bool,
-) -> Result<TypeSpecifier, ParseError> {
-    let start = parser.advance(); // consume `struct` or `union`
-
-    // Optional attributes after struct/union keyword
-    let attrs = if parser.check(TokenKind::Attribute) {
+    // Collect trailing attributes on the field declaration
+    let field_attrs = if parser.check(TokenKind::Attribute) {
         super::attributes::parse_attribute_list(parser)?
     } else {
-        Vec::new()
+        vec![]
     };
 
-    // Optional tag name
-    let name = if let TokenKind::Identifier(sym) = &parser.current().kind {
-        let sym = *sym;
-        parser.advance();
-        Some(sym)
-    } else {
-        None
-    };
-
-    // Definition body?
-    if parser.check(TokenKind::LeftBrace) {
-        parser.advance(); // consume `{`
-        let mut fields = Vec::new();
-
-        while !parser.check(TokenKind::RightBrace) && !parser.at_end() {
-            match parse_struct_field(parser) {
-                Ok(field) => fields.push(field),
-                Err(e) => {
-                    parser.diagnostics.error(e.span, &e.message);
-                    parser.synchronize();
-                }
-            }
-        }
-
-        let end = parser.expect(TokenKind::RightBrace)?;
-        let span = Span::merge(start, end);
-
-        if is_struct {
-            Ok(TypeSpecifier::Struct {
-                name,
-                fields: Some(fields),
-                attrs,
-                span,
-            })
-        } else {
-            Ok(TypeSpecifier::Union {
-                name,
-                fields: Some(fields),
-                attrs,
-                span,
-            })
-        }
-    } else {
-        // Forward reference: `struct foo`
-        if name.is_none() {
-            let span = parser.current().span;
-            let msg = "expected identifier or '{' after struct/union keyword".to_string();
-            parser.diagnostics.error(span, &msg);
-            return Err(ParseError {
-                span,
-                message: msg,
-                expected: Some("identifier or '{'".to_string()),
-            });
-        }
-        let span = Span::merge(start, parser.current().span);
-        if is_struct {
-            Ok(TypeSpecifier::Struct {
-                name,
-                fields: None,
-                attrs,
-                span,
-            })
-        } else {
-            Ok(TypeSpecifier::Union {
-                name,
-                fields: None,
-                attrs,
-                span,
-            })
-        }
-    }
-}
-
-/// Parses a single struct/union field declaration.
-fn parse_struct_field(parser: &mut Parser<'_>) -> Result<FieldDeclaration, ParseError> {
-    let start = parser.current().span;
-    let specifiers = parse_declaration_specifiers(parser)?;
-    let mut declarators = Vec::new();
-
-    // Parse declarator list (may include bitfield widths)
-    if !parser.check(TokenKind::Semicolon) {
-        loop {
-            let decl_start = parser.current().span;
-            let declarator = if parser.check(TokenKind::Colon) {
-                // Anonymous bitfield
-                None
-            } else {
-                Some(parse_declarator(parser)?)
-            };
-
-            let bitfield_width = if parser.eat(TokenKind::Colon) {
-                Some(Box::new(super::expressions::parse_conditional_expression(
-                    parser,
-                )?))
-            } else {
-                None
-            };
-
-            let decl_end = parser.current().span;
-            let decl_span = Span::merge(decl_start, decl_end);
-
-            declarators.push(FieldDeclarator {
-                declarator,
-                bit_width: bitfield_width,
-                span: decl_span,
-            });
-
-            if !parser.eat(TokenKind::Comma) {
-                break;
-            }
-        }
-    }
-
-    let end = parser.expect_semicolon()?;
-    let span = Span::merge(start, end);
-
+    let end = parser.expect(TokenKind::Semicolon)?;
     Ok(FieldDeclaration {
         specifiers,
         declarators,
-        attrs: Vec::new(),
-        span,
+        attrs: field_attrs,
+        span: Span::merge(start, end),
     })
 }
 
-/// Parses an enum specifier.
+// =============================================================================
+// §8: Enum Parsing
+// =============================================================================
+
+/// Parse an enum as a standalone declaration.
+///
+/// Expects the current token to be `enum`. Returns:
+/// - `Declaration::EnumDef` for definitions with enumerator list
+/// - `Declaration::Variable` for forward references
+pub fn parse_enum(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
+    let start = parser.current().span;
+
+    if !parser.check(TokenKind::Enum) {
+        let span = parser.current().span;
+        let msg = format!("expected 'enum', found '{}'", parser.current().kind);
+        parser.diagnostics.error(span, &msg);
+        return Err(ParseError {
+            span,
+            message: msg,
+            expected: Some("enum".to_string()),
+        });
+    }
+
+    let spec = parse_enum_specifier(parser)?;
+
+    // Collect trailing attributes
+    let trailing_attrs = if parser.check(TokenKind::Attribute) {
+        super::attributes::parse_attribute_list(parser)?
+    } else {
+        vec![]
+    };
+
+    match spec {
+        TypeSpecifier::Enum {
+            name,
+            enumerators: Some(e),
+            attrs: tag_attrs,
+            span,
+        } => {
+            let mut all_attrs = tag_attrs;
+            all_attrs.extend(trailing_attrs);
+            Ok(Declaration::EnumDef {
+                name,
+                enumerators: e,
+                attrs: all_attrs,
+                span: Span::merge(start, span),
+            })
+        }
+        _ => {
+            let end_span = type_specifier_span(&spec).unwrap_or(start);
+            let specifiers = DeclarationSpecifiers {
+                storage_class: None,
+                type_specifiers: vec![spec],
+                type_qualifiers: TypeQualifiers::default(),
+                function_specifiers: FunctionSpecifiers::default(),
+                alignment: None,
+                attrs: vec![],
+                has_extension: false,
+                span: Span::merge(start, end_span),
+            };
+            Ok(Declaration::Variable {
+                specifiers,
+                declarators: vec![],
+                attrs: trailing_attrs,
+                span: Span::merge(start, end_span),
+            })
+        }
+    }
+}
+
+/// Parse an enum type specifier.
+///
+/// # Grammar
 ///
 /// ```text
 /// enum-specifier:
-///     'enum' identifier? { enumerator-list }
-///     'enum' identifier
+///     enum attributes? identifier? { enumerator-list [,] }
+///     enum attributes? identifier
 /// ```
-pub(super) fn parse_enum_specifier(parser: &mut Parser<'_>) -> Result<TypeSpecifier, ParseError> {
-    let start = parser.advance(); // consume `enum`
+pub(super) fn parse_enum_specifier(
+    parser: &mut Parser<'_>,
+) -> Result<TypeSpecifier, ParseError> {
+    let start = parser.current().span;
+    parser.expect(TokenKind::Enum)?;
 
-    let attrs = if parser.check(TokenKind::Attribute) {
+    // Optional attributes before tag name
+    let mut tag_attrs = if parser.check(TokenKind::Attribute) {
         super::attributes::parse_attribute_list(parser)?
     } else {
-        Vec::new()
+        vec![]
     };
 
-    let name = if let TokenKind::Identifier(sym) = &parser.current().kind {
-        let sym = *sym;
-        parser.advance();
-        Some(sym)
+    // Optional tag name
+    let name = if parser.check(TokenKind::Identifier(Symbol::EMPTY)) {
+        Some(expect_identifier(parser, "enum tag")?)
     } else {
         None
     };
 
-    if parser.check(TokenKind::LeftBrace) {
-        parser.advance(); // consume `{`
-        let mut enumerators = Vec::new();
+    // Optional attributes after tag name
+    if parser.check(TokenKind::Attribute) {
+        tag_attrs.extend(super::attributes::parse_attribute_list(parser)?);
+    }
+
+    // Enumerator list: { enumerator-list [,] }
+    let enumerators = if parser.check(TokenKind::LeftBrace) {
+        parser.advance(); // consume '{'
+        let mut enum_list: Vec<Enumerator> = Vec::new();
 
         while !parser.check(TokenKind::RightBrace) && !parser.at_end() {
-            let e = parse_enumerator(parser)?;
-            enumerators.push(e);
+            match parse_enumerator(parser) {
+                Ok(e) => enum_list.push(e),
+                Err(_) => {
+                    parser.synchronize();
+                    if parser.check(TokenKind::Comma) {
+                        parser.advance();
+                    }
+                }
+            }
+
+            // Trailing comma is optional
             if !parser.eat(TokenKind::Comma) {
                 break;
             }
         }
 
-        let end = parser.expect(TokenKind::RightBrace)?;
-        let span = Span::merge(start, end);
-
-        Ok(TypeSpecifier::Enum {
-            name,
-            enumerators: Some(enumerators),
-            attrs,
-            span,
-        })
+        parser.expect(TokenKind::RightBrace)?;
+        Some(enum_list)
     } else {
         if name.is_none() {
             let span = parser.current().span;
-            let msg = "expected identifier or '{' after 'enum'".to_string();
-            parser.diagnostics.error(span, &msg);
-            return Err(ParseError {
-                span,
-                message: msg,
-                expected: Some("identifier or '{'".to_string()),
-            });
+            parser
+                .diagnostics
+                .error(span, "enum without name or body");
         }
-        let span = Span::merge(start, parser.current().span);
-        Ok(TypeSpecifier::Enum {
-            name,
-            enumerators: None,
-            attrs,
-            span,
-        })
-    }
+        None
+    };
+
+    let end_span = parser.current().span;
+    Ok(TypeSpecifier::Enum {
+        name,
+        enumerators,
+        attrs: tag_attrs,
+        span: Span::merge(start, end_span),
+    })
 }
 
-/// Parses a single enumerator: `identifier [= constant-expression]`.
+/// Parse a single enumerator: `identifier [= constant-expression]`
 fn parse_enumerator(parser: &mut Parser<'_>) -> Result<Enumerator, ParseError> {
     let start = parser.current().span;
-    let name = expect_identifier(parser, "enumerator name")?;
+    let name = expect_identifier(parser, "enumerator")?;
 
+    // Optional attributes on enumerator
+    let attrs = if parser.check(TokenKind::Attribute) {
+        super::attributes::parse_attribute_list(parser)?
+    } else {
+        vec![]
+    };
+
+    // Optional explicit value: = constant-expression
     let value = if parser.eat(TokenKind::Assign) {
-        Some(Box::new(super::expressions::parse_conditional_expression(
-            parser,
-        )?))
+        Some(Box::new(
+            super::expressions::parse_constant_expression(parser)?,
+        ))
     } else {
         None
     };
 
-    let end = parser.current().span;
-    let span = Span::merge(start, end);
-
+    let end_span = parser.current().span;
     Ok(Enumerator {
         name,
         value,
-        attrs: Vec::new(),
-        span,
+        attrs,
+        span: Span::merge(start, end_span),
     })
 }
 
-// ===========================================================================
-// _Static_assert, _Alignas, typeof
-// ===========================================================================
+// =============================================================================
+// §9: _Static_assert
+// =============================================================================
 
-/// Parses `_Static_assert(condition, message);`.
-fn parse_static_assert(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
-    let start = parser.advance(); // consume `_Static_assert`
+/// Parse a `_Static_assert` declaration.
+///
+/// # Grammar
+///
+/// ```text
+/// _Static_assert ( constant-expression , string-literal ) ;
+/// ```
+///
+/// The condition must be an integer constant expression. If it evaluates
+/// to zero at compile time, the compiler emits an error including the
+/// message string.
+pub fn parse_static_assert(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
+    let start = parser.current().span;
+    parser.expect(TokenKind::StaticAssert)?;
     parser.expect(TokenKind::LeftParen)?;
-    let condition = super::expressions::parse_conditional_expression(parser)?;
+
+    // Parse the constant expression condition
+    let condition = super::expressions::parse_constant_expression(parser)?;
+
     parser.expect(TokenKind::Comma)?;
 
-    // Message must be a string literal
-    let message = match &parser.current().kind {
+    // Parse the string literal message — must produce Vec<u8> for PUA fidelity
+    let message: Vec<u8> = match &parser.current().kind {
         TokenKind::StringLiteral { value, .. } => {
             let val = value.clone();
             parser.advance();
@@ -904,7 +1980,10 @@ fn parse_static_assert(parser: &mut Parser<'_>) -> Result<Declaration, ParseErro
         }
         _ => {
             let span = parser.current().span;
-            let msg = "expected string literal in _Static_assert".to_string();
+            let msg = format!(
+                "expected string literal in _Static_assert, found '{}'",
+                parser.current().kind
+            );
             parser.diagnostics.error(span, &msg);
             return Err(ParseError {
                 span,
@@ -915,110 +1994,232 @@ fn parse_static_assert(parser: &mut Parser<'_>) -> Result<Declaration, ParseErro
     };
 
     parser.expect(TokenKind::RightParen)?;
-    let end = parser.expect_semicolon()?;
-    let span = Span::merge(start, end);
+    let end = parser.expect(TokenKind::Semicolon)?;
 
     Ok(Declaration::StaticAssert {
         condition: Box::new(condition),
         message,
-        span,
+        span: Span::merge(start, end),
     })
 }
 
-/// Parses `_Alignas(type-name)` or `_Alignas(constant-expression)`.
+// =============================================================================
+// §10: _Alignas, typeof
+// =============================================================================
+
+/// Parse an `_Alignas` alignment specifier.
+///
+/// # Grammar
+///
+/// ```text
+/// alignment-specifier:
+///     _Alignas ( type-name )
+///     _Alignas ( constant-expression )
+/// ```
 fn parse_alignas_specifier(parser: &mut Parser<'_>) -> Result<AlignasSpecifier, ParseError> {
-    parser.advance(); // consume `_Alignas`
+    parser.expect(TokenKind::Alignas)?;
     parser.expect(TokenKind::LeftParen)?;
 
-    // For this initial implementation, parse as expression. Sema will
-    // distinguish type-name vs constant-expression.
-    let expr = super::expressions::parse_conditional_expression(parser)?;
-    parser.expect(TokenKind::RightParen)?;
+    // Disambiguate: type-name vs constant-expression
+    // If the first token looks like a type specifier, parse as type name;
+    // otherwise parse as expression.
+    let spec = if is_specifier_qualifier_start(parser) {
+        let type_name = parse_type_name(parser)?;
+        AlignasSpecifier::TypeName(Box::new(type_name))
+    } else {
+        let expr = super::expressions::parse_constant_expression(parser)?;
+        AlignasSpecifier::Expression(Box::new(expr))
+    };
 
-    Ok(AlignasSpecifier::Expression(Box::new(expr)))
+    parser.expect(TokenKind::RightParen)?;
+    Ok(spec)
 }
 
-/// Parses `typeof(expression)` or `typeof(type-name)`.
+/// Parse a `typeof` / `__typeof__` type specifier.
+///
+/// # Grammar
+///
+/// ```text
+/// typeof-specifier: typeof ( expression ) | typeof ( type-name )
+/// ```
 fn parse_typeof_specifier(parser: &mut Parser<'_>) -> Result<TypeSpecifier, ParseError> {
-    let start = parser.advance(); // consume `typeof` / `__typeof__`
+    let start = parser.current().span;
+    parser.expect(TokenKind::TypeofKeyword)?;
     parser.expect(TokenKind::LeftParen)?;
-    let expr = super::expressions::parse_expression(parser)?;
-    let end = parser.expect(TokenKind::RightParen)?;
-    let span = Span::merge(start, end);
 
-    // Simplified: store as expression. Sema resolves type-name vs expression.
+    // Disambiguate: type-name vs expression
+    let operand = if is_specifier_qualifier_start(parser) {
+        let type_name = parse_type_name(parser)?;
+        TypeofOperand::TypeName(Box::new(type_name))
+    } else {
+        let expr = super::expressions::parse_expression(parser)?;
+        TypeofOperand::Expression(Box::new(expr))
+    };
+
+    let end = parser.expect(TokenKind::RightParen)?;
     Ok(TypeSpecifier::Typeof {
-        operand: super::ast::TypeofOperand::Expression(Box::new(expr)),
-        span,
+        operand,
+        span: Span::merge(start, end),
     })
 }
 
-// ===========================================================================
-// Helpers
-// ===========================================================================
+// =============================================================================
+// §11: Declaration Rest — the init-declarator-list tail
+// =============================================================================
 
-/// Continues parsing a declaration after the first declarator has been parsed.
-/// Handles: `= initializer`, additional declarators (`,`-separated), and the
-/// trailing `;`.
+/// Parse the remainder of a declaration after the first declarator has been
+/// consumed (by `parse_external_declaration` or `parse_declaration`).
+///
+/// Handles:
+/// - Initializer for first declarator: `= initializer`
+/// - Additional declarators: `, declarator [= initializer]`
+/// - Trailing semicolon
+/// - Typedef registration
+/// - Function-declaration vs variable-declaration disambiguation
 fn parse_declaration_rest(
     parser: &mut Parser<'_>,
     specifiers: DeclarationSpecifiers,
     first_declarator: Declarator,
     attrs: Vec<Attribute>,
+    has_grouping: bool,
+    start: Span,
 ) -> Result<Declaration, ParseError> {
-    let mut declarators = Vec::new();
+    let is_typedef = matches!(specifiers.storage_class, Some(StorageClass::Typedef));
 
-    // First init-declarator
-    let init = if parser.eat(TokenKind::Assign) {
+    // For typedef declarations, collect declarators (no initializers)
+    if is_typedef {
+        let mut typedef_declarators: Vec<Declarator> = Vec::new();
+
+        // Register the first typedef name
+        if let Some(name) = first_declarator.name {
+            parser.register_typedef(name);
+            // Use as_u32() to verify the symbol is valid for tracking purposes
+            let _name_id = name.as_u32();
+        }
+        typedef_declarators.push(first_declarator);
+
+        // Parse additional typedef declarators
+        while parser.eat(TokenKind::Comma) {
+            let decl = parse_declarator(parser)?;
+            if let Some(name) = decl.name {
+                parser.register_typedef(name);
+            }
+            typedef_declarators.push(decl);
+        }
+
+        let end = parser.expect(TokenKind::Semicolon)?;
+        return Ok(Declaration::Typedef {
+            specifiers,
+            declarators: typedef_declarators,
+            attrs,
+            span: Span::merge(start, end),
+        });
+    }
+
+    // Check if this is a function declaration (prototype)
+    if is_function_declaration(&first_declarator.derived, has_grouping) {
+        // A function prototype — no initializer expected, just semicolon
+        // But first check for additional declarators (unusual but valid):
+        // e.g., `int f(void), g(int);`
+        if parser.check(TokenKind::Semicolon) {
+            let end = parser.advance();
+            return Ok(Declaration::FunctionDecl {
+                specifiers,
+                declarator: first_declarator,
+                attrs,
+                span: Span::merge(start, end),
+            });
+        }
+
+        // If comma follows, fall through to variable declaration handling
+        // (though `int f(void), x;` is technically valid C — f is a function
+        // declaration and x is a variable)
+    }
+
+    // Variable declaration with init-declarator-list
+    let mut init_declarators: Vec<InitDeclarator> = Vec::new();
+
+    // First declarator with optional initializer
+    let first_init = if parser.eat(TokenKind::Assign) {
         Some(parse_initializer(parser)?)
     } else {
         None
     };
-
-    let first_span = Span::merge(first_declarator.span, parser.current().span);
-    declarators.push(InitDeclarator {
+    let first_end = parser.current().span;
+    init_declarators.push(InitDeclarator {
         declarator: first_declarator,
-        initializer: init,
-        span: first_span,
+        initializer: first_init,
+        span: Span::merge(start, first_end),
     });
 
-    // Additional declarators
+    // Additional declarators: , declarator [= initializer]
     while parser.eat(TokenKind::Comma) {
-        let decl = parse_declarator(parser)?;
-        let init = if parser.eat(TokenKind::Assign) {
+        let decl_start = parser.current().span;
+
+        // Optional attributes before declarator
+        let extra_attrs = if parser.check(TokenKind::Attribute) {
+            super::attributes::parse_attribute_list(parser)?
+        } else {
+            vec![]
+        };
+
+        let mut next_decl = parse_declarator(parser)?;
+        // Merge extra attributes onto the declarator
+        next_decl.attrs.extend(extra_attrs);
+
+        // Optional attributes after declarator
+        if parser.check(TokenKind::Attribute) {
+            next_decl
+                .attrs
+                .extend(super::attributes::parse_attribute_list(parser)?);
+        }
+
+        let next_init = if parser.eat(TokenKind::Assign) {
             Some(parse_initializer(parser)?)
         } else {
             None
         };
-        let decl_span = Span::merge(decl.span, parser.current().span);
-        declarators.push(InitDeclarator {
-            declarator: decl,
-            initializer: init,
-            span: decl_span,
+
+        let decl_end = parser.current().span;
+        init_declarators.push(InitDeclarator {
+            declarator: next_decl,
+            initializer: next_init,
+            span: Span::merge(decl_start, decl_end),
         });
     }
 
-    let end = parser.expect_semicolon()?;
-    let span = Span::merge(specifiers.span, end);
-
-    // Register typedef names
-    if specifiers.storage_class == Some(StorageClass::Typedef) {
-        for id in &declarators {
-            if let Some(name) = id.declarator.name {
-                parser.register_typedef(name);
-            }
+    let end = match parser.expect(TokenKind::Semicolon) {
+        Ok(span) => span,
+        Err(_) => {
+            // Error recovery: emit the error, try to synchronize, and
+            // return what we have so far
+            let err_span = Span::merge(start, parser.current().span);
+            parser.synchronize();
+            return Ok(Declaration::Variable {
+                specifiers,
+                declarators: init_declarators,
+                attrs,
+                span: err_span,
+            });
         }
-    }
+    };
 
     Ok(Declaration::Variable {
         specifiers,
-        declarators,
+        declarators: init_declarators,
         attrs,
-        span,
+        span: Span::merge(start, end),
     })
 }
 
-/// Parses zero or more type qualifiers: const, volatile, restrict, _Atomic.
+// =============================================================================
+// §12: Type Qualifier List Helper
+// =============================================================================
+
+/// Parse a sequence of type qualifiers (used in pointer declarators and
+/// array brackets).
+///
+/// Collects `const`, `volatile`, `restrict`, `_Atomic` qualifiers.
 fn parse_type_qualifier_list(parser: &mut Parser<'_>) -> TypeQualifiers {
     let mut quals = TypeQualifiers::default();
     loop {
@@ -1043,29 +2244,4 @@ fn parse_type_qualifier_list(parser: &mut Parser<'_>) -> TypeQualifiers {
         }
     }
     quals
-}
-
-/// Expects and consumes an identifier, returning its `Symbol`.
-fn expect_identifier(parser: &mut Parser<'_>, context: &str) -> Result<Symbol, ParseError> {
-    match &parser.current().kind {
-        TokenKind::Identifier(sym) => {
-            let sym = *sym;
-            parser.advance();
-            Ok(sym)
-        }
-        _ => {
-            let span = parser.current().span;
-            let msg = format!(
-                "expected {} (identifier), found '{}'",
-                context,
-                parser.current().kind
-            );
-            parser.diagnostics.error(span, &msg);
-            Err(ParseError {
-                span,
-                message: msg,
-                expected: Some("identifier".to_string()),
-            })
-        }
-    }
 }

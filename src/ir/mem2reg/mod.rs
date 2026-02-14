@@ -525,7 +525,7 @@ fn build_phi_placement_map(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::basic_block::{BasicBlock, BasicBlockId};
+    use crate::ir::basic_block::BasicBlockId;
     use crate::ir::function::IrFunction;
     use crate::ir::instructions::Instruction;
     use crate::ir::types::IrType;
@@ -593,7 +593,7 @@ mod tests {
         let entry_id = func.entry_block_id;
 
         // Aggregate alloca: %0 = alloca {i32, i32}
-        let agg_type = IrType::Struct(vec![IrType::I32, IrType::I32]);
+        let agg_type = IrType::Struct { fields: vec![IrType::I32, IrType::I32], packed: false };
         let alloca_result = func.new_value(IrType::Ptr, Some("pair.addr".into()));
         let alloca_inst = Instruction::Alloca {
             result: alloca_result,

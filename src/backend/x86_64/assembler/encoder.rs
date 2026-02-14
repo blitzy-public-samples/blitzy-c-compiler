@@ -207,6 +207,12 @@ pub struct EncodingContext {
     label_offsets: Vec<(u32, usize)>,
 }
 
+impl Default for EncodingContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EncodingContext {
     pub fn new() -> Self {
         Self {
@@ -317,7 +323,7 @@ fn needs_rex_prefix(
     if size == OperandSize::Byte {
         for r in [reg, rm, index].iter().copied().flatten() {
             let idx = registers::reg_index(r);
-            if idx >= 4 && idx <= 7 && !registers::needs_rex(r) {
+            if (4..=7).contains(&idx) && !registers::needs_rex(r) {
                 return true;
             }
         }
@@ -333,9 +339,9 @@ fn compute_rex(
     index: Option<PhysReg>,
 ) -> Option<u8> {
     let w = size == OperandSize::QWord;
-    let r = reg.map_or(false, |r| registers::needs_rex(r));
-    let x = index.map_or(false, |r| registers::needs_rex(r));
-    let b = rm.map_or(false, |r| registers::needs_rex(r));
+    let r = reg.is_some_and(registers::needs_rex);
+    let x = index.is_some_and(registers::needs_rex);
+    let b = rm.is_some_and(registers::needs_rex);
     if w || r || x || b || needs_rex_prefix(size, reg, rm, index) {
         Some(encode_rex(w, r, x, b))
     } else {
@@ -406,7 +412,7 @@ fn needs_sib(base: PhysReg, index: Option<PhysReg>) -> bool {
 /// Can the value be represented as a sign-extended 8-bit immediate?
 #[inline]
 fn fits_in_i8(val: i64) -> bool {
-    val >= -128 && val <= 127
+    (-128..=127).contains(&val)
 }
 
 /// Can the value be represented as a sign-extended 32-bit immediate?
@@ -481,7 +487,7 @@ fn emit_memory_operand(ctx: &mut EncodingContext, reg_field: u8, mem: &MemoryOpe
             };
 
             if need_sib {
-                let idx_enc = opt_index.map_or(0b100u8, |i| registers::gpr_encoding(i));
+                let idx_enc = opt_index.map_or(0b100u8, registers::gpr_encoding);
                 let scale_bits = opt_index.map_or(0b00, |_| scale_to_bits(mem.scale));
                 ctx.emit_byte(encode_modrm(mod_bits, reg_field, 0b100));
                 ctx.emit_byte(encode_sib(scale_bits, idx_enc, base_enc));
@@ -924,7 +930,7 @@ fn encode_test_reg_imm(ctx: &mut EncodingContext, reg: PhysReg, imm: i64, size: 
 fn encode_setcc(ctx: &mut EncodingContext, cc: ConditionCode, dst: PhysReg) {
     if registers::needs_rex(dst) || {
         let i = registers::reg_index(dst);
-        i >= 4 && i <= 7
+        (4..=7).contains(&i)
     } {
         let b = registers::needs_rex(dst);
         ctx.emit_byte(encode_rex(false, false, false, b));
@@ -1201,8 +1207,8 @@ fn encode_pause(ctx: &mut EncodingContext) {
 fn encode_test_mem_reg(ctx: &mut EncodingContext, mem: &MemoryOperand, reg: PhysReg) {
     let reg_enc = registers::gpr_encoding(reg);
     let need_r = registers::needs_rex(reg);
-    let need_b = mem.base.map_or(false, |b| registers::needs_rex(b));
-    let need_x = mem.index.map_or(false, |x| registers::needs_rex(x));
+    let need_b = mem.base.is_some_and(registers::needs_rex);
+    let need_x = mem.index.is_some_and(registers::needs_rex);
     if need_r || need_b || need_x {
         ctx.emit_byte(encode_rex(false, need_r, need_x, need_b));
     }
@@ -1232,8 +1238,8 @@ fn encode_sse_rr(ctx: &mut EncodingContext, prefix: u8, opcode: u8, dst: PhysReg
 fn encode_sse_rm(ctx: &mut EncodingContext, prefix: u8, opcode: u8, dst: PhysReg, mem: &MemoryOperand) {
     ctx.emit_byte(prefix);
     let r = registers::needs_rex(dst);
-    let b = mem.base.map_or(false, |b| registers::needs_rex(b));
-    let x = mem.index.map_or(false, |i| registers::needs_rex(i));
+    let b = mem.base.is_some_and(registers::needs_rex);
+    let x = mem.index.is_some_and(registers::needs_rex);
     if r || b || x {
         ctx.emit_byte(encode_rex(false, r, x, b));
     }
@@ -1246,8 +1252,8 @@ fn encode_sse_rm(ctx: &mut EncodingContext, prefix: u8, opcode: u8, dst: PhysReg
 fn encode_sse_mr(ctx: &mut EncodingContext, prefix: u8, opcode: u8, mem: &MemoryOperand, src: PhysReg) {
     ctx.emit_byte(prefix);
     let r = registers::needs_rex(src);
-    let b = mem.base.map_or(false, |b| registers::needs_rex(b));
-    let x = mem.index.map_or(false, |i| registers::needs_rex(i));
+    let b = mem.base.is_some_and(registers::needs_rex);
+    let x = mem.index.is_some_and(registers::needs_rex);
     if r || b || x {
         ctx.emit_byte(encode_rex(false, r, x, b));
     }
@@ -1353,8 +1359,8 @@ fn encode_movsx_rm(
 ) {
     if src_width == 32 {
         // MOVSXD r64, [mem] — opcode 63 with REX.W=1
-        let b_bit = mem.base.map_or(false, |b| registers::needs_rex(b));
-        let x_bit = mem.index.map_or(false, |x| registers::needs_rex(x));
+        let b_bit = mem.base.is_some_and(registers::needs_rex);
+        let x_bit = mem.index.is_some_and(registers::needs_rex);
         ctx.emit_byte(encode_rex(true, registers::needs_rex(dst), x_bit, b_bit));
         ctx.emit_byte(0x63);
     } else {
@@ -1467,7 +1473,7 @@ fn encode_shift_dispatch(
     ops: &[MachineOperand],
     size: OperandSize,
 ) {
-    if let Some(dst) = ops.get(0).and_then(extract_phys_reg) {
+    if let Some(dst) = ops.first().and_then(extract_phys_reg) {
         if let Some(imm) = ops.get(1).and_then(extract_imm) {
             encode_shift_reg_imm(ctx, shift_code, dst, imm as u8, size);
         } else {
@@ -1484,9 +1490,9 @@ fn encode_shift_dispatch(
 ///   - reg, [mem] → 0F 10 /r  (load from memory)
 ///   - [mem], reg → 0F 11 /r  (store to memory)
 fn encode_sse_mov_dispatch(ctx: &mut EncodingContext, prefix: u8, ops: &[MachineOperand]) {
-    let op0_reg = ops.get(0).and_then(extract_phys_reg);
+    let op0_reg = ops.first().and_then(extract_phys_reg);
     let op1_reg = ops.get(1).and_then(extract_phys_reg);
-    let op0_mem = ops.get(0).and_then(extract_mem);
+    let op0_mem = ops.first().and_then(extract_mem);
     let op1_mem = ops.get(1).and_then(extract_mem);
 
     if let (Some(dst), Some(src)) = (op0_reg, op1_reg) {
@@ -1509,7 +1515,7 @@ fn encode_sse_binop_dispatch(
     opcode: u8,
     ops: &[MachineOperand],
 ) {
-    if let Some(dst) = ops.get(0).and_then(extract_phys_reg) {
+    if let Some(dst) = ops.first().and_then(extract_phys_reg) {
         if let Some(src) = ops.get(1).and_then(extract_phys_reg) {
             encode_sse_rr(ctx, prefix, opcode, dst, src);
         } else if let Some(mem) = ops.get(1).and_then(extract_mem) {
@@ -1548,14 +1554,14 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // Stack operations
         // ==================================================================
         opcodes::PUSH => {
-            if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_push_reg(ctx, reg);
-            } else if let Some(imm) = ops.get(0).and_then(extract_imm) {
+            } else if let Some(imm) = ops.first().and_then(extract_imm) {
                 encode_push_imm(ctx, imm);
             }
         }
         opcodes::POP => {
-            if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_pop_reg(ctx, reg);
             }
         }
@@ -1565,7 +1571,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // ==================================================================
         opcodes::MOV_RR => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 if registers::is_sse(dst) && registers::is_sse(src) {
@@ -1585,7 +1591,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::MOV_RI => {
             if let (Some(dst), Some(imm)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_imm),
             ) {
                 encode_mov_reg_imm(ctx, dst, imm, size);
@@ -1593,7 +1599,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::MOV_RM => {
             if let (Some(dst), Some(mem)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_mem),
             ) {
                 if registers::is_sse(dst) {
@@ -1607,7 +1613,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::MOV_MR => {
             if let (Some(mem), Some(src)) = (
-                ops.get(0).and_then(extract_mem),
+                ops.first().and_then(extract_mem),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 if registers::is_sse(src) {
@@ -1620,7 +1626,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::MOV_MI => {
             if let (Some(mem), Some(imm)) = (
-                ops.get(0).and_then(extract_mem),
+                ops.first().and_then(extract_mem),
                 ops.get(1).and_then(extract_imm),
             ) {
                 encode_mov_mem_imm(ctx, &mem, imm, size);
@@ -1632,7 +1638,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // ------------------------------------------------------------------
         opcodes::LEA => {
             if let (Some(dst), Some(mem)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_mem),
             ) {
                 encode_lea(ctx, dst, &mem);
@@ -1645,7 +1651,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // src_width_imm defaults to 8 (byte) when absent.
         // ------------------------------------------------------------------
         opcodes::MOVZX => {
-            let dst = ops.get(0).and_then(extract_phys_reg);
+            let dst = ops.first().and_then(extract_phys_reg);
             let src_width = ops.last().and_then(extract_imm).unwrap_or(8) as u8;
             if let (Some(d), Some(src_reg)) = (dst, ops.get(1).and_then(extract_phys_reg)) {
                 let src_size = if src_width == 16 {
@@ -1665,7 +1671,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // src_width_imm: 8=byte, 16=word, 32=dword (MOVSXD).
         // ------------------------------------------------------------------
         opcodes::MOVSX => {
-            let dst = ops.get(0).and_then(extract_phys_reg);
+            let dst = ops.first().and_then(extract_phys_reg);
             let src_width = ops.last().and_then(extract_imm).unwrap_or(8) as u8;
             if let (Some(d), Some(src_reg)) = (dst, ops.get(1).and_then(extract_phys_reg)) {
                 if src_width == 32 {
@@ -1688,7 +1694,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // ------------------------------------------------------------------
         opcodes::CMOV => {
             if let (Some(cc_val), Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_imm),
+                ops.first().and_then(extract_imm),
                 ops.get(1).and_then(extract_phys_reg),
                 ops.get(2).and_then(extract_phys_reg),
             ) {
@@ -1703,7 +1709,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // ------------------------------------------------------------------
         opcodes::XCHG => {
             if let (Some(a), Some(b)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_xchg(ctx, a, b, size);
@@ -1723,7 +1729,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
 
         opcodes::IMUL_RR => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_imul_reg_reg(ctx, dst, src, size);
@@ -1734,41 +1740,41 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             // Two-operand shorthand: IMUL dst, imm  (dst is both source and dest)
             if ops.len() >= 3 {
                 if let (Some(dst), Some(src), Some(imm)) = (
-                    ops.get(0).and_then(extract_phys_reg),
+                    ops.first().and_then(extract_phys_reg),
                     ops.get(1).and_then(extract_phys_reg),
                     ops.get(2).and_then(extract_imm),
                 ) {
                     encode_imul_reg_reg_imm(ctx, dst, src, imm, size);
                 }
             } else if let (Some(dst), Some(imm)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_imm),
             ) {
                 encode_imul_reg_reg_imm(ctx, dst, dst, imm, size);
             }
         }
         opcodes::IDIV => {
-            if let Some(src) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(src) = ops.first().and_then(extract_phys_reg) {
                 encode_idiv(ctx, src, size);
             }
         }
         opcodes::DIV => {
-            if let Some(src) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(src) = ops.first().and_then(extract_phys_reg) {
                 encode_div(ctx, src, size);
             }
         }
         opcodes::NEG => {
-            if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_neg(ctx, reg, size);
             }
         }
         opcodes::INC => {
-            if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_inc(ctx, reg, size);
             }
         }
         opcodes::DEC => {
-            if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_dec(ctx, reg, size);
             }
         }
@@ -1788,7 +1794,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         opcodes::XOR_RI => encode_alu_dispatch_ri(ctx, AluOp::Xor, ops, size),
 
         opcodes::NOT => {
-            if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_not(ctx, reg, size);
             }
         }
@@ -1809,7 +1815,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
 
         opcodes::TEST_RR => {
             if let (Some(a), Some(b)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_test_reg_reg(ctx, a, b, size);
@@ -1817,7 +1823,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::TEST_RI => {
             if let (Some(reg), Some(imm)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_imm),
             ) {
                 encode_test_reg_imm(ctx, reg, imm, size);
@@ -1827,7 +1833,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // SETcc — set byte on condition.  Operands: [cc_imm, dst_reg]
         opcodes::SET_CC => {
             if let (Some(cc_val), Some(dst)) = (
-                ops.get(0).and_then(extract_imm),
+                ops.first().and_then(extract_imm),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 if let Some(cc) = ConditionCode::from_encoding(cc_val as u8) {
@@ -1840,11 +1846,11 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // Control flow
         // ==================================================================
         opcodes::JMP => {
-            if let Some(label) = ops.get(0).and_then(extract_label) {
+            if let Some(label) = ops.first().and_then(extract_label) {
                 encode_jmp_label(ctx, label);
-            } else if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            } else if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_jmp_reg(ctx, reg);
-            } else if let Some(sym) = ops.get(0).and_then(extract_symbol) {
+            } else if let Some(sym) = ops.first().and_then(extract_symbol) {
                 // Direct jump to external symbol — E9 rel32 with relocation
                 ctx.emit_byte(0xE9);
                 emit_disp32(ctx, 0);
@@ -1857,7 +1863,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::JCC => {
             if let (Some(cc_val), Some(label)) = (
-                ops.get(0).and_then(extract_imm),
+                ops.first().and_then(extract_imm),
                 ops.get(1).and_then(extract_label),
             ) {
                 if let Some(cc) = ConditionCode::from_encoding(cc_val as u8) {
@@ -1866,11 +1872,11 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             }
         }
         opcodes::CALL => {
-            if let Some(sym) = ops.get(0).and_then(extract_symbol) {
+            if let Some(sym) = ops.first().and_then(extract_symbol) {
                 encode_call_symbol(ctx, sym, false);
-            } else if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            } else if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_call_reg(ctx, reg);
-            } else if let Some(label) = ops.get(0).and_then(extract_label) {
+            } else if let Some(label) = ops.first().and_then(extract_label) {
                 // Intra-function call to label
                 ctx.emit_byte(0xE8);
                 emit_disp32(ctx, 0);
@@ -1879,12 +1885,12 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::CALL_IND => {
             // Indirect call through register or memory.
-            if let Some(reg) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
                 encode_call_reg(ctx, reg);
-            } else if let Some(mem) = ops.get(0).and_then(extract_mem) {
+            } else if let Some(mem) = ops.first().and_then(extract_mem) {
                 // FF /2 with memory operand
-                let need_b = mem.base.map_or(false, |b| registers::needs_rex(b));
-                let need_x = mem.index.map_or(false, |x| registers::needs_rex(x));
+                let need_b = mem.base.is_some_and(registers::needs_rex);
+                let need_x = mem.index.is_some_and(registers::needs_rex);
                 if need_b || need_x {
                     ctx.emit_byte(encode_rex(false, false, need_x, need_b));
                 }
@@ -1915,7 +1921,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // UCOMISS: bare 0F 2E /r (no mandatory prefix)
         opcodes::UCOMISS => {
             if let (Some(a), Some(b)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_ucomiss_rr(ctx, a, b);
@@ -1924,7 +1930,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // UCOMISD: 66 0F 2E /r
         opcodes::UCOMISD => {
             if let (Some(a), Some(b)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_sse_rr(ctx, 0x66, 0x2E, a, b);
@@ -1934,7 +1940,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // SSE conversions
         opcodes::CVTSI2SS => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_cvtsi2ss_sd(ctx, 0xF3, dst, src, size);
@@ -1942,7 +1948,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::CVTSI2SD => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_cvtsi2ss_sd(ctx, 0xF2, dst, src, size);
@@ -1950,7 +1956,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::CVTSS2SD => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_cvt_ss_sd(ctx, 0xF3, 0x5A, dst, src);
@@ -1958,7 +1964,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::CVTSD2SS => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_cvt_ss_sd(ctx, 0xF2, 0x5A, dst, src);
@@ -1966,7 +1972,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::CVTTSS2SI => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_cvttss_sd_2si(ctx, 0xF3, dst, src, size);
@@ -1974,7 +1980,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::CVTTSD2SI => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_cvttss_sd_2si(ctx, 0xF2, dst, src, size);
@@ -1984,7 +1990,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // Packed SSE
         opcodes::MOVAPS => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_movaps_rr(ctx, dst, src);
@@ -1992,7 +1998,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::MOVUPS => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_movups_rr(ctx, dst, src);
@@ -2000,7 +2006,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::XORPS => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_xorps_rr(ctx, dst, src);
@@ -2008,7 +2014,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
         opcodes::XORPD => {
             if let (Some(dst), Some(src)) = (
-                ops.get(0).and_then(extract_phys_reg),
+                ops.first().and_then(extract_phys_reg),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 encode_xorpd_rr(ctx, dst, src);
@@ -2036,7 +2042,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         // ==================================================================
         opcodes::PSEUDO_FRAME_SETUP => {
             // Expand: push rbp; mov rbp, rsp; sub rsp, <frame_size>
-            let frame_size = ops.get(0).and_then(extract_imm).unwrap_or(0);
+            let frame_size = ops.first().and_then(extract_imm).unwrap_or(0);
             encode_push_reg(ctx, RBP);
             encode_mov_reg_reg(ctx, RBP, RSP, OperandSize::QWord);
             if frame_size > 0 {
@@ -2052,7 +2058,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             // Stack probe loop for large stack frames (> 4096 bytes).
             // Touches each guard page so the OS can grow the stack mapping.
             // Operand 0 = total frame size in bytes.
-            let total = ops.get(0).and_then(extract_imm).unwrap_or(0);
+            let total = ops.first().and_then(extract_imm).unwrap_or(0);
             if total > 0 {
                 let page_size: i64 = 4096;
                 let pages = (total + page_size - 1) / page_size;
@@ -2114,7 +2120,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             // .setup:
             //   mov [rsp], <target>   ; overwrite return address
             //   ret                   ; "return" to the real target
-            if let Some(target_reg) = ops.get(0).and_then(extract_phys_reg) {
+            if let Some(target_reg) = ops.first().and_then(extract_phys_reg) {
                 // CALL .setup (E8 rel32) — call over the capture loop
                 let call_pos = ctx.current_offset;
                 ctx.emit_byte(0xE8);
@@ -2164,31 +2170,31 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
 // ============================================================================
 
 fn encode_alu_dispatch_rr(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(dst), Some(src)) = (ops.get(0).and_then(extract_phys_reg), ops.get(1).and_then(extract_phys_reg)) {
+    if let (Some(dst), Some(src)) = (ops.first().and_then(extract_phys_reg), ops.get(1).and_then(extract_phys_reg)) {
         encode_alu_reg_reg(ctx, op, dst, src, size);
     }
 }
 
 fn encode_alu_dispatch_ri(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(dst), Some(imm)) = (ops.get(0).and_then(extract_phys_reg), ops.get(1).and_then(extract_imm)) {
+    if let (Some(dst), Some(imm)) = (ops.first().and_then(extract_phys_reg), ops.get(1).and_then(extract_imm)) {
         encode_alu_reg_imm(ctx, op, dst, imm, size);
     }
 }
 
 fn encode_alu_dispatch_rm(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(dst), Some(mem)) = (ops.get(0).and_then(extract_phys_reg), ops.get(1).and_then(extract_mem)) {
+    if let (Some(dst), Some(mem)) = (ops.first().and_then(extract_phys_reg), ops.get(1).and_then(extract_mem)) {
         encode_alu_reg_mem(ctx, op, dst, &mem, size);
     }
 }
 
 fn encode_alu_dispatch_mr(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(mem), Some(src)) = (ops.get(0).and_then(extract_mem), ops.get(1).and_then(extract_phys_reg)) {
+    if let (Some(mem), Some(src)) = (ops.first().and_then(extract_mem), ops.get(1).and_then(extract_phys_reg)) {
         encode_alu_mem_reg(ctx, op, &mem, src, size);
     }
 }
 
 fn encode_alu_dispatch_mi(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(mem), Some(imm)) = (ops.get(0).and_then(extract_mem), ops.get(1).and_then(extract_imm)) {
+    if let (Some(mem), Some(imm)) = (ops.first().and_then(extract_mem), ops.get(1).and_then(extract_imm)) {
         encode_alu_mem_imm(ctx, op, &mem, imm, size);
     }
 }

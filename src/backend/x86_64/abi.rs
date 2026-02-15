@@ -1457,9 +1457,9 @@ mod tests {
         let params: Vec<CType> = (0..7).map(|_| CType::Int { signed: true }).collect();
         let locs = compute_param_locations(&params, &Target::X86_64);
         assert_eq!(locs.len(), 7);
-        for i in 0..6 {
+        for (i, loc) in locs.iter().enumerate().take(6) {
             assert_eq!(
-                locs[i],
+                *loc,
                 ParamLocation::Register(registers::ARG_REGS_INT[i])
             );
         }

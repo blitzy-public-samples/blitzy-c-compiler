@@ -524,11 +524,11 @@ impl<'a> X86_64InstrSelector<'a> {
         self.used_callee_saved = FxHashSet::default();
         self.next_vreg = func.next_value_id;
 
-        let stack_align = self.config.target.stack_alignment() as u32;
+        let stack_align = self.config.target.stack_alignment();
         let mut mfunc = MachineFunction::new(func.name.clone(), stack_align);
 
         // Step 1: Create machine basic blocks and build the BB map.
-        for (_idx, bb) in func.basic_blocks.iter().enumerate() {
+        for bb in func.basic_blocks.iter() {
             let mbb_id = mfunc.create_block();
             self.bb_map.insert(bb.id.0, mbb_id);
         }
@@ -1641,7 +1641,7 @@ impl<'a> X86_64InstrSelector<'a> {
 
         // Process each index
         let mut current_ty = ty;
-        for (_i, idx) in indices.iter().enumerate() {
+        for idx in indices.iter() {
             let idx_op = self.get_operand(*idx);
 
             // Compute element size for stride
@@ -1658,9 +1658,9 @@ impl<'a> X86_64InstrSelector<'a> {
                         if field_idx < fields.len() {
                             // Compute offset to the field
                             let mut offset: u64 = 0;
-                            for f in 0..field_idx {
-                                let f_size = fields[f].size_bytes(&self.config.target);
-                                let f_align = fields[f].alignment(&self.config.target);
+                            for field in fields.iter().take(field_idx) {
+                                let f_size = field.size_bytes(&self.config.target);
+                                let f_align = field.alignment(&self.config.target);
                                 offset = (offset + f_align - 1) & !(f_align - 1);
                                 offset += f_size;
                             }
@@ -1985,7 +1985,7 @@ impl<'a> X86_64InstrSelector<'a> {
                     } else {
                         self.diagnostics.warning(
                             Span::DUMMY,
-                            &format!("unrecognised inline asm clobber: {}", clobber),
+                            format!("unrecognised inline asm clobber: {}", clobber),
                         );
                     }
                 }
@@ -2006,7 +2006,7 @@ impl<'a> X86_64InstrSelector<'a> {
             } else {
                 self.diagnostics.error(
                     Span::DUMMY,
-                    &format!(
+                    format!(
                         "cannot parse output constraint '{}' for inline asm",
                         constraints,
                     ),
@@ -2389,7 +2389,7 @@ fn ir_type_to_ctype(ty: &IrType) -> CType {
         }
         IrType::Function { ref return_type, ref param_types, is_variadic: _ } => CType::Function {
             return_type: Box::new(ir_type_to_ctype(return_type)),
-            params: param_types.iter().map(|p| ir_type_to_ctype(p)).collect(),
+            params: param_types.iter().map(ir_type_to_ctype).collect(),
             variadic: false,
         },
     }

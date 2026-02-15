@@ -961,7 +961,6 @@ impl<'a> I686InstrSel<'a> {
                     result.index(),
                     MachineOperand::VirtualReg(ValueId(lo_dst)),
                 );
-                return;
             }
             _ => {
                 // Pointer or other 32-bit equivalent.
@@ -1440,9 +1439,7 @@ impl<'a> I686InstrSel<'a> {
         }
 
         // Default: record result as the lo vreg.
-        if !self.value_map.contains_key(&result.index()) {
-            self.value_map.insert(result.index(), dst);
-        }
+        self.value_map.entry(result.index()).or_insert(dst);
     }
 
     // -----------------------------------------------------------------------
@@ -1878,7 +1875,7 @@ impl<'a> I686InstrSel<'a> {
 
         // Process each index with the appropriate stride.
         let mut current_type = ty.clone();
-        for (_i, &idx_vid) in indices.iter().enumerate() {
+        for &idx_vid in indices.iter() {
             let stride = self.type_size_bytes(&current_type);
             let idx_op = self.get_operand(idx_vid, func);
 
@@ -1889,7 +1886,7 @@ impl<'a> I686InstrSel<'a> {
 
             // Check if index is a constant.
             if let MachineOperand::Immediate(imm) = &idx_op {
-                let offset = (*imm as i64) * (stride as i64);
+                let offset = *imm * (stride as i64);
                 if offset != 0 {
                     let mut add = MachineInstr::new(I686Opcode::Add.as_u32());
                     add.add_operand(dst.clone());
@@ -2071,7 +2068,6 @@ impl<'a> I686InstrSel<'a> {
 
             // Result lo=EAX, hi=EDX
             self.value_map.insert(result.index(), MachineOperand::Register(EAX));
-            return;
         } else {
             self.emit_mov(dst, src, mbb);
         }

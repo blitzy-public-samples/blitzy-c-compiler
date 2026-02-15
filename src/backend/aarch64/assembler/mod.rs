@@ -861,7 +861,7 @@ mod tests {
         let mut asm = AArch64Assembler::new();
         // TBZ encoding: b5 011011 0 b40 imm14 Rt
         // Using b5=0, b40=00000, imm14=0, Rt=0
-        let tbz_opcode: u32 = 0b0011011_0 << 24;
+        let tbz_opcode: u32 = 0b00110110 << 24;
         asm.code.extend_from_slice(&tbz_opcode.to_le_bytes());
         asm.current_offset = 4;
 

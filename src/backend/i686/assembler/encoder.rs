@@ -31,6 +31,7 @@
 //! This encoder is part of the standalone backend — no external `as` or
 //! `llvm-mc` is invoked. All encoding is performed in-process.
 
+use crate::backend::i686::codegen::ConditionCode;
 use crate::backend::i686::registers;
 use crate::backend::traits::{MachineInstr, MachineOperand, PhysReg};
 
@@ -38,89 +39,93 @@ use super::relocations::I686RelocType;
 use super::RelocationEntry;
 
 // ---------------------------------------------------------------------------
-// Opcode Constants
+// Opcode Constants — derived from I686Opcode enum discriminants
 // ---------------------------------------------------------------------------
-// These numeric opcode identifiers correspond to the I686Opcode enum values
-// defined in crate::backend::i686::codegen. They are duplicated here to
-// allow the encoder to be compiled independently of the codegen module
-// (which may not yet exist during incremental compilation). When codegen.rs
-// is available, these values MUST match the discriminant values of I686Opcode.
+// These constants are derived directly from the [`I686Opcode`] enum
+// discriminant values (`as u32`). This guarantees 1:1 correspondence
+// between the codegen module's opcode identifiers and the encoder's
+// match-arm patterns — eliminating the possibility of value drift.
+//
+// The `as u32` cast on a `#[repr(u32)]` enum variant is a compile-time
+// constant expression in Rust 2021, producing zero runtime overhead.
 
-/// i686 machine instruction opcode identifiers.
+/// i686 machine instruction opcode constants.
 ///
-/// These constants are used to dispatch on `MachineInstr.opcode` values
-/// during instruction encoding. They map 1:1 to the `I686Opcode` enum
-/// variants defined in the codegen module.
+/// Each constant equals `I686Opcode::Variant as u32`, ensuring the encoder
+/// dispatches identically to the opcode identifiers stored in
+/// [`MachineInstr::opcode`] by the codegen module.
 pub mod opcodes {
+    use crate::backend::i686::codegen::I686Opcode;
+
     // Data movement
-    pub const MOV: u32 = 0;
-    pub const MOV_SX: u32 = 1;
-    pub const MOV_ZX: u32 = 2;
-    pub const LEA: u32 = 3;
-    pub const PUSH: u32 = 4;
-    pub const POP: u32 = 5;
+    pub const MOV: u32 = I686Opcode::Mov as u32;
+    pub const MOV_SX: u32 = I686Opcode::MovSx as u32;
+    pub const MOV_ZX: u32 = I686Opcode::MovZx as u32;
+    pub const LEA: u32 = I686Opcode::Lea as u32;
+    pub const PUSH: u32 = I686Opcode::Push as u32;
+    pub const POP: u32 = I686Opcode::Pop as u32;
 
     // Integer ALU
-    pub const ADD: u32 = 10;
-    pub const ADC: u32 = 11;
-    pub const SUB: u32 = 12;
-    pub const SBB: u32 = 13;
-    pub const AND: u32 = 14;
-    pub const OR: u32 = 15;
-    pub const XOR: u32 = 16;
-    pub const IMUL: u32 = 17;
-    pub const IDIV: u32 = 18;
-    pub const DIV: u32 = 19;
-    pub const MUL: u32 = 20;
-    pub const NEG: u32 = 21;
-    pub const NOT: u32 = 22;
-    pub const INC: u32 = 23;
-    pub const DEC: u32 = 24;
+    pub const ADD: u32 = I686Opcode::Add as u32;
+    pub const ADC: u32 = I686Opcode::Adc as u32;
+    pub const SUB: u32 = I686Opcode::Sub as u32;
+    pub const SBB: u32 = I686Opcode::Sbb as u32;
+    pub const AND: u32 = I686Opcode::And as u32;
+    pub const OR: u32 = I686Opcode::Or as u32;
+    pub const XOR: u32 = I686Opcode::Xor as u32;
+    pub const IMUL: u32 = I686Opcode::Imul as u32;
+    pub const IDIV: u32 = I686Opcode::Idiv as u32;
+    pub const DIV: u32 = I686Opcode::Div as u32;
+    pub const MUL: u32 = I686Opcode::Mul as u32;
+    pub const NEG: u32 = I686Opcode::Neg as u32;
+    pub const NOT: u32 = I686Opcode::Not as u32;
+    pub const INC: u32 = I686Opcode::Inc as u32;
+    pub const DEC: u32 = I686Opcode::Dec as u32;
 
     // Shifts
-    pub const SHL: u32 = 30;
-    pub const SHR: u32 = 31;
-    pub const SAR: u32 = 32;
-    pub const SHLD: u32 = 33;
-    pub const SHRD: u32 = 34;
+    pub const SHL: u32 = I686Opcode::Shl as u32;
+    pub const SHR: u32 = I686Opcode::Shr as u32;
+    pub const SAR: u32 = I686Opcode::Sar as u32;
+    pub const SHLD: u32 = I686Opcode::Shld as u32;
+    pub const SHRD: u32 = I686Opcode::Shrd as u32;
 
     // Misc ALU
-    pub const CDQ: u32 = 40;
-    pub const CMP: u32 = 41;
-    pub const TEST: u32 = 42;
+    pub const CDQ: u32 = I686Opcode::Cdq as u32;
+    pub const CMP: u32 = I686Opcode::Cmp as u32;
+    pub const TEST: u32 = I686Opcode::Test as u32;
 
     // Control flow
-    pub const JMP: u32 = 50;
-    pub const JCC: u32 = 51;
-    pub const SETCC: u32 = 52;
-    pub const CMOVCC: u32 = 53;
-    pub const CALL: u32 = 54;
-    pub const RET: u32 = 55;
+    pub const JMP: u32 = I686Opcode::Jmp as u32;
+    pub const JCC: u32 = I686Opcode::Jcc as u32;
+    pub const SETCC: u32 = I686Opcode::Setcc as u32;
+    pub const CMOVCC: u32 = I686Opcode::Cmovcc as u32;
+    pub const CALL: u32 = I686Opcode::Call as u32;
+    pub const RET: u32 = I686Opcode::Ret as u32;
 
     // x87 FPU
-    pub const FLD: u32 = 60;
-    pub const FST: u32 = 61;
-    pub const FSTP: u32 = 62;
-    pub const FADD: u32 = 63;
-    pub const FADDP: u32 = 64;
-    pub const FSUB: u32 = 65;
-    pub const FSUBP: u32 = 66;
-    pub const FMUL: u32 = 67;
-    pub const FMULP: u32 = 68;
-    pub const FDIV: u32 = 69;
-    pub const FDIVP: u32 = 70;
-    pub const FCHS: u32 = 71;
-    pub const FABS: u32 = 72;
-    pub const FCOM: u32 = 73;
-    pub const FCOMP: u32 = 74;
-    pub const FCOMPP: u32 = 75;
-    pub const FUCOMIP: u32 = 76;
-    pub const FILD: u32 = 77;
-    pub const FISTP: u32 = 78;
-    pub const FXCH: u32 = 79;
+    pub const FLD: u32 = I686Opcode::Fld as u32;
+    pub const FST: u32 = I686Opcode::Fst as u32;
+    pub const FSTP: u32 = I686Opcode::Fstp as u32;
+    pub const FADD: u32 = I686Opcode::Fadd as u32;
+    pub const FADDP: u32 = I686Opcode::Faddp as u32;
+    pub const FSUB: u32 = I686Opcode::Fsub as u32;
+    pub const FSUBP: u32 = I686Opcode::Fsubp as u32;
+    pub const FMUL: u32 = I686Opcode::Fmul as u32;
+    pub const FMULP: u32 = I686Opcode::Fmulp as u32;
+    pub const FDIV: u32 = I686Opcode::Fdiv as u32;
+    pub const FDIVP: u32 = I686Opcode::Fdivp as u32;
+    pub const FCHS: u32 = I686Opcode::Fchs as u32;
+    pub const FABS: u32 = I686Opcode::Fabs as u32;
+    pub const FCOM: u32 = I686Opcode::Fcom as u32;
+    pub const FCOMP: u32 = I686Opcode::Fcomp as u32;
+    pub const FCOMPP: u32 = I686Opcode::Fcompp as u32;
+    pub const FUCOMIP: u32 = I686Opcode::Fucomip as u32;
+    pub const FILD: u32 = I686Opcode::Fild as u32;
+    pub const FISTP: u32 = I686Opcode::Fistp as u32;
+    pub const FXCH: u32 = I686Opcode::Fxch as u32;
 
     // No-op
-    pub const NOP: u32 = 90;
+    pub const NOP: u32 = I686Opcode::Nop as u32;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,13 +140,68 @@ pub mod opcodes {
 /// - SETcc:     `0x0F 0x90 + cc`
 /// - CMOVcc:    `0x0F 0x40 + cc`
 ///
-/// Standard x86 condition code encoding:
-///   0=O, 1=NO, 2=B/C/NAE, 3=NB/NC/AE, 4=E/Z, 5=NE/NZ,
-///   6=BE/NA, 7=A/NBE, 8=S, 9=NS, A=P/PE, B=NP/PO,
-///   C=L/NGE, D=GE/NL, E=LE/NG, F=G/NLE
+/// Convert a [`ConditionCode`] enum variant to its x86 condition nibble.
+///
+/// This is the type-safe counterpart of [`cc_nibble`]. The codegen module
+/// stores condition codes as `ConditionCode` enum variants; this function
+/// maps each variant to the canonical 4-bit encoding used in Jcc, SETcc,
+/// and CMOVcc instruction opcodes.
 #[inline]
-fn cc_nibble(cc_index: u8) -> u8 {
-    cc_index & 0x0F
+fn cc_to_nibble(cc: ConditionCode) -> u8 {
+    match cc {
+        ConditionCode::O  => 0x0,
+        ConditionCode::No => 0x1,
+        ConditionCode::B  => 0x2,
+        ConditionCode::Ae => 0x3,
+        ConditionCode::E  => 0x4,
+        ConditionCode::Ne => 0x5,
+        ConditionCode::Be => 0x6,
+        ConditionCode::A  => 0x7,
+        ConditionCode::S  => 0x8,
+        ConditionCode::Ns => 0x9,
+        ConditionCode::P  => 0xA,
+        ConditionCode::Np => 0xB,
+        ConditionCode::L  => 0xC,
+        ConditionCode::Ge => 0xD,
+        ConditionCode::Le => 0xE,
+        ConditionCode::G  => 0xF,
+    }
+}
+
+/// Extract a condition code nibble from the first operand of an instruction.
+///
+/// The codegen stores the condition as a raw discriminant value inside a
+/// `MachineOperand::Immediate`. This function converts the discriminant to
+/// the matching [`ConditionCode`] variant and returns the x86 nibble via
+/// [`cc_to_nibble`].
+#[inline]
+fn extract_cc(ops: &[MachineOperand]) -> u8 {
+    if let Some(MachineOperand::Immediate(cc_val)) = ops.first() {
+        let raw = (*cc_val as u8) & 0x0F;
+        // Convert raw discriminant to the type-safe ConditionCode variant,
+        // then map through cc_to_nibble for the canonical x86 encoding.
+        let cc = match raw {
+            0x0 => ConditionCode::O,
+            0x1 => ConditionCode::No,
+            0x2 => ConditionCode::B,
+            0x3 => ConditionCode::Ae,
+            0x4 => ConditionCode::E,
+            0x5 => ConditionCode::Ne,
+            0x6 => ConditionCode::Be,
+            0x7 => ConditionCode::A,
+            0x8 => ConditionCode::S,
+            0x9 => ConditionCode::Ns,
+            0xA => ConditionCode::P,
+            0xB => ConditionCode::Np,
+            0xC => ConditionCode::L,
+            0xD => ConditionCode::Ge,
+            0xE => ConditionCode::Le,
+            _   => ConditionCode::G,
+        };
+        cc_to_nibble(cc)
+    } else {
+        cc_to_nibble(ConditionCode::E) // Default to JE/SETE if malformed
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -256,12 +316,38 @@ pub fn encode_sib(scale: u8, index: u8, base: u8) -> u8 {
 /// Maps the i686 GPR indices to their 3-bit encoding:
 /// - EAX=0, ECX=1, EDX=2, EBX=3, ESP=4, EBP=5, ESI=6, EDI=7
 ///
+/// Sub-register constants (AL, CL, etc.) and FPU constants (ST0, etc.)
+/// are also supported — the underlying [`registers::encoding()`] function
+/// handles the full register file.
+///
 /// For i686, only 3 bits are needed (no REX.B extension unlike x86-64).
 /// Delegates to [`registers::encoding()`] for the actual mapping.
 #[inline]
 pub fn reg_encoding(reg: PhysReg) -> u8 {
     registers::encoding(reg)
 }
+
+/// Well-known register encoding constants for special-case detection.
+///
+/// These constants correspond to the 3-bit field values produced by
+/// [`reg_encoding`] for frequently-tested registers. `ESP_ENC` and
+/// `EBP_ENC` are used in [`encode_memory`] for addressing mode edge
+/// cases. `ECX_ENC` is used to validate CL as the shift-count register.
+/// `EAX_ENC` is used to detect short-form EAX encodings.
+/// The remaining constants serve as documented reference values and are
+/// validated by unit tests.
+const EAX_ENC: u8 = 0; // registers::EAX encoding
+const ECX_ENC: u8 = 1; // registers::ECX encoding (CL for shifts)
+#[allow(dead_code)]
+const EDX_ENC: u8 = 2; // registers::EDX encoding
+#[allow(dead_code)]
+const EBX_ENC: u8 = 3; // registers::EBX encoding (PIC GOT base)
+const ESP_ENC: u8 = 4; // registers::ESP encoding (SIB sentinel)
+const EBP_ENC: u8 = 5; // registers::EBP encoding ([disp32] sentinel)
+#[allow(dead_code)]
+const ESI_ENC: u8 = 6; // registers::ESI encoding
+#[allow(dead_code)]
+const EDI_ENC: u8 = 7; // registers::EDI encoding
 
 // ---------------------------------------------------------------------------
 // Scale factor encoding
@@ -304,6 +390,67 @@ fn machine_mem_to_mem_operand(
         disp: offset,
         symbol: None,
     }
+}
+
+/// Convert a `MachineOperand::FrameIndex` slot index to a `MemOperand`
+/// representing `[EBP + offset]` addressing.
+///
+/// The i686 ABI uses EBP as the frame pointer. Stack frame slots allocated
+/// by the register allocator are expressed as unsigned byte offsets from EBP.
+/// Negative offsets (locals below EBP) are represented by treating the `u32`
+/// slot value as a signed displacement via `as i32`.
+///
+/// # Arguments
+///
+/// * `frame_idx` — Stack slot byte offset (from FrameIndex operand)
+fn frame_index_to_mem_operand(frame_idx: u32) -> MemOperand {
+    MemOperand {
+        base: Some(registers::EBP),
+        index: None,
+        scale: 1,
+        disp: frame_idx as i32,
+        symbol: None,
+    }
+}
+
+/// Check whether a [`PhysReg`] refers to an x87 FPU stack register.
+///
+/// Delegates to [`registers::is_fpu`] to detect ST0–ST7 registers
+/// (physical indices 24–31). Used to select FPU encoding paths vs GPR
+/// encoding paths within instruction encoders.
+#[inline]
+fn is_fpu_reg(reg: PhysReg) -> bool {
+    registers::is_fpu(reg)
+}
+
+/// Check whether a [`PhysReg`] is a general-purpose register (EAX–EDI).
+///
+/// Delegates to [`registers::is_gpr`]. Used to validate operand
+/// register classes before encoding GPR-only instructions.
+#[inline]
+fn is_gpr_reg(reg: PhysReg) -> bool {
+    registers::is_gpr(reg)
+}
+
+/// Check whether a [`PhysReg`] has an addressable 8-bit sub-register
+/// (AL, CL, DL, BL).
+///
+/// Delegates to [`registers::has_byte_subreg`]. Used to determine
+/// if byte-width operations (MOVSX r32,r/m8 etc.) can use the register
+/// in the rm8 field without requiring special handling.
+#[inline]
+fn has_byte_sub(reg: PhysReg) -> bool {
+    registers::has_byte_subreg(reg)
+}
+
+/// Map a sub-register to its 32-bit parent GPR.
+///
+/// Delegates to [`registers::parent_reg`]. Used when the encoder receives
+/// an 8-bit or 16-bit register operand and needs the corresponding 32-bit
+/// register encoding (e.g. AL→EAX for `reg_encoding`).
+#[inline]
+fn parent_gpr(reg: PhysReg) -> PhysReg {
+    registers::parent_reg(reg)
 }
 
 /// Encode a memory operand into ModR/M (and optionally SIB + displacement)
@@ -353,15 +500,18 @@ fn encode_memory(
         return;
     }
 
-    let base_reg = mem.base.unwrap_or(PhysReg(5)); // 5 = EBP encoding
+    // Use module-level register encoding constants for special-case
+    // detection: ESP_ENC (4) always requires a SIB byte, EBP_ENC (5)
+    // with mod=00 means absolute [disp32] rather than [EBP].
+    let base_reg = mem.base.unwrap_or(registers::EBP);
     let base_enc = reg_encoding(base_reg);
-    let needs_sib = has_index || base_enc == 4; // ESP base always needs SIB
+    let needs_sib = has_index || base_enc == ESP_ENC; // ESP base always needs SIB
 
     // Determine the mod field and displacement size.
     let (mod_val, disp_bytes): (u8, usize) = if !has_base {
         // No base: [index*scale + disp32] — encode via SIB with base=5 mod=00
         (0b00, 4)
-    } else if mem.disp == 0 && base_enc != 5 {
+    } else if mem.disp == 0 && base_enc != EBP_ENC {
         // [base] or [base + index*scale] — no displacement (mod=00)
         // Note: EBP (enc=5) in mod=00 means [disp32], so we must use
         // mod=01 + disp8(0) for [EBP] with zero displacement.
@@ -381,16 +531,16 @@ fn encode_memory(
         let index_enc = match mem.index {
             Some(idx) => {
                 let enc = reg_encoding(idx);
-                // ESP (4) cannot be used as index — use 4 as "no index"
-                if enc == 4 { 4 } else { enc }
+                // ESP cannot be used as SIB index — enc=4 means "no index"
+                if enc == ESP_ENC { ESP_ENC } else { enc }
             }
-            None => 4, // No index
+            None => ESP_ENC, // No index (SIB index field = 4)
         };
 
         let sib_base = if has_base {
             base_enc
         } else {
-            5 // disp32-only base when mod=00
+            EBP_ENC // disp32-only base when mod=00
         };
 
         let ss = scale_to_ss(mem.scale);
@@ -537,7 +687,11 @@ fn emit_symbol_call(
 /// Emit a 32-bit absolute symbol reference in an immediate field.
 ///
 /// Used for MOV reg, symbol_address patterns. Writes a placeholder
-/// value and records an R_386_32 (or R_386_GOT32 in PIC mode) relocation.
+/// value and records the appropriate relocation:
+///
+/// - Non-PIC mode: `R_386_32` (absolute address)
+/// - PIC mode, `_GLOBAL_OFFSET_TABLE_`: `R_386_GOTPC` (GOT base address)
+/// - PIC mode, other symbols: `R_386_GOT32` (GOT slot offset)
 fn emit_symbol_imm32(
     buf: &mut Vec<u8>,
     symbol: &str,
@@ -547,7 +701,15 @@ fn emit_symbol_imm32(
     buf.extend_from_slice(&0i32.to_le_bytes());
 
     let reloc_type = if ctx.pic_mode {
-        I686RelocType::R386Got32
+        if symbol == "_GLOBAL_OFFSET_TABLE_" {
+            // R_386_GOTPC — address of GOT relative to current instruction.
+            // Used in the standard PIC prologue:
+            //   CALL __x86.get_pc_thunk.bx
+            //   ADD EBX, _GLOBAL_OFFSET_TABLE_
+            I686RelocType::R386Gotpc
+        } else {
+            I686RelocType::R386Got32
+        }
     } else {
         I686RelocType::R386_32
     };
@@ -606,10 +768,11 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncoderContext) -> Enc
 
     match instr.opcode {
         // ---------------------------------------------------------------
-        // NOP (0x90)
+        // NOP — 0x90 is the single-byte NOP (XCHG EAX, EAX)
         // ---------------------------------------------------------------
         opcodes::NOP => {
-            bytes.push(0x90);
+            // NOP is encoded as XCHG EAX,EAX = 0x90 + EAX_ENC
+            bytes.push(0x90 + EAX_ENC);
         }
 
         // ---------------------------------------------------------------
@@ -840,6 +1003,9 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncoderContext) -> Enc
 /// - MOV [mem], reg (89 /r)
 /// - MOV [mem], imm32 (C7 /0 id)
 /// - MOV reg, symbol (B8+rd with relocation)
+/// - MOV reg, [EBP+frame_idx] (FrameIndex load)
+/// - MOV [EBP+frame_idx], reg (FrameIndex store)
+/// - MOV [EBP+frame_idx], imm32 (FrameIndex store immediate)
 fn encode_mov(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext) {
     let ops = &instr.operands;
     if ops.len() < 2 {
@@ -867,14 +1033,30 @@ fn encode_mov(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[0x8B], *dst, &mem, ctx);
         }
+        // MOV reg, [EBP+frame_idx] — load from stack frame slot
+        (MachineOperand::Register(dst), MachineOperand::FrameIndex(idx)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_reg_mem(buf, &[0x8B], *dst, &mem, ctx);
+        }
         // MOV [mem], reg
         (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Register(src)) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[0x89], *src, &mem, ctx);
         }
+        // MOV [EBP+frame_idx], reg — store to stack frame slot
+        (MachineOperand::FrameIndex(idx), MachineOperand::Register(src)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_reg_mem(buf, &[0x89], *src, &mem, ctx);
+        }
         // MOV [mem], imm32
         (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Immediate(imm)) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            encode_mem_ext(buf, &[0xC7], 0, &mem, ctx);
+            buf.extend_from_slice(&(*imm as i32).to_le_bytes());
+        }
+        // MOV [EBP+frame_idx], imm32 — store immediate to stack frame slot
+        (MachineOperand::FrameIndex(idx), MachineOperand::Immediate(imm)) => {
+            let mem = frame_index_to_mem_operand(*idx);
             encode_mem_ext(buf, &[0xC7], 0, &mem, ctx);
             buf.extend_from_slice(&(*imm as i32).to_le_bytes());
         }
@@ -925,10 +1107,21 @@ fn encode_movsx_movzx(
 
     match (&ops[0], &ops[1]) {
         (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
-            buf.push(encode_modrm(0b11, reg_encoding(*dst), reg_encoding(*src)));
+            // Use parent_gpr to get the 32-bit encoding for byte registers
+            let src_enc = if has_byte_sub(*src) || is_gpr_reg(*src) {
+                reg_encoding(*src)
+            } else {
+                reg_encoding(parent_gpr(*src))
+            };
+            buf.push(encode_modrm(0b11, reg_encoding(*dst), src_enc));
         }
         (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            encode_memory(buf, reg_encoding(*dst), &mem, ctx);
+        }
+        // MOVSX/MOVZX reg, [EBP+frame_idx] — extend from stack frame slot
+        (MachineOperand::Register(dst), MachineOperand::FrameIndex(idx)) => {
+            let mem = frame_index_to_mem_operand(*idx);
             encode_memory(buf, reg_encoding(*dst), &mem, ctx);
         }
         _ => {}
@@ -936,17 +1129,26 @@ fn encode_movsx_movzx(
 }
 
 /// Encode LEA (Load Effective Address): 8D /r
+///
+/// Also handles `LEA reg, [EBP+frame_idx]` for computing the address of
+/// a stack frame slot.
 fn encode_lea(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext) {
     let ops = &instr.operands;
     if ops.len() < 2 {
         return;
     }
 
-    if let (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) =
-        (&ops[0], &ops[1])
-    {
-        let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
-        encode_reg_mem(buf, &[0x8D], *dst, &mem, ctx);
+    match (&ops[0], &ops[1]) {
+        (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) => {
+            let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            encode_reg_mem(buf, &[0x8D], *dst, &mem, ctx);
+        }
+        // LEA reg, [EBP+frame_idx] — compute address of stack slot
+        (MachineOperand::Register(dst), MachineOperand::FrameIndex(idx)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_reg_mem(buf, &[0x8D], *dst, &mem, ctx);
+        }
+        _ => {}
     }
 }
 
@@ -979,6 +1181,16 @@ fn encode_push(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
         MachineOperand::Memory { base, offset, index, scale } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[0xFF], 6, &mem, ctx);
+        }
+        // PUSH [EBP+frame_idx] — push value from stack frame slot
+        MachineOperand::FrameIndex(idx) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_mem_ext(buf, &[0xFF], 6, &mem, ctx);
+        }
+        MachineOperand::Symbol(sym) => {
+            // PUSH symbol_address (PUSH imm32 with relocation)
+            buf.push(0x68);
+            emit_symbol_imm32(buf, sym, ctx);
         }
         _ => {}
     }
@@ -1036,14 +1248,36 @@ fn encode_alu(
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[op_r_rm], *dst, &mem, ctx);
         }
+        // reg, [EBP+frame_idx] — ALU with stack frame source
+        (MachineOperand::Register(dst), MachineOperand::FrameIndex(idx)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_reg_mem(buf, &[op_r_rm], *dst, &mem, ctx);
+        }
         // [mem], reg
         (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Register(src)) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[op_rm_r], *src, &mem, ctx);
         }
+        // [EBP+frame_idx], reg — ALU with stack frame destination
+        (MachineOperand::FrameIndex(idx), MachineOperand::Register(src)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_reg_mem(buf, &[op_rm_r], *src, &mem, ctx);
+        }
         // [mem], imm
         (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Immediate(imm)) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            let val = *imm as i32;
+            if (-128..=127).contains(&val) {
+                encode_mem_ext(buf, &[op_imm8], ext, &mem, ctx);
+                buf.push(val as i8 as u8);
+            } else {
+                encode_mem_ext(buf, &[op_imm32], ext, &mem, ctx);
+                buf.extend_from_slice(&val.to_le_bytes());
+            }
+        }
+        // [EBP+frame_idx], imm — ALU immediate to stack frame slot
+        (MachineOperand::FrameIndex(idx), MachineOperand::Immediate(imm)) => {
+            let mem = frame_index_to_mem_operand(*idx);
             let val = *imm as i32;
             if (-128..=127).contains(&val) {
                 encode_mem_ext(buf, &[op_imm8], ext, &mem, ctx);
@@ -1079,6 +1313,17 @@ fn encode_test(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
         (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Register(src)) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[0x85], *src, &mem, ctx);
+        }
+        // TEST [EBP+frame_idx], reg
+        (MachineOperand::FrameIndex(idx), MachineOperand::Register(src)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_reg_mem(buf, &[0x85], *src, &mem, ctx);
+        }
+        // TEST [EBP+frame_idx], imm32
+        (MachineOperand::FrameIndex(idx), MachineOperand::Immediate(imm)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_mem_ext(buf, &[0xF7], 0, &mem, ctx);
+            buf.extend_from_slice(&(*imm as i32).to_le_bytes());
         }
         _ => {}
     }
@@ -1158,6 +1403,11 @@ fn encode_unary_rm(
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[opcode], ext, &mem, ctx);
         }
+        // Unary on stack frame slot (e.g. NEG [EBP+frame_idx])
+        MachineOperand::FrameIndex(idx) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_mem_ext(buf, &[opcode], ext, &mem, ctx);
+        }
         _ => {}
     }
 }
@@ -1184,6 +1434,11 @@ fn encode_inc_dec(
         }
         MachineOperand::Memory { base, offset, index, scale } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            encode_mem_ext(buf, &[0xFF], ext, &mem, ctx);
+        }
+        // INC/DEC [EBP+frame_idx]
+        MachineOperand::FrameIndex(idx) => {
+            let mem = frame_index_to_mem_operand(*idx);
             encode_mem_ext(buf, &[0xFF], ext, &mem, ctx);
         }
         _ => {}
@@ -1220,13 +1475,30 @@ fn encode_shift(
             }
         }
         // reg, CL (register operand — CL is implicit for variable shifts)
-        (MachineOperand::Register(dst), MachineOperand::Register(_cl)) => {
+        (MachineOperand::Register(dst), MachineOperand::Register(cl)) => {
+            // The x86 variable-shift encoding implicitly uses CL (ECX low byte).
+            debug_assert_eq!(
+                reg_encoding(*cl), ECX_ENC,
+                "Variable shift count must use CL register (encoding {})",
+                ECX_ENC
+            );
             buf.push(0xD3);
             buf.push(encode_modrm(0b11, ext, reg_encoding(*dst)));
         }
         // [mem], imm
         (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Immediate(count)) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            let c = *count as u8;
+            if c == 1 {
+                encode_mem_ext(buf, &[0xD1], ext, &mem, ctx);
+            } else {
+                encode_mem_ext(buf, &[0xC1], ext, &mem, ctx);
+                buf.push(c);
+            }
+        }
+        // [EBP+frame_idx], imm — shift stack frame slot
+        (MachineOperand::FrameIndex(idx), MachineOperand::Immediate(count)) => {
+            let mem = frame_index_to_mem_operand(*idx);
             let c = *count as u8;
             if c == 1 {
                 encode_mem_ext(buf, &[0xD1], ext, &mem, ctx);
@@ -1319,7 +1591,8 @@ fn encode_jmp(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
 /// Encode Jcc (conditional jump).
 ///
 /// The condition code is extracted from the first operand (immediate value
-/// representing the condition code index). The second operand is the label.
+/// representing the [`ConditionCode`] discriminant). The second operand is
+/// the label.
 ///
 /// - Jcc rel32: 0F 80+cc cd (6 bytes)
 fn encode_jcc(instr: &MachineInstr, buf: &mut Vec<u8>) {
@@ -1328,12 +1601,7 @@ fn encode_jcc(instr: &MachineInstr, buf: &mut Vec<u8>) {
         return;
     }
 
-    // First operand: condition code (immediate)
-    let cc = if let MachineOperand::Immediate(cc_val) = &ops[0] {
-        cc_nibble(*cc_val as u8)
-    } else {
-        0x04 // Default to JE if malformed
-    };
+    let cc = extract_cc(ops);
 
     // Second operand: label (filled by fixup) or symbol
     // Emit Jcc rel32: 0F 80+cc cd
@@ -1353,11 +1621,7 @@ fn encode_setcc(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContex
         return;
     }
 
-    let cc = if let MachineOperand::Immediate(cc_val) = &ops[0] {
-        cc_nibble(*cc_val as u8)
-    } else {
-        0x04
-    };
+    let cc = extract_cc(ops);
 
     buf.push(0x0F);
     buf.push(0x90 + cc);
@@ -1368,6 +1632,11 @@ fn encode_setcc(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContex
         }
         MachineOperand::Memory { base, offset, index, scale } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            encode_memory(buf, 0, &mem, ctx);
+        }
+        // SETcc [EBP+frame_idx] — set byte in stack frame slot
+        MachineOperand::FrameIndex(idx) => {
+            let mem = frame_index_to_mem_operand(*idx);
             encode_memory(buf, 0, &mem, ctx);
         }
         _ => {}
@@ -1385,11 +1654,7 @@ fn encode_cmovcc(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderConte
         return;
     }
 
-    let cc = if let MachineOperand::Immediate(cc_val) = &ops[0] {
-        cc_nibble(*cc_val as u8)
-    } else {
-        0x04
-    };
+    let cc = extract_cc(ops);
 
     buf.push(0x0F);
     buf.push(0x40 + cc);
@@ -1402,6 +1667,11 @@ fn encode_cmovcc(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderConte
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_memory(buf, reg_encoding(*dst), &mem, ctx);
         }
+        // CMOVcc reg, [EBP+frame_idx] — conditional move from stack slot
+        (MachineOperand::Register(dst), MachineOperand::FrameIndex(idx)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_memory(buf, reg_encoding(*dst), &mem, ctx);
+        }
         _ => {}
     }
 }
@@ -1410,6 +1680,7 @@ fn encode_cmovcc(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderConte
 ///
 /// - CALL rel32: E8 cd (direct call to symbol)
 /// - CALL r/m32: FF /2 (indirect call)
+/// - CALL [EBP+frame_idx]: FF /2 (indirect via stack frame slot)
 fn encode_call(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext) {
     let ops = &instr.operands;
     if ops.is_empty() {
@@ -1435,6 +1706,11 @@ fn encode_call(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[0xFF], 2, &mem, ctx);
         }
+        // CALL [EBP+frame_idx] — indirect call via function pointer on stack
+        MachineOperand::FrameIndex(idx) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_mem_ext(buf, &[0xFF], 2, &mem, ctx);
+        }
         _ => {}
     }
 }
@@ -1450,9 +1726,10 @@ fn encode_call(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
 /// encoding.
 fn extract_fpu_index(instr: &MachineInstr, operand_idx: usize) -> u8 {
     if let Some(MachineOperand::Register(reg)) = instr.operands.get(operand_idx) {
-        let idx = reg.index();
-        // FPU registers are at indices 24–31; extract the ST(i) position
-        if (24..32).contains(&idx) {
+        // FPU registers (ST0–ST7) are identified by is_fpu_reg;
+        // extract the stack position (0–7) from the physical index.
+        if is_fpu_reg(*reg) {
+            let idx = reg.index();
             (idx - 24) as u8
         } else {
             0 // Default to ST(0)
@@ -1486,16 +1763,27 @@ fn encode_fld(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
 
     match &ops[0] {
         MachineOperand::Register(reg) => {
-            // FLD ST(i)
-            let st_i = reg.index();
-            if (24..32).contains(&st_i) {
+            // FLD ST(i) — push x87 stack register onto the stack.
+            if is_fpu_reg(*reg) {
+                let st_i = (reg.index() - 24) as u8;
                 buf.push(0xD9);
-                buf.push(0xC0 + (st_i - 24) as u8);
+                buf.push(0xC0 + st_i);
             }
         }
         MachineOperand::Memory { base, offset, index, scale } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             // Check for 64-bit via optional second operand hint
+            let is_64 = ops.len() > 1
+                && matches!(&ops[1], MachineOperand::Immediate(64));
+            if is_64 {
+                encode_mem_ext(buf, &[0xDD], 0, &mem, ctx); // FLD mem64
+            } else {
+                encode_mem_ext(buf, &[0xD9], 0, &mem, ctx); // FLD mem32
+            }
+        }
+        // FLD [EBP+frame_idx] — load float from stack frame slot
+        MachineOperand::FrameIndex(idx) => {
+            let mem = frame_index_to_mem_operand(*idx);
             let is_64 = ops.len() > 1
                 && matches!(&ops[1], MachineOperand::Immediate(64));
             if is_64 {
@@ -1529,14 +1817,25 @@ fn encode_fst_fstp(
     match &ops[0] {
         MachineOperand::Register(reg) if is_pop => {
             // FSTP ST(i): DD D8+i
-            let st_i = reg.index();
-            if (24..32).contains(&st_i) {
+            if is_fpu_reg(*reg) {
+                let st_i = (reg.index() - 24) as u8;
                 buf.push(0xDD);
-                buf.push(0xD8 + (st_i - 24) as u8);
+                buf.push(0xD8 + st_i);
             }
         }
         MachineOperand::Memory { base, offset, index, scale } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            let is_64 = ops.len() > 1
+                && matches!(&ops[1], MachineOperand::Immediate(64));
+            if is_64 {
+                encode_mem_ext(buf, &[0xDD], ext, &mem, ctx);
+            } else {
+                encode_mem_ext(buf, &[0xD9], ext, &mem, ctx);
+            }
+        }
+        // FST/FSTP [EBP+frame_idx] — store float to stack frame slot
+        MachineOperand::FrameIndex(idx) => {
+            let mem = frame_index_to_mem_operand(*idx);
             let is_64 = ops.len() > 1
                 && matches!(&ops[1], MachineOperand::Immediate(64));
             if is_64 {
@@ -1583,6 +1882,17 @@ fn encode_fpu_arith(
                 encode_mem_ext(buf, &[escape32], 0, &mem, ctx);
             }
         }
+        // FPU arith with [EBP+frame_idx] — operate on stack frame slot
+        MachineOperand::FrameIndex(idx) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            let is_64 = ops.len() > 1
+                && matches!(&ops[1], MachineOperand::Immediate(64));
+            if is_64 {
+                encode_mem_ext(buf, &[escape64], 0, &mem, ctx);
+            } else {
+                encode_mem_ext(buf, &[escape32], 0, &mem, ctx);
+            }
+        }
         _ => {}
     }
 }
@@ -1597,15 +1907,20 @@ fn encode_fild(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
         return;
     }
 
-    if let MachineOperand::Memory { base, offset, index, scale } = &ops[0] {
-        let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
-        let is_64 = ops.len() > 1
-            && matches!(&ops[1], MachineOperand::Immediate(64));
-        if is_64 {
-            encode_mem_ext(buf, &[0xDF], 5, &mem, ctx);
-        } else {
-            encode_mem_ext(buf, &[0xDB], 0, &mem, ctx);
+    // Determine memory operand from either Memory or FrameIndex
+    let mem = match &ops[0] {
+        MachineOperand::Memory { base, offset, index, scale } => {
+            machine_mem_to_mem_operand(base, *offset, index, *scale)
         }
+        MachineOperand::FrameIndex(idx) => frame_index_to_mem_operand(*idx),
+        _ => return,
+    };
+
+    let is_64 = ops.len() > 1 && matches!(&ops[1], MachineOperand::Immediate(64));
+    if is_64 {
+        encode_mem_ext(buf, &[0xDF], 5, &mem, ctx);
+    } else {
+        encode_mem_ext(buf, &[0xDB], 0, &mem, ctx);
     }
 }
 
@@ -1619,15 +1934,20 @@ fn encode_fistp(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContex
         return;
     }
 
-    if let MachineOperand::Memory { base, offset, index, scale } = &ops[0] {
-        let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
-        let is_64 = ops.len() > 1
-            && matches!(&ops[1], MachineOperand::Immediate(64));
-        if is_64 {
-            encode_mem_ext(buf, &[0xDF], 7, &mem, ctx);
-        } else {
-            encode_mem_ext(buf, &[0xDB], 3, &mem, ctx);
+    // Determine memory operand from either Memory or FrameIndex
+    let mem = match &ops[0] {
+        MachineOperand::Memory { base, offset, index, scale } => {
+            machine_mem_to_mem_operand(base, *offset, index, *scale)
         }
+        MachineOperand::FrameIndex(idx) => frame_index_to_mem_operand(*idx),
+        _ => return,
+    };
+
+    let is_64 = ops.len() > 1 && matches!(&ops[1], MachineOperand::Immediate(64));
+    if is_64 {
+        encode_mem_ext(buf, &[0xDF], 7, &mem, ctx);
+    } else {
+        encode_mem_ext(buf, &[0xDB], 3, &mem, ctx);
     }
 }
 
@@ -1638,6 +1958,33 @@ fn encode_fistp(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContex
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Validate that the named register constants from the registers module
+    /// produce the expected 3-bit encodings used throughout the encoder.
+    #[test]
+    fn test_register_encoding_constants() {
+        // GPR encodings
+        assert_eq!(reg_encoding(registers::EAX), EAX_ENC);
+        assert_eq!(reg_encoding(registers::ECX), ECX_ENC);
+        assert_eq!(reg_encoding(registers::EDX), EDX_ENC);
+        assert_eq!(reg_encoding(registers::EBX), EBX_ENC);
+        assert_eq!(reg_encoding(registers::ESP), ESP_ENC);
+        assert_eq!(reg_encoding(registers::EBP), EBP_ENC);
+        assert_eq!(reg_encoding(registers::ESI), ESI_ENC);
+        assert_eq!(reg_encoding(registers::EDI), EDI_ENC);
+        // Sub-register encoding (AL maps to EAX slot, CL to ECX slot)
+        assert_eq!(reg_encoding(registers::AL), EAX_ENC);
+        assert_eq!(reg_encoding(registers::CL), ECX_ENC);
+        // FPU register classification
+        assert!(is_fpu_reg(registers::ST0));
+        assert!(!is_gpr_reg(registers::ST0));
+        // GPR classification
+        assert!(is_gpr_reg(registers::EAX));
+        assert!(!is_fpu_reg(registers::EAX));
+        // Byte sub-register checks
+        assert!(has_byte_sub(registers::EAX));
+        assert!(!has_byte_sub(registers::ESI));
+    }
 
     #[test]
     fn test_encode_modrm_register_direct() {

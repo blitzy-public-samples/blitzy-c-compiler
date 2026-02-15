@@ -31,43 +31,36 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::common::target::Target;
-use crate::common::diagnostics::{DiagnosticEngine, Span};
-use crate::common::temp_files::TempFile;
-use crate::common::types::CType;
-use crate::ir::module::IrModule;
-use crate::ir::function::{IrFunction, Linkage, Visibility};
-use crate::ir::types::IrType;
-use crate::backend::traits::{
-    ArchCodegen, MachineFunction, MachineBasicBlock,
-    CodegenConfig as BackendCodegenConfig,
+use crate::backend::aarch64::AArch64Codegen;
+use crate::backend::dwarf::{DwarfGenerator, DwarfSections};
+use crate::backend::elf_writer_common::{
+    ElfSection, ElfSymbol, ElfWriter, ProgramHeader, ET_DYN, ET_EXEC, ET_REL, PT_GNU_STACK,
+    PT_LOAD, PT_PHDR, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHN_UNDEF, SHT_NOBITS, SHT_PROGBITS,
+    STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_NOTYPE, STT_OBJECT, STV_DEFAULT,
+    STV_HIDDEN, STV_PROTECTED,
+};
+use crate::backend::i686::I686Codegen;
+use crate::backend::linker_common::{
+    DynamicSectionBuilder, InputRelocation, InputSection, InputSymbol, LinkerScript, OutputType,
+    SectionMerger, SymbolBinding, SymbolResolver, SymbolType as LinkerSymbolType,
+    SymbolVisibility as LinkerSymbolVisibility,
 };
 use crate::backend::register_allocator::RegisterAllocator;
-use crate::backend::elf_writer_common::{
-    ElfWriter, ElfSection, ElfSymbol, ProgramHeader,
-    ET_REL, ET_EXEC, ET_DYN,
-    SHT_PROGBITS, SHT_NOBITS,
-    SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR,
-    STB_LOCAL, STB_GLOBAL, STB_WEAK,
-    STT_NOTYPE, STT_FUNC, STT_OBJECT, STT_FILE,
-    STV_DEFAULT, STV_HIDDEN, STV_PROTECTED,
-    SHN_UNDEF,
-    PT_LOAD, PT_PHDR, PT_GNU_STACK,
+use crate::backend::riscv64::RiscV64Codegen;
+use crate::backend::traits::{
+    ArchCodegen, CodegenConfig as BackendCodegenConfig, MachineBasicBlock, MachineFunction,
+};
+use crate::backend::x86_64::security::{
+    apply_security_mitigations, RetpolineGenerator, SecurityConfig,
 };
 use crate::backend::x86_64::X86_64Codegen;
-use crate::backend::i686::I686Codegen;
-use crate::backend::aarch64::AArch64Codegen;
-use crate::backend::riscv64::RiscV64Codegen;
-use crate::backend::x86_64::security::{
-    apply_security_mitigations, SecurityConfig, RetpolineGenerator,
-};
-use crate::backend::dwarf::{DwarfGenerator, DwarfSections};
-use crate::backend::linker_common::{
-    LinkerScript, OutputType, SymbolResolver, SectionMerger,
-    DynamicSectionBuilder,
-    InputSection, InputSymbol, InputRelocation,
-    SymbolBinding, SymbolType as LinkerSymbolType, SymbolVisibility as LinkerSymbolVisibility,
-};
+use crate::common::diagnostics::{DiagnosticEngine, Span};
+use crate::common::target::Target;
+use crate::common::temp_files::TempFile;
+use crate::common::types::CType;
+use crate::ir::function::{IrFunction, Linkage, Visibility};
+use crate::ir::module::IrModule;
+use crate::ir::types::IrType;
 
 // ---------------------------------------------------------------------------
 // OutputMode — CLI-level compilation stop point
@@ -386,10 +379,7 @@ fn compile_function(
 
     // Step 4: Security mitigations (x86-64 only)
     if config.has_security_mitigations() {
-        let sec_config = SecurityConfig::from_flags(
-            config.retpoline,
-            config.cf_protection,
-        );
+        let sec_config = SecurityConfig::from_flags(config.retpoline, config.cf_protection);
         apply_security_mitigations(&mut mf, &sec_config);
     }
 
@@ -408,14 +398,8 @@ fn compile_function(
             .iter()
             .enumerate()
             .map(|(i, param)| {
-                let name = param
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("arg{}", i));
-                let type_handle = dwarf.emit_type(
-                    &ir_type_to_ctype(&param.ty),
-                    &config.target,
-                );
+                let name = param.name.clone().unwrap_or_else(|| format!("arg{}", i));
+                let type_handle = dwarf.emit_type(&ir_type_to_ctype(&param.ty), &config.target);
                 (name, type_handle)
             })
             .collect();
@@ -661,7 +645,11 @@ fn write_assembly_output(
         } else if global.is_const {
             writeln!(output, "\t.section\t.rodata,\"a\",@progbits")?;
         } else {
-            writeln!(output, "\t.section\t{},\"aw\",@progbits", global.section_name)?;
+            writeln!(
+                output,
+                "\t.section\t{},\"aw\",@progbits",
+                global.section_name
+            )?;
         }
         writeln!(output, "\t.p2align\t{}", global.alignment.trailing_zeros())?;
         if global.is_global {
@@ -674,8 +662,7 @@ fn write_assembly_output(
         } else {
             for chunk in global.data.chunks(16) {
                 write!(output, "\t.byte\t")?;
-                let hex_strs: Vec<String> =
-                    chunk.iter().map(|b| format!("0x{:02x}", b)).collect();
+                let hex_strs: Vec<String> = chunk.iter().map(|b| format!("0x{:02x}", b)).collect();
                 writeln!(output, "{}", hex_strs.join(", "))?;
             }
         }
@@ -755,7 +742,14 @@ fn write_object_file(
         let sym_offset = rodata_offset;
         rodata_data.extend_from_slice(&lit.data);
         rodata_offset += lit.data.len() as u64;
-        rodata_symbols.push((lit.label.clone(), sym_offset, lit.data.len() as u64, false, false, STV_DEFAULT));
+        rodata_symbols.push((
+            lit.label.clone(),
+            sym_offset,
+            lit.data.len() as u64,
+            false,
+            false,
+            STV_DEFAULT,
+        ));
     }
 
     // Const globals go into .rodata
@@ -971,7 +965,7 @@ fn write_linked_output(
 
     // .bss section from zero-initialized globals
     let bss_section = build_bss_section(globals, object_index);
-    if bss_section.data.len() > 0 {
+    if !bss_section.data.is_empty() {
         section_merger.add_input_section(bss_section);
     }
 
@@ -1081,11 +1075,8 @@ fn write_linked_output(
 
     // Add merged output sections
     for out_section in section_merger.output_sections() {
-        let section_data = section_merger.collect_section_data(
-            section_merger
-                .find_section(&out_section.name)
-                .unwrap_or(0),
-        );
+        let section_data = section_merger
+            .collect_section_data(section_merger.find_section(&out_section.name).unwrap_or(0));
         let mut elf_section = ElfSection::new(&out_section.name, out_section.section_type);
         elf_section.flags = out_section.flags;
         elf_section.data = section_data;
@@ -1262,9 +1253,9 @@ pub fn generate_code(
     if dwarf.is_enabled() {
         dwarf.begin_compilation_unit(
             &module.name,
-            ".",  // compilation directory
-            0,    // low_pc — will be the first function's address
-            0,    // high_pc — will be the last function's end address
+            ".", // compilation directory
+            0,   // low_pc — will be the first function's address
+            0,   // high_pc — will be the last function's end address
         );
     }
 
@@ -1323,12 +1314,9 @@ pub fn generate_code(
 
     // --- Phase 10e: Produce output based on mode ---
     match config.output_mode {
-        OutputMode::Assembly => write_assembly_output(
-            &assembled_functions,
-            &assembled_globals,
-            module,
-            config,
-        ),
+        OutputMode::Assembly => {
+            write_assembly_output(&assembled_functions, &assembled_globals, module, config)
+        }
         OutputMode::Object => write_object_file(
             &assembled_functions,
             &assembled_globals,
@@ -1784,7 +1772,7 @@ fn build_program_headers(
     // PT_PHDR — program header table self-reference
     let phdr = ProgramHeader {
         p_type: PT_PHDR,
-        p_flags: 0x4, // PF_R
+        p_flags: 0x4,   // PF_R
         p_offset: 0x40, // standard ELF64 header size
         p_vaddr: base_address + 0x40,
         p_paddr: base_address + 0x40,
@@ -1828,9 +1816,7 @@ fn build_program_headers(
     let ro_sections: Vec<&_> = output_sections
         .iter()
         .filter(|s| {
-            s.flags & SHF_ALLOC != 0
-                && s.flags & SHF_WRITE == 0
-                && s.flags & SHF_EXECINSTR == 0
+            s.flags & SHF_ALLOC != 0 && s.flags & SHF_WRITE == 0 && s.flags & SHF_EXECINSTR == 0
         })
         .collect();
     if !ro_sections.is_empty() {

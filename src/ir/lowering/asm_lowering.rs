@@ -53,8 +53,7 @@ use crate::common::fx_hash::FxHashMap;
 use crate::common::string_interner::Symbol;
 use crate::common::target::Target;
 use crate::frontend::parser::ast::{AsmOperand, AsmStatement};
-use crate::ir::basic_block::BasicBlockId;
-use crate::ir::instructions::ValueId;
+use crate::ir::instructions::{BasicBlockId, ValueId};
 use crate::ir::types::IrType;
 
 use super::expr_lowering::{lower_expression, lower_lvalue};

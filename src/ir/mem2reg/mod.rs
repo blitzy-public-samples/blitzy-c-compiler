@@ -64,7 +64,9 @@ pub mod phi_eliminate;
 
 // ── Convenience re-exports ──────────────────────────────────────────────────
 
-pub use dominance_frontier::{compute_iterated_frontier, compute_phi_placements, DominanceFrontier};
+pub use dominance_frontier::{
+    compute_iterated_frontier, compute_phi_placements, DominanceFrontier,
+};
 pub use dominator_tree::DominatorTree;
 pub use phi_eliminate::{eliminate_phis, verify_no_phis};
 pub use ssa_builder::{rename_variables, AllocaSlot, SsaRenamer};
@@ -220,10 +222,7 @@ pub fn promote_allocas_to_registers(func: &mut IrFunction) {
     let alloca_slots: Vec<AllocaSlot> = alloca_infos
         .iter()
         .map(|info| {
-            let undef_name = info
-                .name
-                .as_ref()
-                .map(|n| format!("{}.undef", n));
+            let undef_name = info.name.as_ref().map(|n| format!("{}.undef", n));
             let undef_value = func.new_value(info.ty.clone(), undef_name);
             AllocaSlot {
                 alloca_value_id: info.alloca_id,
@@ -419,12 +418,16 @@ fn has_volatile_access(func: &IrFunction, alloca_id: ValueId) -> bool {
         for inst in block.instructions() {
             match inst {
                 Instruction::Load {
-                    ptr, volatile: true, ..
+                    ptr,
+                    volatile: true,
+                    ..
                 } if *ptr == alloca_id => {
                     return true;
                 }
                 Instruction::Store {
-                    ptr, volatile: true, ..
+                    ptr,
+                    volatile: true,
+                    ..
                 } if *ptr == alloca_id => {
                     return true;
                 }
@@ -564,7 +567,9 @@ mod tests {
         };
 
         // Return
-        let ret_inst = Instruction::Return { value: Some(load_result) };
+        let ret_inst = Instruction::Return {
+            value: Some(load_result),
+        };
 
         // Build the entry block
         let entry = func.get_block_mut(entry_id);
@@ -582,9 +587,18 @@ mod tests {
         let infos = identify_promotable_allocas(&func);
 
         assert_eq!(infos.len(), 1, "Expected exactly one promotable alloca");
-        assert!(infos[0].ty.is_scalar(), "Alloca type should be scalar (i32)");
-        assert!(!infos[0].def_blocks.is_empty(), "Should have at least one def block");
-        assert!(!infos[0].use_blocks.is_empty(), "Should have at least one use block");
+        assert!(
+            infos[0].ty.is_scalar(),
+            "Alloca type should be scalar (i32)"
+        );
+        assert!(
+            !infos[0].def_blocks.is_empty(),
+            "Should have at least one def block"
+        );
+        assert!(
+            !infos[0].use_blocks.is_empty(),
+            "Should have at least one use block"
+        );
     }
 
     #[test]
@@ -593,7 +607,10 @@ mod tests {
         let entry_id = func.entry_block_id;
 
         // Aggregate alloca: %0 = alloca {i32, i32}
-        let agg_type = IrType::Struct { fields: vec![IrType::I32, IrType::I32], packed: false };
+        let agg_type = IrType::Struct {
+            fields: vec![IrType::I32, IrType::I32],
+            packed: false,
+        };
         let alloca_result = func.new_value(IrType::Ptr, Some("pair.addr".into()));
         let alloca_inst = Instruction::Alloca {
             result: alloca_result,
@@ -608,7 +625,10 @@ mod tests {
         entry.set_terminator(ret_inst);
 
         let infos = identify_promotable_allocas(&func);
-        assert!(infos.is_empty(), "Aggregate alloca should not be promotable");
+        assert!(
+            infos.is_empty(),
+            "Aggregate alloca should not be promotable"
+        );
     }
 
     #[test]
@@ -643,7 +663,10 @@ mod tests {
         entry.set_terminator(ret_inst);
 
         let infos = identify_promotable_allocas(&func);
-        assert!(infos.is_empty(), "Address-taken alloca should not be promotable");
+        assert!(
+            infos.is_empty(),
+            "Address-taken alloca should not be promotable"
+        );
     }
 
     #[test]
@@ -667,7 +690,9 @@ mod tests {
             volatile: true,
         };
 
-        let ret_inst = Instruction::Return { value: Some(load_result) };
+        let ret_inst = Instruction::Return {
+            value: Some(load_result),
+        };
 
         let entry = func.get_block_mut(entry_id);
         entry.add_instruction(alloca_inst);
@@ -687,7 +712,10 @@ mod tests {
         func.get_block_mut(entry_id).set_terminator(ret_inst);
 
         let infos = identify_promotable_allocas(&func);
-        assert!(infos.is_empty(), "Function with no allocas should have empty list");
+        assert!(
+            infos.is_empty(),
+            "Function with no allocas should have empty list"
+        );
     }
 
     #[test]

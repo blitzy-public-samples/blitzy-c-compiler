@@ -91,8 +91,8 @@ pub mod linker;
 // ---------------------------------------------------------------------------
 
 use crate::backend::traits::{
-    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr, MachineOperand,
-    ParamClass, PhysReg, RelocationType,
+    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr, MachineOperand, ParamClass, PhysReg,
+    RelocationType,
 };
 use crate::common::target::Target;
 use crate::common::types::CType;
@@ -608,9 +608,10 @@ impl ArchCodegen for RiscV64Codegen {
         // Scan for call instructions to set the has_calls flag.
         // This affects prologue generation: leaf functions (no calls) can
         // skip saving the return address register (ra).
-        mf.has_calls = mf.blocks.iter().any(|bb| {
-            bb.instructions.iter().any(|instr| instr.is_call)
-        });
+        mf.has_calls = mf
+            .blocks
+            .iter()
+            .any(|bb| bb.instructions.iter().any(|instr| instr.is_call));
 
         // Extract function-level properties for validation and metadata.
         let param_count = func.params.len();
@@ -808,11 +809,7 @@ impl ArchCodegen for RiscV64Codegen {
     fn emit_prologue(&self, mf: &mut MachineFunction) {
         let callee_saved = mf.used_callee_saved.clone();
         let has_calls = mf.has_calls;
-        let prologue_instrs = self.generate_prologue(
-            mf.frame_size,
-            &callee_saved,
-            has_calls,
-        );
+        let prologue_instrs = self.generate_prologue(mf.frame_size, &callee_saved, has_calls);
 
         // Insert prologue instructions at the beginning of the entry block.
         // The entry block is always the first block in the function.
@@ -837,19 +834,13 @@ impl ArchCodegen for RiscV64Codegen {
     fn emit_epilogue(&self, mf: &mut MachineFunction) {
         let callee_saved = mf.used_callee_saved.clone();
         let has_calls = mf.has_calls;
-        let epilogue_instrs = self.generate_epilogue(
-            mf.frame_size,
-            &callee_saved,
-            has_calls,
-        );
+        let epilogue_instrs = self.generate_epilogue(mf.frame_size, &callee_saved, has_calls);
 
         // Replace every return instruction with the full epilogue sequence.
         // The epilogue already includes its own RET instruction, so we
         // substitute rather than insert-before.
         for bb in &mut mf.blocks {
-            let mut new_instrs = Vec::with_capacity(
-                bb.instructions.len() + epilogue_instrs.len(),
-            );
+            let mut new_instrs = Vec::with_capacity(bb.instructions.len() + epilogue_instrs.len());
             for instr in bb.instructions.drain(..) {
                 if instr.is_return {
                     // Replace the bare return with the complete epilogue
@@ -925,11 +916,7 @@ impl ArchCodegen for RiscV64Codegen {
     /// # Returns
     ///
     /// A [`MachineOperand`] referencing the loaded symbol address.
-    fn generate_pic_addressing(
-        &self,
-        symbol: &str,
-        mf: &mut MachineFunction,
-    ) -> MachineOperand {
+    fn generate_pic_addressing(&self, symbol: &str, mf: &mut MachineFunction) -> MachineOperand {
         if self.config.requires_pic() {
             // PIC mode: emit an AUIPC + LD via GOT sequence.
             // AUIPC loads the page address of the GOT entry, then
@@ -938,9 +925,10 @@ impl ArchCodegen for RiscV64Codegen {
             let got_symbol = format!("{}@GOT", symbol);
 
             if !mf.blocks.is_empty() {
-                let last_bb = mf.blocks.last_mut().expect(
-                    "generate_pic_addressing: function must have at least one basic block",
-                );
+                let last_bb = mf
+                    .blocks
+                    .last_mut()
+                    .expect("generate_pic_addressing: function must have at least one basic block");
 
                 // AUIPC t0, %got_pcrel_hi(symbol)
                 let mut auipc = MachineInstr::with_operands(
@@ -1100,7 +1088,7 @@ mod tests {
         let backend = RiscV64Codegen::new(test_config());
         let callee = backend.callee_saved_registers();
         assert_eq!(callee.len(), 12); // s0–s11
-        // s0 (FP) should be first
+                                      // s0 (FP) should be first
         assert_eq!(callee[0], registers::S0);
     }
 
@@ -1321,7 +1309,10 @@ mod tests {
         let backend = RiscV64Codegen::new(test_config());
         let relocs = backend.get_relocation_types();
         let has_branch = relocs.iter().any(|r| r.name.contains("BRANCH"));
-        assert!(has_branch, "RISC-V relocations should include R_RISCV_BRANCH");
+        assert!(
+            has_branch,
+            "RISC-V relocations should include R_RISCV_BRANCH"
+        );
     }
 
     // -- align_to helper tests ----------------------------------------------

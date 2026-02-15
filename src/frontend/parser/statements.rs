@@ -149,9 +149,7 @@ pub fn parse_compound_statement(parser: &mut Parser<'_>) -> Result<Statement, Pa
                 // remaining block items.
                 let error_span = e.span;
                 parser.diagnostics.error(error_span, &e.message);
-                items.push(BlockItem::Statement(Statement::Error {
-                    span: error_span,
-                }));
+                items.push(BlockItem::Statement(Statement::Error { span: error_span }));
                 parser.synchronize();
                 if parser.at_end() {
                     break;
@@ -371,8 +369,13 @@ pub fn parse_goto_statement(parser: &mut Parser<'_>) -> Result<Statement, ParseE
             let error_label = error_symbol(parser.interner);
             // Try to consume the semicolon for resynchronisation.
             let end_span = if parser.eat(TokenKind::Semicolon) {
-                Span::merge(start, parser.tokens.get(parser.pos.wrapping_sub(1))
-                    .map_or(e.span, |t| t.span))
+                Span::merge(
+                    start,
+                    parser
+                        .tokens
+                        .get(parser.pos.wrapping_sub(1))
+                        .map_or(e.span, |t| t.span),
+                )
             } else {
                 Span::merge(start, e.span)
             };
@@ -411,9 +414,9 @@ pub fn parse_return_statement(parser: &mut Parser<'_>) -> Result<Statement, Pars
     let value = if parser.check(TokenKind::Semicolon) {
         None
     } else {
-        Some(Box::new(
-            super::expressions::parse_assignment_expression(parser)?,
-        ))
+        Some(Box::new(super::expressions::parse_assignment_expression(
+            parser,
+        )?))
     };
 
     let end = parser.expect_semicolon()?;

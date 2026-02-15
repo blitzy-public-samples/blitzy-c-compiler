@@ -576,8 +576,7 @@ impl DwarfGenerator {
             // -- Phase 4: Replay deferred types → build handle-to-offset map --
             // Handle 0 → offset 0 (void, no DIE emitted).
             // Handle N (1-based) → deferred_types[N-1].
-            let mut handle_to_offset: Vec<u32> =
-                Vec::with_capacity(self.deferred_types.len() + 1);
+            let mut handle_to_offset: Vec<u32> = Vec::with_capacity(self.deferred_types.len() + 1);
             handle_to_offset.push(0); // Handle 0 = void → offset 0
 
             for ctype in &self.deferred_types {
@@ -600,23 +599,17 @@ impl DwarfGenerator {
 
                 // Emit DW_TAG_formal_parameter DIEs for each parameter.
                 for (param_name, type_handle) in &func.params {
-                    let type_offset =
-                        Self::resolve_type_handle(&handle_to_offset, *type_handle);
+                    let type_offset = Self::resolve_type_handle(&handle_to_offset, *type_handle);
                     // Default location: DW_OP_FBREG with sleb128(0). The actual
                     // location expression comes from register allocation; this
                     // default covers -O0 frame-base-relative parameters.
                     let default_location = [info::DW_OP_FBREG, 0x00];
-                    info_builder.emit_formal_parameter(
-                        param_name,
-                        type_offset,
-                        &default_location,
-                    );
+                    info_builder.emit_formal_parameter(param_name, type_offset, &default_location);
                 }
 
                 // Emit DW_TAG_variable DIEs for each local variable.
                 for (var_name, type_handle, location_expr) in &func.locals {
-                    let type_offset =
-                        Self::resolve_type_handle(&handle_to_offset, *type_handle);
+                    let type_offset = Self::resolve_type_handle(&handle_to_offset, *type_handle);
                     info_builder.emit_variable(var_name, type_offset, location_expr);
                 }
 
@@ -651,8 +644,7 @@ impl DwarfGenerator {
         };
 
         // Primary source file gets DWARF file index 1.
-        let _primary_file_idx =
-            line_builder.add_file(&cu_info.source_file, dir_idx);
+        let _primary_file_idx = line_builder.add_file(&cu_info.source_file, dir_idx);
 
         // Emit the line program header (must precede any program opcodes).
         line_builder.emit_header();
@@ -851,12 +843,12 @@ impl DwarfGenerator {
             // phase fills in real machine code addresses.
             self.emit_function(
                 &func.name,
-                0,    // low_pc — set by backend after code emission
-                0,    // high_pc — set by backend after code emission
+                0, // low_pc — set by backend after code emission
+                0, // high_pc — set by backend after code emission
                 is_external,
                 &params,
-                &[],  // locals — set by backend after register allocation
-                &[],  // line_entries — set by backend after code emission
+                &[], // locals — set by backend after register allocation
+                &[], // line_entries — set by backend after code emission
             );
         }
 
@@ -976,7 +968,10 @@ mod tests {
         assert!(sections.is_some(), "Enabled generator must return Some");
         let s = sections.unwrap();
         assert!(!s.debug_info.is_empty(), ".debug_info must be non-empty");
-        assert!(!s.debug_abbrev.is_empty(), ".debug_abbrev must be non-empty");
+        assert!(
+            !s.debug_abbrev.is_empty(),
+            ".debug_abbrev must be non-empty"
+        );
         assert!(!s.debug_line.is_empty(), ".debug_line must be non-empty");
         assert!(!s.debug_str.is_empty(), ".debug_str must be non-empty");
     }
@@ -1068,11 +1063,7 @@ mod tests {
             true,
             &[],
             &[],
-            &[
-                (0x2300, 1, 10, 1),
-                (0x2310, 1, 11, 1),
-                (0x2320, 1, 12, 1),
-            ],
+            &[(0x2300, 1, 10, 1), (0x2310, 1, 11, 1), (0x2320, 1, 12, 1)],
         );
 
         dwarf.end_compilation_unit();
@@ -1225,10 +1216,7 @@ mod tests {
         // Exercise DebugInfoBuilder::emit_struct_type() directly.
         let struct_off = builder.emit_struct_type(
             Some("point"),
-            &[
-                ("x".to_string(), int_off, 0),
-                ("y".to_string(), int_off, 4),
-            ],
+            &[("x".to_string(), int_off, 0), ("y".to_string(), int_off, 4)],
         );
         assert!(struct_off > 0);
 
@@ -1299,7 +1287,10 @@ mod tests {
         let off2 = table.add_string("world");
         let off3 = table.add_string("hello"); // duplicate
         assert_eq!(off1, off3, "Duplicate strings must return same offset");
-        assert_ne!(off1, off2, "Different strings must return different offsets");
+        assert_ne!(
+            off1, off2,
+            "Different strings must return different offsets"
+        );
 
         // Exercise section_size().
         let size = table.section_size();

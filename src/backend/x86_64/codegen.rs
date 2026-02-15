@@ -21,25 +21,21 @@
 //! Per Section 0.1.2, x86-64 is the primary validation target and is validated
 //! first in the fixed backend validation order.
 
-
 use std::fmt;
 
 use crate::backend::traits::{
     CodegenConfig, MachineFunction, MachineInstr, MachineOperand, PhysReg,
 };
 use crate::backend::x86_64::abi::{
-    compute_param_locations, can_use_red_zone, ParamLocation, RED_ZONE_SIZE,
-};
-use crate::backend::x86_64::registers::{
-    RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
-    R8, R9, R10, R11, R12, R13, R14, R15,
-    XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
-    CALLER_SAVED,
-    gpr_encoding, gpr_name_64,
+    can_use_red_zone, compute_param_locations, ParamLocation, RED_ZONE_SIZE,
 };
 use crate::backend::x86_64::opcodes;
+use crate::backend::x86_64::registers::{
+    gpr_encoding, gpr_name_64, CALLER_SAVED, R10, R11, R12, R13, R14, R15, R8, R9, RAX, RBP, RBX,
+    RCX, RDI, RDX, RSI, RSP, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
+};
 use crate::common::diagnostics::{DiagnosticEngine, Span};
-use crate::common::fx_hash::{FxHashMap, FxHashSet, fx_hash_map, fx_hash_map_with_capacity};
+use crate::common::fx_hash::{fx_hash_map, fx_hash_map_with_capacity, FxHashMap, FxHashSet};
 use crate::common::types::{CType, FieldDef};
 use crate::ir::basic_block::BasicBlockId;
 use crate::ir::function::{IrFunction, ValueId};
@@ -58,63 +54,169 @@ use crate::ir::types::IrType;
 /// field uses the `u32` constants from the `opcodes` module directly.
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum X86_64Opcode {
-    MOV, MOVSX, MOVZX, LEA, PUSH, POP,
-    ADD, SUB, IMUL, IDIV, DIV, NEG, NOT,
-    AND, OR, XOR, SHL, SHR, SAR,
-    CMP, TEST, CDQ, CQO,
-    CMOVE, CMOVNE, CMOVL, CMOVLE, CMOVG, CMOVGE,
-    CMOVB, CMOVBE, CMOVA, CMOVAE,
-    SETE, SETNE, SETL, SETLE, SETG, SETGE,
-    SETB, SETBE, SETA, SETAE,
-    JMP, JE, JNE, JL, JLE, JG, JGE,
-    JB, JBE, JA, JAE,
-    CALL, RET, NOP,
-    MOVSS, MOVSD, ADDSS, ADDSD, SUBSS, SUBSD,
-    MULSS, MULSD, DIVSS, DIVSD,
-    COMISS, COMISD, UCOMISS, UCOMISD,
-    CVTSI2SS, CVTSI2SD, CVTSS2SD, CVTSD2SS,
-    CVTTSS2SI, CVTTSD2SI,
-    XORPS, XORPD,
+    MOV,
+    MOVSX,
+    MOVZX,
+    LEA,
+    PUSH,
+    POP,
+    ADD,
+    SUB,
+    IMUL,
+    IDIV,
+    DIV,
+    NEG,
+    NOT,
+    AND,
+    OR,
+    XOR,
+    SHL,
+    SHR,
+    SAR,
+    CMP,
+    TEST,
+    CDQ,
+    CQO,
+    CMOVE,
+    CMOVNE,
+    CMOVL,
+    CMOVLE,
+    CMOVG,
+    CMOVGE,
+    CMOVB,
+    CMOVBE,
+    CMOVA,
+    CMOVAE,
+    SETE,
+    SETNE,
+    SETL,
+    SETLE,
+    SETG,
+    SETGE,
+    SETB,
+    SETBE,
+    SETA,
+    SETAE,
+    JMP,
+    JE,
+    JNE,
+    JL,
+    JLE,
+    JG,
+    JGE,
+    JB,
+    JBE,
+    JA,
+    JAE,
+    CALL,
+    RET,
+    NOP,
+    MOVSS,
+    MOVSD,
+    ADDSS,
+    ADDSD,
+    SUBSS,
+    SUBSD,
+    MULSS,
+    MULSD,
+    DIVSS,
+    DIVSD,
+    COMISS,
+    COMISD,
+    UCOMISS,
+    UCOMISD,
+    CVTSI2SS,
+    CVTSI2SD,
+    CVTSS2SD,
+    CVTSD2SS,
+    CVTTSS2SI,
+    CVTTSD2SI,
+    XORPS,
+    XORPD,
 }
 
 impl fmt::Display for X86_64Opcode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            Self::MOV => "mov", Self::MOVSX => "movsx", Self::MOVZX => "movzx",
-            Self::LEA => "lea", Self::PUSH => "push", Self::POP => "pop",
-            Self::ADD => "add", Self::SUB => "sub", Self::IMUL => "imul",
-            Self::IDIV => "idiv", Self::DIV => "div", Self::NEG => "neg",
-            Self::NOT => "not", Self::AND => "and", Self::OR => "or",
-            Self::XOR => "xor", Self::SHL => "shl", Self::SHR => "shr",
-            Self::SAR => "sar", Self::CMP => "cmp", Self::TEST => "test",
-            Self::CDQ => "cdq", Self::CQO => "cqo",
-            Self::CMOVE => "cmove", Self::CMOVNE => "cmovne",
-            Self::CMOVL => "cmovl", Self::CMOVLE => "cmovle",
-            Self::CMOVG => "cmovg", Self::CMOVGE => "cmovge",
-            Self::CMOVB => "cmovb", Self::CMOVBE => "cmovbe",
-            Self::CMOVA => "cmova", Self::CMOVAE => "cmovae",
-            Self::SETE => "sete", Self::SETNE => "setne",
-            Self::SETL => "setl", Self::SETLE => "setle",
-            Self::SETG => "setg", Self::SETGE => "setge",
-            Self::SETB => "setb", Self::SETBE => "setbe",
-            Self::SETA => "seta", Self::SETAE => "setae",
-            Self::JMP => "jmp", Self::JE => "je", Self::JNE => "jne",
-            Self::JL => "jl", Self::JLE => "jle",
-            Self::JG => "jg", Self::JGE => "jge",
-            Self::JB => "jb", Self::JBE => "jbe",
-            Self::JA => "ja", Self::JAE => "jae",
-            Self::CALL => "call", Self::RET => "ret", Self::NOP => "nop",
-            Self::MOVSS => "movss", Self::MOVSD => "movsd",
-            Self::ADDSS => "addss", Self::ADDSD => "addsd",
-            Self::SUBSS => "subss", Self::SUBSD => "subsd",
-            Self::MULSS => "mulss", Self::MULSD => "mulsd",
-            Self::DIVSS => "divss", Self::DIVSD => "divsd",
-            Self::COMISS => "comiss", Self::COMISD => "comisd",
-            Self::UCOMISS => "ucomiss", Self::UCOMISD => "ucomisd",
-            Self::CVTSI2SS => "cvtsi2ss", Self::CVTSI2SD => "cvtsi2sd",
-            Self::CVTSS2SD => "cvtss2sd", Self::CVTSD2SS => "cvtsd2ss",
-            Self::CVTTSS2SI => "cvttss2si", Self::CVTTSD2SI => "cvttsd2si",
-            Self::XORPS => "xorps", Self::XORPD => "xorpd",
+            Self::MOV => "mov",
+            Self::MOVSX => "movsx",
+            Self::MOVZX => "movzx",
+            Self::LEA => "lea",
+            Self::PUSH => "push",
+            Self::POP => "pop",
+            Self::ADD => "add",
+            Self::SUB => "sub",
+            Self::IMUL => "imul",
+            Self::IDIV => "idiv",
+            Self::DIV => "div",
+            Self::NEG => "neg",
+            Self::NOT => "not",
+            Self::AND => "and",
+            Self::OR => "or",
+            Self::XOR => "xor",
+            Self::SHL => "shl",
+            Self::SHR => "shr",
+            Self::SAR => "sar",
+            Self::CMP => "cmp",
+            Self::TEST => "test",
+            Self::CDQ => "cdq",
+            Self::CQO => "cqo",
+            Self::CMOVE => "cmove",
+            Self::CMOVNE => "cmovne",
+            Self::CMOVL => "cmovl",
+            Self::CMOVLE => "cmovle",
+            Self::CMOVG => "cmovg",
+            Self::CMOVGE => "cmovge",
+            Self::CMOVB => "cmovb",
+            Self::CMOVBE => "cmovbe",
+            Self::CMOVA => "cmova",
+            Self::CMOVAE => "cmovae",
+            Self::SETE => "sete",
+            Self::SETNE => "setne",
+            Self::SETL => "setl",
+            Self::SETLE => "setle",
+            Self::SETG => "setg",
+            Self::SETGE => "setge",
+            Self::SETB => "setb",
+            Self::SETBE => "setbe",
+            Self::SETA => "seta",
+            Self::SETAE => "setae",
+            Self::JMP => "jmp",
+            Self::JE => "je",
+            Self::JNE => "jne",
+            Self::JL => "jl",
+            Self::JLE => "jle",
+            Self::JG => "jg",
+            Self::JGE => "jge",
+            Self::JB => "jb",
+            Self::JBE => "jbe",
+            Self::JA => "ja",
+            Self::JAE => "jae",
+            Self::CALL => "call",
+            Self::RET => "ret",
+            Self::NOP => "nop",
+            Self::MOVSS => "movss",
+            Self::MOVSD => "movsd",
+            Self::ADDSS => "addss",
+            Self::ADDSD => "addsd",
+            Self::SUBSS => "subss",
+            Self::SUBSD => "subsd",
+            Self::MULSS => "mulss",
+            Self::MULSD => "mulsd",
+            Self::DIVSS => "divss",
+            Self::DIVSD => "divsd",
+            Self::COMISS => "comiss",
+            Self::COMISD => "comisd",
+            Self::UCOMISS => "ucomiss",
+            Self::UCOMISD => "ucomisd",
+            Self::CVTSI2SS => "cvtsi2ss",
+            Self::CVTSI2SD => "cvtsi2sd",
+            Self::CVTSS2SD => "cvtss2sd",
+            Self::CVTSD2SS => "cvtsd2ss",
+            Self::CVTTSS2SI => "cvttss2si",
+            Self::CVTTSD2SI => "cvttsd2si",
+            Self::XORPS => "xorps",
+            Self::XORPD => "xorpd",
         };
         f.write_str(name)
     }
@@ -202,21 +304,21 @@ impl CondCode {
     pub fn from_fcmp_predicate(pred: &FCmpPredicate) -> Self {
         match pred {
             // Ordered comparisons — false when NaN
-            FCmpPredicate::OEq => CondCode::E,   // ZF=1 && PF=0 (need extra PF check)
-            FCmpPredicate::ONe => CondCode::NE,   // ZF=0 && PF=0
-            FCmpPredicate::Ogt => CondCode::A,    // CF=0 && ZF=0 (above)
-            FCmpPredicate::Oge => CondCode::AE,   // CF=0 (above or equal)
-            FCmpPredicate::Olt => CondCode::B,    // CF=1 (below)
-            FCmpPredicate::Ole => CondCode::BE,   // CF=1 || ZF=1
-            FCmpPredicate::Ord => CondCode::NP,   // PF=0 (no NaN)
+            FCmpPredicate::OEq => CondCode::E, // ZF=1 && PF=0 (need extra PF check)
+            FCmpPredicate::ONe => CondCode::NE, // ZF=0 && PF=0
+            FCmpPredicate::Ogt => CondCode::A, // CF=0 && ZF=0 (above)
+            FCmpPredicate::Oge => CondCode::AE, // CF=0 (above or equal)
+            FCmpPredicate::Olt => CondCode::B, // CF=1 (below)
+            FCmpPredicate::Ole => CondCode::BE, // CF=1 || ZF=1
+            FCmpPredicate::Ord => CondCode::NP, // PF=0 (no NaN)
             // Unordered comparisons — true when NaN
-            FCmpPredicate::Uno => CondCode::P,    // PF=1
-            FCmpPredicate::UEq => CondCode::E,    // ZF=1 (includes NaN case)
-            FCmpPredicate::UNe => CondCode::NE,   // ZF=0 || PF=1
-            FCmpPredicate::Ugt => CondCode::A,    // CF=0 && ZF=0
-            FCmpPredicate::Uge => CondCode::AE,   // CF=0
-            FCmpPredicate::Ult => CondCode::B,    // CF=1
-            FCmpPredicate::Ule => CondCode::BE,   // CF=1 || ZF=1
+            FCmpPredicate::Uno => CondCode::P,  // PF=1
+            FCmpPredicate::UEq => CondCode::E,  // ZF=1 (includes NaN case)
+            FCmpPredicate::UNe => CondCode::NE, // ZF=0 || PF=1
+            FCmpPredicate::Ugt => CondCode::A,  // CF=0 && ZF=0
+            FCmpPredicate::Uge => CondCode::AE, // CF=0
+            FCmpPredicate::Ult => CondCode::B,  // CF=1
+            FCmpPredicate::Ule => CondCode::BE, // CF=1 || ZF=1
         }
     }
 
@@ -287,14 +389,22 @@ impl CondCode {
 impl fmt::Display for CondCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            CondCode::E => "e", CondCode::NE => "ne",
-            CondCode::L => "l", CondCode::LE => "le",
-            CondCode::G => "g", CondCode::GE => "ge",
-            CondCode::B => "b", CondCode::BE => "be",
-            CondCode::A => "a", CondCode::AE => "ae",
-            CondCode::S => "s", CondCode::NS => "ns",
-            CondCode::P => "p", CondCode::NP => "np",
-            CondCode::O => "o", CondCode::NO => "no",
+            CondCode::E => "e",
+            CondCode::NE => "ne",
+            CondCode::L => "l",
+            CondCode::LE => "le",
+            CondCode::G => "g",
+            CondCode::GE => "ge",
+            CondCode::B => "b",
+            CondCode::BE => "be",
+            CondCode::A => "a",
+            CondCode::AE => "ae",
+            CondCode::S => "s",
+            CondCode::NS => "ns",
+            CondCode::P => "p",
+            CondCode::NP => "np",
+            CondCode::O => "o",
+            CondCode::NO => "no",
         };
         f.write_str(name)
     }
@@ -384,12 +494,7 @@ impl MemoryOperand {
     }
 
     /// Creates a base+index*scale+displacement operand.
-    pub fn base_index_scale_disp(
-        base: PhysReg,
-        index: PhysReg,
-        scale: u8,
-        disp: i32,
-    ) -> Self {
+    pub fn base_index_scale_disp(base: PhysReg, index: PhysReg, scale: u8, disp: i32) -> Self {
         MemoryOperand {
             base: Some(base),
             index: Some(index),
@@ -420,7 +525,11 @@ impl fmt::Display for MemoryOperand {
             if let Some(idx) = self.index {
                 let idx_name = gpr_name_64(idx);
                 if self.displacement != 0 {
-                    write!(f, "{}({}, {}, {})", self.displacement, base_name, idx_name, self.scale)
+                    write!(
+                        f,
+                        "{}({}, {}, {})",
+                        self.displacement, base_name, idx_name, self.scale
+                    )
                 } else {
                     write!(f, "({}, {}, {})", base_name, idx_name, self.scale)
                 }
@@ -571,9 +680,11 @@ impl<'a> X86_64InstrSelector<'a> {
         }
 
         // Collect C types for ABI classification
-        let param_ctypes: Vec<CType> = func.params.iter().map(|p| {
-            ir_type_to_ctype(&p.ty)
-        }).collect();
+        let param_ctypes: Vec<CType> = func
+            .params
+            .iter()
+            .map(|p| ir_type_to_ctype(&p.ty))
+            .collect();
 
         let locations = compute_param_locations(&param_ctypes, &self.config.target);
 
@@ -645,86 +756,129 @@ impl<'a> X86_64InstrSelector<'a> {
     ///
     /// Returns a vector of machine instructions that implement the semantics
     /// of the given IR instruction on x86-64.
-    fn select_instruction(
-        &mut self,
-        instr: &Instruction,
-        func: &IrFunction,
-    ) -> Vec<MachineInstr> {
+    fn select_instruction(&mut self, instr: &Instruction, func: &IrFunction) -> Vec<MachineInstr> {
         match instr {
-            Instruction::Alloca { result, ty, alignment } => {
-                self.lower_alloca(*result, ty, *alignment)
-            }
-            Instruction::Load { result, ptr, ty, volatile: _ } => {
-                self.lower_load(*result, *ptr, ty, func)
-            }
-            Instruction::Store { value, ptr, volatile: _ } => {
-                self.lower_store(*value, *ptr, func)
-            }
-            Instruction::BinOp { result, op, lhs, rhs, ty } => {
-                self.lower_binop(*result, *op, *lhs, *rhs, ty, func)
-            }
-            Instruction::ICmp { result, pred, lhs, rhs } => {
-                self.lower_icmp(*result, pred, *lhs, *rhs, func)
-            }
-            Instruction::FCmp { result, pred, lhs, rhs } => {
-                self.lower_fcmp(*result, pred, *lhs, *rhs, func)
-            }
-            Instruction::Branch { target } => {
-                self.lower_branch(*target)
-            }
-            Instruction::CondBranch { condition, true_target, false_target } => {
-                self.lower_cond_branch(*condition, *true_target, *false_target)
-            }
-            Instruction::Switch { value, default, cases } => {
-                self.lower_switch(*value, cases, *default, &self.bb_map.clone())
-            }
-            Instruction::Call { result, callee, args, is_tail: _ } => {
-                self.lower_call(*result, *callee, args, func)
-            }
-            Instruction::Return { value } => {
-                self.lower_return(*value, func)
-            }
-            Instruction::Phi { result, ty: _, incoming: _ } => {
+            Instruction::Alloca {
+                result,
+                ty,
+                alignment,
+            } => self.lower_alloca(*result, ty, *alignment),
+            Instruction::Load {
+                result,
+                ptr,
+                ty,
+                volatile: _,
+            } => self.lower_load(*result, *ptr, ty, func),
+            Instruction::Store {
+                value,
+                ptr,
+                volatile: _,
+            } => self.lower_store(*value, *ptr, func),
+            Instruction::BinOp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => self.lower_binop(*result, *op, *lhs, *rhs, ty, func),
+            Instruction::ICmp {
+                result,
+                pred,
+                lhs,
+                rhs,
+            } => self.lower_icmp(*result, pred, *lhs, *rhs, func),
+            Instruction::FCmp {
+                result,
+                pred,
+                lhs,
+                rhs,
+            } => self.lower_fcmp(*result, pred, *lhs, *rhs, func),
+            Instruction::Branch { target } => self.lower_branch(*target),
+            Instruction::CondBranch {
+                condition,
+                true_target,
+                false_target,
+            } => self.lower_cond_branch(*condition, *true_target, *false_target),
+            Instruction::Switch {
+                value,
+                default,
+                cases,
+            } => self.lower_switch(*value, cases, *default, &self.bb_map.clone()),
+            Instruction::Call {
+                result,
+                callee,
+                args,
+                is_tail: _,
+            } => self.lower_call(*result, *callee, args, func),
+            Instruction::Return { value } => self.lower_return(*value, func),
+            Instruction::Phi {
+                result,
+                ty: _,
+                incoming: _,
+            } => {
                 // Phi nodes should be eliminated before codegen.
                 // If encountered, emit a NOP placeholder.
                 let _vreg = self.get_or_create_vreg(*result);
                 vec![]
             }
-            Instruction::GetElementPtr { result, base, indices, ty, in_bounds } => {
-                self.lower_gep(*result, *base, indices, ty.clone(), *in_bounds, func)
-            }
-            Instruction::BitCast { result, value, to_ty } => {
-                self.lower_bitcast(*result, *value, to_ty, func)
-            }
-            Instruction::Trunc { result, value, to_ty } => {
-                self.lower_trunc(*result, *value, to_ty, func)
-            }
-            Instruction::ZExt { result, value, to_ty } => {
-                self.lower_zext(*result, *value, to_ty, func)
-            }
-            Instruction::SExt { result, value, to_ty } => {
-                self.lower_sext(*result, *value, to_ty, func)
-            }
-            Instruction::IntToPtr { result, value, to_ty: _ } => {
+            Instruction::GetElementPtr {
+                result,
+                base,
+                indices,
+                ty,
+                in_bounds,
+            } => self.lower_gep(*result, *base, indices, ty.clone(), *in_bounds, func),
+            Instruction::BitCast {
+                result,
+                value,
+                to_ty,
+            } => self.lower_bitcast(*result, *value, to_ty, func),
+            Instruction::Trunc {
+                result,
+                value,
+                to_ty,
+            } => self.lower_trunc(*result, *value, to_ty, func),
+            Instruction::ZExt {
+                result,
+                value,
+                to_ty,
+            } => self.lower_zext(*result, *value, to_ty, func),
+            Instruction::SExt {
+                result,
+                value,
+                to_ty,
+            } => self.lower_sext(*result, *value, to_ty, func),
+            Instruction::IntToPtr {
+                result,
+                value,
+                to_ty: _,
+            } => {
                 // IntToPtr is a no-op move (same size) on x86-64
                 self.lower_mov(*result, *value)
             }
-            Instruction::PtrToInt { result, value, to_ty } => {
+            Instruction::PtrToInt {
+                result,
+                value,
+                to_ty,
+            } => {
                 // PtrToInt: may need truncation if target is smaller than 64-bit
                 self.lower_ptrtoint(*result, *value, to_ty, func)
             }
             Instruction::InlineAsm {
-                result, template, constraints, operands,
-                clobbers, has_side_effects: _, is_align_stack: _,
-            } => {
-                self.lower_inline_asm(
-                    result.as_ref().copied(),
-                    template,
-                    constraints,
-                    operands,
-                    clobbers,
-                )
-            }
+                result,
+                template,
+                constraints,
+                operands,
+                clobbers,
+                has_side_effects: _,
+                is_align_stack: _,
+            } => self.lower_inline_asm(
+                result.as_ref().copied(),
+                template,
+                constraints,
+                operands,
+                clobbers,
+            ),
         }
     }
 
@@ -950,7 +1104,11 @@ impl<'a> X86_64InstrSelector<'a> {
         let is_f32 = matches!(ty, IrType::F32);
 
         // MOV lhs to dst
-        let mov_op = if is_f32 { opcodes::MOVSS } else { opcodes::MOVSD };
+        let mov_op = if is_f32 {
+            opcodes::MOVSS
+        } else {
+            opcodes::MOVSD
+        };
         let mut mov = MachineInstr::new(mov_op);
         mov.add_operand(dst.clone());
         mov.add_operand(lhs);
@@ -968,7 +1126,11 @@ impl<'a> X86_64InstrSelector<'a> {
             (BinOp::FRem, _) => {
                 // FRem has no direct x86 instruction — would need a library call
                 // For now emit DIVSD and handle remainder via separate logic
-                if is_f32 { opcodes::DIVSS } else { opcodes::DIVSD }
+                if is_f32 {
+                    opcodes::DIVSS
+                } else {
+                    opcodes::DIVSD
+                }
             }
             _ => unreachable!("Not a floating-point BinOp"),
         };
@@ -1261,8 +1423,16 @@ impl<'a> X86_64InstrSelector<'a> {
         false_target: BasicBlockId,
     ) -> Vec<MachineInstr> {
         let cond_op = self.get_operand(condition);
-        let true_id = self.bb_map.get(&true_target.0).copied().unwrap_or(true_target.0);
-        let false_id = self.bb_map.get(&false_target.0).copied().unwrap_or(false_target.0);
+        let true_id = self
+            .bb_map
+            .get(&true_target.0)
+            .copied()
+            .unwrap_or(true_target.0);
+        let false_id = self
+            .bb_map
+            .get(&false_target.0)
+            .copied()
+            .unwrap_or(false_target.0);
 
         let mut instrs = Vec::new();
 
@@ -1453,10 +1623,13 @@ impl<'a> X86_64InstrSelector<'a> {
         let mut instrs = Vec::new();
 
         // Classify argument types for ABI
-        let arg_ctypes: Vec<CType> = args.iter().map(|a| {
-            let ty = func.get_value_type(*a);
-            ir_type_to_ctype(ty)
-        }).collect();
+        let arg_ctypes: Vec<CType> = args
+            .iter()
+            .map(|a| {
+                let ty = func.get_value_type(*a);
+                ir_type_to_ctype(ty)
+            })
+            .collect();
         let locations = compute_param_locations(&arg_ctypes, &self.config.target);
 
         // Track stack space for stack-passed arguments
@@ -1575,11 +1748,7 @@ impl<'a> X86_64InstrSelector<'a> {
     // -----------------------------------------------------------------------
 
     /// Lowers a return instruction.
-    fn lower_return(
-        &self,
-        value: Option<ValueId>,
-        func: &IrFunction,
-    ) -> Vec<MachineInstr> {
+    fn lower_return(&self, value: Option<ValueId>, func: &IrFunction) -> Vec<MachineInstr> {
         let mut instrs = Vec::new();
 
         if let Some(val) = value {
@@ -1646,7 +1815,10 @@ impl<'a> X86_64InstrSelector<'a> {
 
             // Compute element size for stride
             let elem_size = match &current_ty {
-                IrType::Array { element: ref elem_ty, count: _ } => {
+                IrType::Array {
+                    element: ref elem_ty,
+                    count: _,
+                } => {
                     let sz = elem_ty.size_bytes(&self.config.target);
                     current_ty = (**elem_ty).clone();
                     sz
@@ -1819,14 +1991,19 @@ impl<'a> X86_64InstrSelector<'a> {
             return self.lower_float_to_int(result, value, src_ty);
         }
         // Float → float widening / narrowing (CVTSS2SD / CVTSD2SS).
-        if src_is_fp && dst_is_fp && std::mem::discriminant(src_ty) != std::mem::discriminant(to_ty) {
+        if src_is_fp && dst_is_fp && std::mem::discriminant(src_ty) != std::mem::discriminant(to_ty)
+        {
             return self.lower_float_convert(result, value, src_ty, to_ty);
         }
 
         // Same register file — pure bit-reinterpretation (MOVD/MOVQ or simple MOV).
         let dst = self.get_or_create_vreg(result);
         let src = self.get_operand(value);
-        let mov_op = if dst_is_fp { opcodes::MOVSD } else { opcodes::MOV_RR };
+        let mov_op = if dst_is_fp {
+            opcodes::MOVSD
+        } else {
+            opcodes::MOV_RR
+        };
         vec![self.make_mov_opcode(dst, src, mov_op)]
     }
 
@@ -1896,11 +2073,7 @@ impl<'a> X86_64InstrSelector<'a> {
     }
 
     /// Lowers a simple move (used for IntToPtr and other no-op conversions).
-    fn lower_mov(
-        &mut self,
-        result: ValueId,
-        value: ValueId,
-    ) -> Vec<MachineInstr> {
+    fn lower_mov(&mut self, result: ValueId, value: ValueId) -> Vec<MachineInstr> {
         let dst = self.get_or_create_vreg(result);
         let src = self.get_operand(value);
         vec![self.make_mov(dst, src)]
@@ -2033,19 +2206,14 @@ impl<'a> X86_64InstrSelector<'a> {
     ///
     /// Leaf function optimization: if the function has no calls and the frame
     /// fits in the 128-byte red zone, the prologue may be simplified.
-    pub fn emit_prologue(
-        &self,
-        func: &IrFunction,
-        mfunc: &MachineFunction,
-    ) -> Vec<MachineInstr> {
+    pub fn emit_prologue(&self, func: &IrFunction, mfunc: &MachineFunction) -> Vec<MachineInstr> {
         let mut instrs = Vec::new();
         let frame_size = mfunc.frame_size;
         let use_frame_pointer = mfunc.has_calls || frame_size > 0;
 
         // Check if we can use the red zone (leaf function optimization)
-        let use_red_zone = can_use_red_zone(func)
-            && !mfunc.has_calls
-            && frame_size <= RED_ZONE_SIZE;
+        let use_red_zone =
+            can_use_red_zone(func) && !mfunc.has_calls && frame_size <= RED_ZONE_SIZE;
 
         if use_red_zone {
             // Red zone: no prologue needed for small leaf functions
@@ -2092,18 +2260,13 @@ impl<'a> X86_64InstrSelector<'a> {
     /// pop %rbp
     /// ret
     /// ```
-    pub fn emit_epilogue(
-        &self,
-        func: &IrFunction,
-        mfunc: &MachineFunction,
-    ) -> Vec<MachineInstr> {
+    pub fn emit_epilogue(&self, func: &IrFunction, mfunc: &MachineFunction) -> Vec<MachineInstr> {
         let mut instrs = Vec::new();
         let frame_size = mfunc.frame_size;
         let use_frame_pointer = mfunc.has_calls || frame_size > 0;
 
-        let use_red_zone = can_use_red_zone(func)
-            && !mfunc.has_calls
-            && frame_size <= RED_ZONE_SIZE;
+        let use_red_zone =
+            can_use_red_zone(func) && !mfunc.has_calls && frame_size <= RED_ZONE_SIZE;
 
         if use_red_zone {
             // No epilogue needed for red zone functions
@@ -2374,20 +2537,28 @@ fn ir_type_to_ctype(ty: &IrType) -> CType {
             element: Box::new(ir_type_to_ctype(element)),
             size: Some(*count),
         },
-        IrType::Struct { ref fields, packed: _ } => {
-            let c_fields: Vec<FieldDef> = fields.iter().map(|f| {
-                FieldDef {
+        IrType::Struct {
+            ref fields,
+            packed: _,
+        } => {
+            let c_fields: Vec<FieldDef> = fields
+                .iter()
+                .map(|f| FieldDef {
                     name: None,
                     ty: ir_type_to_ctype(f),
                     bit_width: None,
-                }
-            }).collect();
+                })
+                .collect();
             CType::Struct {
                 name: None,
                 fields: c_fields,
             }
         }
-        IrType::Function { ref return_type, ref param_types, is_variadic: _ } => CType::Function {
+        IrType::Function {
+            ref return_type,
+            ref param_types,
+            is_variadic: _,
+        } => CType::Function {
             return_type: Box::new(ir_type_to_ctype(return_type)),
             params: param_types.iter().map(ir_type_to_ctype).collect(),
             variadic: false,

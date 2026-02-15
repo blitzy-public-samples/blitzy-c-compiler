@@ -30,8 +30,8 @@ use super::ast::{
     AbstractDeclarator, AlignasSpecifier, Attribute, Declaration, DeclarationSpecifiers,
     Declarator, DerivedDeclarator, Designator, Enumerator, FieldDeclaration, FieldDeclarator,
     FunctionSpecifiers, InitDeclarator, Initializer, InitializerItem, Parameter, ParameterList,
-    SpecifierQualifierList, Span, Statement, StorageClass, TypeName, TypeQualifiers,
-    TypeSpecifier, TypeofOperand,
+    Span, SpecifierQualifierList, Statement, StorageClass, TypeName, TypeQualifiers, TypeSpecifier,
+    TypeofOperand,
 };
 use super::Parser;
 use crate::common::string_interner::Symbol;
@@ -120,7 +120,10 @@ fn expect_identifier(parser: &mut Parser<'_>, context: &str) -> Result<Symbol, P
         }
         _ => {
             let span = parser.current().span;
-            let msg = format!("expected identifier in {context}, found '{}'", parser.current().kind);
+            let msg = format!(
+                "expected identifier in {context}, found '{}'",
+                parser.current().kind
+            );
             parser.diagnostics.error(span, &msg);
             Err(ParseError {
                 span,
@@ -224,7 +227,14 @@ pub fn parse_external_declaration(parser: &mut Parser<'_>) -> Result<Declaration
     }
 
     // Otherwise, it's a declaration (variable, function prototype, or typedef)
-    parse_declaration_rest(parser, specifiers, first_declarator, all_attrs, has_grouping, start)
+    parse_declaration_rest(
+        parser,
+        specifiers,
+        first_declarator,
+        all_attrs,
+        has_grouping,
+        start,
+    )
 }
 
 /// Parse a declaration in block (local) scope.
@@ -286,7 +296,14 @@ pub fn parse_declaration(parser: &mut Parser<'_>) -> Result<Declaration, ParseEr
     }
 
     // Parse the rest (init-declarator-list and semicolon)
-    parse_declaration_rest(parser, specifiers, first_declarator, all_attrs, has_grouping, start)
+    parse_declaration_rest(
+        parser,
+        specifiers,
+        first_declarator,
+        all_attrs,
+        has_grouping,
+        start,
+    )
 }
 
 /// Given declaration specifiers with no declarator (followed by `;`),
@@ -696,9 +713,7 @@ pub fn parse_declarator(parser: &mut Parser<'_>) -> Result<Declarator, ParseErro
 /// Internal version of `parse_declarator` that also returns whether the
 /// declarator used grouping parentheses (needed for function-declaration
 /// vs. function-pointer disambiguation).
-fn parse_declarator_inner(
-    parser: &mut Parser<'_>,
-) -> Result<(Declarator, bool), ParseError> {
+fn parse_declarator_inner(parser: &mut Parser<'_>) -> Result<(Declarator, bool), ParseError> {
     let start = parser.current().span;
     let mut derived: Vec<DerivedDeclarator> = Vec::new();
 
@@ -710,8 +725,7 @@ fn parse_declarator_inner(
     }
 
     // Parse direct declarator (name + postfix derivations)
-    let (name, mut postfix_derived, has_grouping, name_span) =
-        parse_direct_declarator(parser)?;
+    let (name, mut postfix_derived, has_grouping, name_span) = parse_direct_declarator(parser)?;
 
     // Combine: pointer derivations come first (outermost), then postfix
     derived.append(&mut postfix_derived);
@@ -769,9 +783,7 @@ fn parse_direct_declarator(
             let next_kind = &parser.peek_ahead(1).kind;
             let is_grouped = matches!(
                 next_kind,
-                TokenKind::Star
-                    | TokenKind::LeftParen
-                    | TokenKind::Attribute
+                TokenKind::Star | TokenKind::LeftParen | TokenKind::Attribute
             ) || matches!(next_kind, TokenKind::Identifier(sym) if !parser.is_typedef_name(*sym));
 
             if is_grouped {
@@ -1198,9 +1210,7 @@ fn parse_specifier_qualifier_list(
 /// parameter-type-list: parameter-list | parameter-list , ...
 /// parameter-list: parameter-declaration | parameter-list , parameter-declaration
 /// ```
-pub fn parse_parameter_type_list(
-    parser: &mut Parser<'_>,
-) -> Result<ParameterList, ParseError> {
+pub fn parse_parameter_type_list(parser: &mut Parser<'_>) -> Result<ParameterList, ParseError> {
     let start = parser.current().span;
     let mut params: Vec<Parameter> = Vec::new();
     let mut variadic = false;
@@ -1289,9 +1299,7 @@ pub(super) fn parse_function_declarator(
         // need to handle them.
     }
 
-    Ok(DerivedDeclarator::Function {
-        params: param_list,
-    })
+    Ok(DerivedDeclarator::Function { params: param_list })
 }
 
 /// Parse a single parameter declaration.
@@ -1461,7 +1469,10 @@ pub fn parse_struct_or_union(parser: &mut Parser<'_>) -> Result<Declaration, Par
         TokenKind::Union => false,
         _ => {
             let span = parser.current().span;
-            let msg = format!("expected 'struct' or 'union', found '{}'", parser.current().kind);
+            let msg = format!(
+                "expected 'struct' or 'union', found '{}'",
+                parser.current().kind
+            );
             parser.diagnostics.error(span, &msg);
             return Err(ParseError {
                 span,
@@ -1724,9 +1735,9 @@ fn parse_struct_field(parser: &mut Parser<'_>) -> Result<FieldDeclaration, Parse
 
         // Optional bitfield width: `: constant-expression`
         let bit_width = if parser.eat(TokenKind::Colon) {
-            Some(Box::new(
-                super::expressions::parse_constant_expression(parser)?,
-            ))
+            Some(Box::new(super::expressions::parse_constant_expression(
+                parser,
+            )?))
         } else {
             None
         };
@@ -1845,9 +1856,7 @@ pub fn parse_enum(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
 ///     enum attributes? identifier? { enumerator-list [,] }
 ///     enum attributes? identifier
 /// ```
-pub(super) fn parse_enum_specifier(
-    parser: &mut Parser<'_>,
-) -> Result<TypeSpecifier, ParseError> {
+pub(super) fn parse_enum_specifier(parser: &mut Parser<'_>) -> Result<TypeSpecifier, ParseError> {
     let start = parser.current().span;
     parser.expect(TokenKind::Enum)?;
 
@@ -1897,9 +1906,7 @@ pub(super) fn parse_enum_specifier(
     } else {
         if name.is_none() {
             let span = parser.current().span;
-            parser
-                .diagnostics
-                .error(span, "enum without name or body");
+            parser.diagnostics.error(span, "enum without name or body");
         }
         None
     };
@@ -1927,9 +1934,9 @@ fn parse_enumerator(parser: &mut Parser<'_>) -> Result<Enumerator, ParseError> {
 
     // Optional explicit value: = constant-expression
     let value = if parser.eat(TokenKind::Assign) {
-        Some(Box::new(
-            super::expressions::parse_constant_expression(parser)?,
-        ))
+        Some(Box::new(super::expressions::parse_constant_expression(
+            parser,
+        )?))
     } else {
         None
     };

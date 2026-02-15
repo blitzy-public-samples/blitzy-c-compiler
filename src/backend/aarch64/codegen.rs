@@ -19,16 +19,12 @@
 
 use crate::backend::aarch64::abi::AArch64Abi;
 use crate::backend::aarch64::registers::{
-    CALLER_SAVED_INT,
-    COND_CC, COND_CS, COND_EQ, COND_GE, COND_GT, COND_HI, COND_LE,
-    COND_LS, COND_LT, COND_MI, COND_NE, COND_PL, COND_VC, COND_VS,
-    FLOAT_ARG_REGS, FP, INTEGER_ARG_REGS, LR, SP, V0, V1,
-    W0, WZR, X0, X1, X2, X3, X4, X5, X6, X7, X8, XZR,
-    invert_condition, is_callee_saved, v_to_d, v_to_s,
+    invert_condition, is_callee_saved, v_to_d, v_to_s, CALLER_SAVED_INT, COND_CC, COND_CS, COND_EQ,
+    COND_GE, COND_GT, COND_HI, COND_LE, COND_LS, COND_LT, COND_MI, COND_NE, COND_PL, COND_VC,
+    COND_VS, FLOAT_ARG_REGS, FP, INTEGER_ARG_REGS, LR, SP, V0, V1, W0, WZR, X0, X1, X2, X3, X4, X5,
+    X6, X7, X8, XZR,
 };
-use crate::backend::traits::{
-    MachineFunction, MachineInstr, MachineOperand, PhysReg,
-};
+use crate::backend::traits::{MachineFunction, MachineInstr, MachineOperand, PhysReg};
 use crate::common::diagnostics::{DiagnosticEngine, Span};
 use crate::common::fx_hash::FxHashMap;
 use crate::common::target::Target;
@@ -946,10 +942,7 @@ impl AArch64InstrSel {
             }
             _ => {
                 // Indirect call → BLR.
-                MachineInstr::with_operands(
-                    AArch64Opcode::BLR.as_u32(),
-                    vec![callee_op],
-                )
+                MachineInstr::with_operands(AArch64Opcode::BLR.as_u32(), vec![callee_op])
             }
         };
         call_instr.is_call = true;
@@ -1055,10 +1048,7 @@ impl AArch64InstrSel {
         // ADRP: load the 4 KiB-aligned page address of the symbol.
         let adrp = MachineInstr::with_operands(
             AArch64Opcode::ADRP.as_u32(),
-            vec![
-                dest.clone(),
-                MachineOperand::Symbol(symbol.to_string()),
-            ],
+            vec![dest.clone(), MachineOperand::Symbol(symbol.to_string())],
         );
         self.push_instr(mf, mbb_id, adrp);
 
@@ -1130,12 +1120,7 @@ impl AArch64InstrSel {
                 // MUL is an alias of MADD with zero addend: Xd = Xn * Xm + XZR
                 let madd = MachineInstr::with_operands(
                     AArch64Opcode::MADD.as_u32(),
-                    vec![
-                        dest.clone(),
-                        lhs_op,
-                        rhs_op,
-                        MachineOperand::Register(XZR),
-                    ],
+                    vec![dest.clone(), lhs_op, rhs_op, MachineOperand::Register(XZR)],
                 );
                 self.push_instr(mf, mbb_id, madd);
                 self.value_map.insert(result, dest);
@@ -1174,10 +1159,8 @@ impl AArch64InstrSel {
             }
         };
 
-        let instr = MachineInstr::with_operands(
-            opcode.as_u32(),
-            vec![dest.clone(), lhs_op, rhs_op],
-        );
+        let instr =
+            MachineInstr::with_operands(opcode.as_u32(), vec![dest.clone(), lhs_op, rhs_op]);
         self.push_instr(mf, mbb_id, instr);
         self.value_map.insert(result, dest);
     }
@@ -1308,10 +1291,7 @@ impl AArch64InstrSel {
         let rhs_op = self.resolve_operand(rhs);
 
         // CMP (alias of SUBS with zero destination).
-        let cmp = MachineInstr::with_operands(
-            AArch64Opcode::CMP.as_u32(),
-            vec![lhs_op, rhs_op],
-        );
+        let cmp = MachineInstr::with_operands(AArch64Opcode::CMP.as_u32(), vec![lhs_op, rhs_op]);
         self.push_instr(mf, mbb_id, cmp);
 
         // Materialize the boolean result via CSINC.
@@ -1345,10 +1325,7 @@ impl AArch64InstrSel {
         let dest = self.alloc_vreg();
 
         // FCMP sets NZCV.
-        let fcmp = MachineInstr::with_operands(
-            AArch64Opcode::FCMP.as_u32(),
-            vec![lhs_op, rhs_op],
-        );
+        let fcmp = MachineInstr::with_operands(AArch64Opcode::FCMP.as_u32(), vec![lhs_op, rhs_op]);
         self.push_instr(mf, mbb_id, fcmp);
 
         let (cond, need_extra_check) = self.fcmp_to_cond(pred);
@@ -1415,12 +1392,7 @@ impl AArch64InstrSel {
     // Private: Branch lowering
     // =======================================================================
 
-    fn lower_branch(
-        &mut self,
-        target: BasicBlockId,
-        mf: &mut MachineFunction,
-        mbb_id: u32,
-    ) {
+    fn lower_branch(&mut self, target: BasicBlockId, mf: &mut MachineFunction, mbb_id: u32) {
         let target_mbb = self.block_map.get(&target).copied().unwrap_or(0);
         let mut b = MachineInstr::with_operands(
             AArch64Opcode::B.as_u32(),
@@ -1582,11 +1554,7 @@ impl AArch64InstrSel {
                 let shifted = self.alloc_vreg();
                 let lsl = MachineInstr::with_operands(
                     AArch64Opcode::LSL.as_u32(),
-                    vec![
-                        shifted.clone(),
-                        idx_op,
-                        MachineOperand::Immediate(shift),
-                    ],
+                    vec![shifted.clone(), idx_op, MachineOperand::Immediate(shift)],
                 );
                 self.push_instr(mf, mbb_id, lsl);
 
@@ -1902,12 +1870,9 @@ impl AArch64InstrSel {
             let src = self.resolve_operand(first_val);
             self.value_map.insert(result, src);
         } else {
-            self.diag.warning(
-                Span::DUMMY,
-                "AArch64 codegen: empty phi node encountered",
-            );
-            self.value_map
-                .insert(result, MachineOperand::Register(XZR));
+            self.diag
+                .warning(Span::DUMMY, "AArch64 codegen: empty phi node encountered");
+            self.value_map.insert(result, MachineOperand::Register(XZR));
         }
     }
 
@@ -2365,5 +2330,3 @@ impl AArch64InstrSel {
         }
     }
 }
-
-

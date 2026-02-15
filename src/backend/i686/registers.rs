@@ -1264,12 +1264,22 @@ mod tests {
         // All 32-bit GPR encodings must be in 0..8
         for i in 0..8u16 {
             let enc = encoding(PhysReg(i));
-            assert!(enc < 8, "encoding for PhysReg({}) is {} (must be < 8)", i, enc);
+            assert!(
+                enc < 8,
+                "encoding for PhysReg({}) is {} (must be < 8)",
+                i,
+                enc
+            );
         }
         // All FPU encodings must be in 0..8
         for i in 24..32u16 {
             let enc = encoding(PhysReg(i));
-            assert!(enc < 8, "encoding for PhysReg({}) is {} (must be < 8)", i, enc);
+            assert!(
+                enc < 8,
+                "encoding for PhysReg({}) is {} (must be < 8)",
+                i,
+                enc
+            );
         }
     }
 }

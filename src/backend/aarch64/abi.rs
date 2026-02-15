@@ -20,9 +20,8 @@
 //! - **Platform register:** X18 (usable on Linux, reserved on some other OSes)
 
 use crate::backend::aarch64::registers::{
-    CALLEE_SAVED_FP, CALLEE_SAVED_INT, FLOAT_ARG_REGS, FP, INDIRECT_RESULT_REG,
+    v_to_d, v_to_s, CALLEE_SAVED_FP, CALLEE_SAVED_INT, FLOAT_ARG_REGS, FP, INDIRECT_RESULT_REG,
     INTEGER_ARG_REGS, LR, SP, V0, V1, X0, X1,
-    v_to_d, v_to_s,
 };
 use crate::backend::traits::{ParamClass, PhysReg};
 use crate::common::target::Target;
@@ -465,8 +464,7 @@ impl AArch64Abi {
         let callee_save_aligned = round_up_u32(callee_save_size, sp_align);
 
         // Total frame = frame record + callee saves (locals added by codegen)
-        let total_frame_size =
-            round_up_u32(frame_record_size + callee_save_aligned, sp_align);
+        let total_frame_size = round_up_u32(frame_record_size + callee_save_aligned, sp_align);
 
         // Offsets relative to the new SP (bottom of the frame):
         //   SP + spill_area_offset  → spill / outgoing args
@@ -767,8 +765,8 @@ impl AArch64Abi {
         let mut regs = Vec::with_capacity(cap);
 
         // Frame record — always saved
-        regs.push(FP);  // X29
-        regs.push(LR);  // X30
+        regs.push(FP); // X29
+        regs.push(LR); // X30
 
         // Integer callee-saved: X19–X28
         for &r in &CALLEE_SAVED_INT {
@@ -892,14 +890,10 @@ fn is_hfa_inner(canonical: &CType) -> Option<(CType, u8)> {
         CType::LongDouble => Some((CType::LongDouble, 1)),
 
         // ---- Struct ----
-        CType::Struct { fields, .. } => {
-            hfa_from_fields(fields, FieldAggKind::Struct)
-        }
+        CType::Struct { fields, .. } => hfa_from_fields(fields, FieldAggKind::Struct),
 
         // ---- Union ----
-        CType::Union { fields, .. } => {
-            hfa_from_fields(fields, FieldAggKind::Union)
-        }
+        CType::Union { fields, .. } => hfa_from_fields(fields, FieldAggKind::Union),
 
         // ---- Array ----
         CType::Array { element, size } => {
@@ -1140,10 +1134,7 @@ mod tests {
     #[test]
     fn test_classify_pointer_arg() {
         let abi = AArch64Abi::new();
-        let cls = abi.classify_argument(
-            &CType::Pointer(Box::new(CType::Void)),
-            &target(),
-        );
+        let cls = abi.classify_argument(&CType::Pointer(Box::new(CType::Void)), &target());
         assert_eq!(cls, ArgClassification::IntegerReg(X0));
     }
 
@@ -1172,7 +1163,10 @@ mod tests {
     #[test]
     fn test_return_void() {
         let abi = AArch64Abi::new();
-        assert_eq!(abi.classify_return(&CType::Void, &target()), ReturnClassification::Void);
+        assert_eq!(
+            abi.classify_return(&CType::Void, &target()),
+            ReturnClassification::Void
+        );
     }
 
     #[test]
@@ -1208,8 +1202,16 @@ mod tests {
         let ty = CType::Struct {
             name: Some("pair".to_string()),
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::Int { signed: true }, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::Int { signed: true }, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::Int { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::Int { signed: true },
+                    bit_width: None,
+                },
             ],
         };
         // 8 bytes → fits in X0
@@ -1225,8 +1227,16 @@ mod tests {
         let ty = CType::Struct {
             name: Some("triple".to_string()),
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::Long { signed: true }, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::Long { signed: true }, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::Long { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::Long { signed: true },
+                    bit_width: None,
+                },
             ],
         };
         // 16 bytes → X0 + X1
@@ -1242,9 +1252,21 @@ mod tests {
         let ty = CType::Struct {
             name: Some("big".to_string()),
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::LongLong { signed: true }, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::LongLong { signed: true }, bit_width: None },
-                FieldDef { name: Some("c".into()), ty: CType::LongLong { signed: true }, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("c".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
             ],
         };
         // 24 bytes → indirect via X8
@@ -1260,9 +1282,21 @@ mod tests {
         let ty = CType::Struct {
             name: Some("vec3".to_string()),
             fields: vec![
-                FieldDef { name: Some("x".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("y".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("z".into()), ty: CType::Float, bit_width: None },
+                FieldDef {
+                    name: Some("x".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("y".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("z".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
             ],
         };
         assert_eq!(
@@ -1292,10 +1326,26 @@ mod tests {
         let ty = CType::Struct {
             name: None,
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("c".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("d".into()), ty: CType::Float, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("c".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("d".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
             ],
         };
         assert_eq!(is_hfa(&ty), Some((CType::Float, 4)));
@@ -1306,11 +1356,31 @@ mod tests {
         let ty = CType::Struct {
             name: None,
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("c".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("d".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("e".into()), ty: CType::Float, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("c".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("d".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("e".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
             ],
         };
         assert_eq!(is_hfa(&ty), None);
@@ -1321,8 +1391,16 @@ mod tests {
         let ty = CType::Struct {
             name: None,
             fields: vec![
-                FieldDef { name: Some("x".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("y".into()), ty: CType::Int { signed: true }, bit_width: None },
+                FieldDef {
+                    name: Some("x".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("y".into()),
+                    ty: CType::Int { signed: true },
+                    bit_width: None,
+                },
             ],
         };
         assert_eq!(is_hfa(&ty), None);
@@ -1332,9 +1410,11 @@ mod tests {
     fn test_hfa_bitfield_disqualifies() {
         let ty = CType::Struct {
             name: None,
-            fields: vec![
-                FieldDef { name: Some("x".into()), ty: CType::Float, bit_width: Some(32) },
-            ],
+            fields: vec![FieldDef {
+                name: Some("x".into()),
+                ty: CType::Float,
+                bit_width: Some(32),
+            }],
         };
         assert_eq!(is_hfa(&ty), None);
     }
@@ -1343,15 +1423,25 @@ mod tests {
     fn test_hfa_nested_struct() {
         let inner = CType::Struct {
             name: Some("inner".to_string()),
-            fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::Double, bit_width: None },
-            ],
+            fields: vec![FieldDef {
+                name: Some("a".into()),
+                ty: CType::Double,
+                bit_width: None,
+            }],
         };
         let outer = CType::Struct {
             name: Some("outer".to_string()),
             fields: vec![
-                FieldDef { name: Some("s".into()), ty: inner, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::Double, bit_width: None },
+                FieldDef {
+                    name: Some("s".into()),
+                    ty: inner,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::Double,
+                    bit_width: None,
+                },
             ],
         };
         assert_eq!(is_hfa(&outer), Some((CType::Double, 2)));
@@ -1389,7 +1479,11 @@ mod tests {
         let ty = CType::Union {
             name: None,
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::Float, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
                 FieldDef {
                     name: Some("b".into()),
                     ty: CType::Array {
@@ -1429,13 +1523,16 @@ mod tests {
     fn test_layout_spills_to_stack() {
         let abi = AArch64Abi::new();
         // 9 integer args: first 8 in X0–X7, 9th on stack
-        let params: Vec<CType> = (0..9)
-            .map(|_| CType::Long { signed: true })
-            .collect();
+        let params: Vec<CType> = (0..9).map(|_| CType::Long { signed: true }).collect();
         let layout = abi.compute_stack_layout(&params, &target());
         assert_eq!(layout.arg_classifications.len(), 9);
 
-        for (cls, &reg) in layout.arg_classifications.iter().zip(INTEGER_ARG_REGS.iter()).take(8) {
+        for (cls, &reg) in layout
+            .arg_classifications
+            .iter()
+            .zip(INTEGER_ARG_REGS.iter())
+            .take(8)
+        {
             assert_eq!(*cls, ArgClassification::IntegerReg(reg));
         }
         match &layout.arg_classifications[8] {
@@ -1454,14 +1551,26 @@ mod tests {
         let hfa = CType::Struct {
             name: Some("vec2".to_string()),
             fields: vec![
-                FieldDef { name: Some("x".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("y".into()), ty: CType::Float, bit_width: None },
+                FieldDef {
+                    name: Some("x".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("y".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
             ],
         };
         let params = vec![hfa];
         let layout = abi.compute_stack_layout(&params, &target());
         match &layout.arg_classifications[0] {
-            ArgClassification::HFA { base_reg, count, element_size } => {
+            ArgClassification::HFA {
+                base_reg,
+                count,
+                element_size,
+            } => {
                 assert_eq!(*base_reg, V0);
                 assert_eq!(*count, 2);
                 assert_eq!(*element_size, 4);
@@ -1476,14 +1585,29 @@ mod tests {
         let big = CType::Struct {
             name: Some("big".to_string()),
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::LongLong { signed: true }, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::LongLong { signed: true }, bit_width: None },
-                FieldDef { name: Some("c".into()), ty: CType::LongLong { signed: true }, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("c".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
             ],
         };
         let params = vec![big];
         let layout = abi.compute_stack_layout(&params, &target());
-        assert_eq!(layout.arg_classifications[0], ArgClassification::Indirect(X0));
+        assert_eq!(
+            layout.arg_classifications[0],
+            ArgClassification::Indirect(X0)
+        );
     }
 
     // === ParamClass tests ===
@@ -1520,9 +1644,21 @@ mod tests {
         let big = CType::Struct {
             name: Some("big".to_string()),
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::LongLong { signed: true }, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::LongLong { signed: true }, bit_width: None },
-                FieldDef { name: Some("c".into()), ty: CType::LongLong { signed: true }, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("c".into()),
+                    ty: CType::LongLong { signed: true },
+                    bit_width: None,
+                },
             ],
         };
         assert_eq!(
@@ -1544,8 +1680,16 @@ mod tests {
         let hfa = CType::Struct {
             name: None,
             fields: vec![
-                FieldDef { name: Some("x".into()), ty: CType::Float, bit_width: None },
-                FieldDef { name: Some("y".into()), ty: CType::Float, bit_width: None },
+                FieldDef {
+                    name: Some("x".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("y".into()),
+                    ty: CType::Float,
+                    bit_width: None,
+                },
             ],
         };
         assert_eq!(
@@ -1599,9 +1743,21 @@ mod tests {
         let ty = CType::Struct {
             name: None,
             fields: vec![
-                FieldDef { name: Some("a".into()), ty: CType::Int { signed: true }, bit_width: None },
-                FieldDef { name: Some("b".into()), ty: CType::Int { signed: true }, bit_width: None },
-                FieldDef { name: Some("c".into()), ty: CType::Int { signed: true }, bit_width: None },
+                FieldDef {
+                    name: Some("a".into()),
+                    ty: CType::Int { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("b".into()),
+                    ty: CType::Int { signed: true },
+                    bit_width: None,
+                },
+                FieldDef {
+                    name: Some("c".into()),
+                    ty: CType::Int { signed: true },
+                    bit_width: None,
+                },
             ],
         };
         let cls = abi.classify_argument(&ty, &target());
@@ -1614,17 +1770,29 @@ mod tests {
     fn test_mixed_int_and_float_allocation() {
         let abi = AArch64Abi::new();
         let params = vec![
-            CType::Int { signed: true },    // X0
-            CType::Float,                    // V0 (S0)
-            CType::Long { signed: false },   // X1
-            CType::Double,                   // V1 (D1)
+            CType::Int { signed: true },   // X0
+            CType::Float,                  // V0 (S0)
+            CType::Long { signed: false }, // X1
+            CType::Double,                 // V1 (D1)
         ];
         let layout = abi.compute_stack_layout(&params, &target());
         assert_eq!(layout.arg_classifications.len(), 4);
-        assert_eq!(layout.arg_classifications[0], ArgClassification::IntegerReg(X0));
-        assert_eq!(layout.arg_classifications[1], ArgClassification::FloatReg(v_to_s(V0)));
-        assert_eq!(layout.arg_classifications[2], ArgClassification::IntegerReg(X1));
-        assert_eq!(layout.arg_classifications[3], ArgClassification::FloatReg(v_to_d(V1)));
+        assert_eq!(
+            layout.arg_classifications[0],
+            ArgClassification::IntegerReg(X0)
+        );
+        assert_eq!(
+            layout.arg_classifications[1],
+            ArgClassification::FloatReg(v_to_s(V0))
+        );
+        assert_eq!(
+            layout.arg_classifications[2],
+            ArgClassification::IntegerReg(X1)
+        );
+        assert_eq!(
+            layout.arg_classifications[3],
+            ArgClassification::FloatReg(v_to_d(V1))
+        );
         assert_eq!(layout.stack_arg_size, 0);
     }
 }

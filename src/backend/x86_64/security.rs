@@ -40,9 +40,7 @@
 use crate::backend::traits::{MachineFunction, MachineInstr, MachineOperand, PhysReg};
 use crate::backend::x86_64::codegen::X86_64Opcode;
 use crate::backend::x86_64::opcodes;
-use crate::backend::x86_64::registers::{
-    EAX, RAX, RCX, RSP, gpr_name_64, is_gpr,
-};
+use crate::backend::x86_64::registers::{gpr_name_64, is_gpr, EAX, RAX, RCX, RSP};
 use crate::common::target::Target;
 
 // ---------------------------------------------------------------------------
@@ -595,10 +593,7 @@ pub fn generate_stack_probe(frame_size: u32) -> Vec<MachineInstr> {
 
     // mov rax, rsp — save current stack pointer into scratch register
     let mut mov_rsp_to_rax = MachineInstr::new(security_opcode(X86_64Opcode::MOV));
-    mov_rsp_to_rax.operands = vec![
-        MachineOperand::Register(RAX),
-        MachineOperand::Register(RSP),
-    ];
+    mov_rsp_to_rax.operands = vec![MachineOperand::Register(RAX), MachineOperand::Register(RSP)];
     mov_rsp_to_rax.implicit_defs = vec![RAX];
     mov_rsp_to_rax.implicit_uses = vec![RSP];
     instrs.push(mov_rsp_to_rax);
@@ -608,10 +603,7 @@ pub fn generate_stack_probe(frame_size: u32) -> Vec<MachineInstr> {
     //   mov rcx, rsp
     //   sub rcx, <frame_size>
     let mut mov_rsp_to_rcx = MachineInstr::new(security_opcode(X86_64Opcode::MOV));
-    mov_rsp_to_rcx.operands = vec![
-        MachineOperand::Register(RCX),
-        MachineOperand::Register(RSP),
-    ];
+    mov_rsp_to_rcx.operands = vec![MachineOperand::Register(RCX), MachineOperand::Register(RSP)];
     mov_rsp_to_rcx.implicit_defs = vec![RCX];
     mov_rsp_to_rcx.implicit_uses = vec![RSP];
     instrs.push(mov_rsp_to_rcx);
@@ -654,10 +646,7 @@ pub fn generate_stack_probe(frame_size: u32) -> Vec<MachineInstr> {
 
     // cmp rax, rcx — compare current probe position against target
     let mut cmp_instr = MachineInstr::new(security_opcode(X86_64Opcode::CMP));
-    cmp_instr.operands = vec![
-        MachineOperand::Register(RAX),
-        MachineOperand::Register(RCX),
-    ];
+    cmp_instr.operands = vec![MachineOperand::Register(RAX), MachineOperand::Register(RCX)];
     cmp_instr.implicit_uses = vec![RAX, RCX];
     instrs.push(cmp_instr);
 
@@ -673,10 +662,7 @@ pub fn generate_stack_probe(frame_size: u32) -> Vec<MachineInstr> {
 
     // mov rsp, rcx — set the final stack pointer
     let mut mov_final = MachineInstr::new(security_opcode(X86_64Opcode::MOV));
-    mov_final.operands = vec![
-        MachineOperand::Register(RSP),
-        MachineOperand::Register(RCX),
-    ];
+    mov_final.operands = vec![MachineOperand::Register(RSP), MachineOperand::Register(RCX)];
     mov_final.implicit_defs = vec![RSP];
     mov_final.implicit_uses = vec![RCX];
     instrs.push(mov_final);
@@ -771,13 +757,12 @@ fn insert_stack_probe(mf: &mut MachineFunction) {
     let entry = &mut mf.blocks[0];
 
     // Insert after any endbr64 that may already be at position 0
-    let insert_pos = if !entry.instructions.is_empty()
-        && entry.instructions[0].opcode == opcodes::ENDBR64
-    {
-        1
-    } else {
-        0
-    };
+    let insert_pos =
+        if !entry.instructions.is_empty() && entry.instructions[0].opcode == opcodes::ENDBR64 {
+            1
+        } else {
+            0
+        };
 
     // Insert probe instructions in order at the computed position
     for (offset, instr) in probe_instrs.into_iter().enumerate() {
@@ -856,8 +841,8 @@ mod tests {
     use super::*;
     use crate::backend::traits::MachineBasicBlock;
     use crate::backend::x86_64::registers::{
-        self, NUM_GPRS, R8, R9, R10, R11, R12, R13, R14, R15, RBP, RBX, RDI,
-        RDX, RSI, RSP as RSP_REG,
+        self, NUM_GPRS, R10, R11, R12, R13, R14, R15, R8, R9, RBP, RBX, RDI, RDX, RSI,
+        RSP as RSP_REG,
     };
 
     /// Helper to create a minimal machine function for testing.
@@ -982,22 +967,10 @@ mod tests {
 
     #[test]
     fn retpoline_thunk_name_correct() {
-        assert_eq!(
-            retpoline_thunk_name(RAX),
-            "__x86_indirect_thunk_rax"
-        );
-        assert_eq!(
-            retpoline_thunk_name(R11),
-            "__x86_indirect_thunk_r11"
-        );
-        assert_eq!(
-            retpoline_thunk_name(RBX),
-            "__x86_indirect_thunk_rbx"
-        );
-        assert_eq!(
-            retpoline_thunk_name(RDI),
-            "__x86_indirect_thunk_rdi"
-        );
+        assert_eq!(retpoline_thunk_name(RAX), "__x86_indirect_thunk_rax");
+        assert_eq!(retpoline_thunk_name(R11), "__x86_indirect_thunk_r11");
+        assert_eq!(retpoline_thunk_name(RBX), "__x86_indirect_thunk_rbx");
+        assert_eq!(retpoline_thunk_name(RDI), "__x86_indirect_thunk_rdi");
     }
 
     #[test]
@@ -1059,7 +1032,10 @@ mod tests {
         assert_eq!(rax_thunk.code.len(), 6);
 
         // First instruction is call .Ltarget
-        assert_eq!(rax_thunk.code[0].opcode, security_opcode(X86_64Opcode::CALL));
+        assert_eq!(
+            rax_thunk.code[0].opcode,
+            security_opcode(X86_64Opcode::CALL)
+        );
         assert!(rax_thunk.code[0].is_call);
 
         // Second is pause
@@ -1273,10 +1249,7 @@ mod tests {
 
         // Verify each thunk has the correct name
         for (i, thunk) in thunks.iter().enumerate() {
-            let expected_name = format!(
-                "__x86_indirect_thunk_{}",
-                gpr_name_64(PhysReg(i as u16))
-            );
+            let expected_name = format!("__x86_indirect_thunk_{}", gpr_name_64(PhysReg(i as u16)));
             assert_eq!(thunk.name, expected_name);
             assert_eq!(thunk.register, PhysReg(i as u16));
             assert_eq!(thunk.code.len(), 6);

@@ -255,10 +255,7 @@ impl I686RelocType {
     /// typically compensates for the 4-byte field width).
     #[inline]
     pub fn is_pc_relative(&self) -> bool {
-        matches!(
-            self,
-            Self::R386Pc32 | Self::R386Plt32 | Self::R386Gotpc
-        )
+        matches!(self, Self::R386Pc32 | Self::R386Plt32 | Self::R386Gotpc)
     }
 
     /// Returns `true` if this relocation type produces a direct absolute
@@ -287,10 +284,7 @@ impl I686RelocType {
     pub fn requires_got(&self) -> bool {
         matches!(
             self,
-            Self::R386Got32
-                | Self::R386Gotoff
-                | Self::R386Gotpc
-                | Self::R386GlobDat
+            Self::R386Got32 | Self::R386Gotoff | Self::R386Gotpc | Self::R386GlobDat
         )
     }
 
@@ -339,10 +333,7 @@ impl I686RelocType {
     pub fn is_dynamic(&self) -> bool {
         matches!(
             self,
-            Self::R386Copy
-                | Self::R386GlobDat
-                | Self::R386JmpSlot
-                | Self::R386Relative
+            Self::R386Copy | Self::R386GlobDat | Self::R386JmpSlot | Self::R386Relative
         )
     }
 
@@ -411,13 +402,7 @@ impl I686RelocType {
     /// | `R_386_GLOB_DAT`| S                    | Symbol address for GOT         |
     /// | `R_386_JMP_SLOT`| S                    | Symbol address for PLT GOT     |
     /// | TLS types       | S + A                | TLS offset computation         |
-    pub fn apply(
-        &self,
-        place: u32,
-        symbol_value: u32,
-        addend: i32,
-        got_base: u32,
-    ) -> u32 {
+    pub fn apply(&self, place: u32, symbol_value: u32, addend: i32, got_base: u32) -> u32 {
         let s = symbol_value;
         let a = addend as u32;
         let p = place;
@@ -1234,14 +1219,8 @@ mod tests {
             I686RelocType::R386Got32
         );
         // Non-PIC → absolute R_386_32
-        assert_eq!(
-            select_data_relocation(false, true),
-            I686RelocType::R386_32
-        );
-        assert_eq!(
-            select_data_relocation(false, false),
-            I686RelocType::R386_32
-        );
+        assert_eq!(select_data_relocation(false, true), I686RelocType::R386_32);
+        assert_eq!(select_data_relocation(false, false), I686RelocType::R386_32);
     }
 
     /// Verify GOT base relocation selection.

@@ -111,8 +111,8 @@ pub use abi::AArch64Abi;
 
 use crate::backend::aarch64::assembler::AArch64Assembler;
 use crate::backend::traits::{
-    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr, MachineOperand,
-    ParamClass, PhysReg, RelocationType,
+    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr, MachineOperand, ParamClass, PhysReg,
+    RelocationType,
 };
 use crate::common::target::Target;
 use crate::common::types::CType;
@@ -152,47 +152,217 @@ pub const ELF_FLAGS: u32 = 0;
 /// - `size`: size of the relocation field in bytes
 static AARCH64_RELOCATION_TYPES: &[RelocationType] = &[
     // Absolute data relocations
-    RelocationType { name: "R_AARCH64_ABS64",  value: 257, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_AARCH64_ABS32",  value: 258, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_ABS16",  value: 259, is_pc_relative: false, size: 2 },
+    RelocationType {
+        name: "R_AARCH64_ABS64",
+        value: 257,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_AARCH64_ABS32",
+        value: 258,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_ABS16",
+        value: 259,
+        is_pc_relative: false,
+        size: 2,
+    },
     // PC-relative data relocations
-    RelocationType { name: "R_AARCH64_PREL64", value: 260, is_pc_relative: true,  size: 8 },
-    RelocationType { name: "R_AARCH64_PREL32", value: 261, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_AARCH64_PREL16", value: 262, is_pc_relative: true,  size: 2 },
+    RelocationType {
+        name: "R_AARCH64_PREL64",
+        value: 260,
+        is_pc_relative: true,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_AARCH64_PREL32",
+        value: 261,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_PREL16",
+        value: 262,
+        is_pc_relative: true,
+        size: 2,
+    },
     // Page-relative addressing (ADRP + ADD/LDR pairs)
-    RelocationType { name: "R_AARCH64_ADR_PREL_PG_HI21",    value: 275, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_AARCH64_ADR_PREL_PG_HI21_NC", value: 276, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_AARCH64_ADD_ABS_LO12_NC",     value: 277, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_ADR_PREL_LO21",       value: 274, is_pc_relative: true,  size: 4 },
+    RelocationType {
+        name: "R_AARCH64_ADR_PREL_PG_HI21",
+        value: 275,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_ADR_PREL_PG_HI21_NC",
+        value: 276,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_ADD_ABS_LO12_NC",
+        value: 277,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_ADR_PREL_LO21",
+        value: 274,
+        is_pc_relative: true,
+        size: 4,
+    },
     // Load/store low-12-bit relocations (scaled by access size)
-    RelocationType { name: "R_AARCH64_LDST8_ABS_LO12_NC",   value: 278, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_LDST16_ABS_LO12_NC",  value: 284, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_LDST32_ABS_LO12_NC",  value: 285, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_LDST64_ABS_LO12_NC",  value: 286, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_LDST128_ABS_LO12_NC", value: 299, is_pc_relative: false, size: 4 },
+    RelocationType {
+        name: "R_AARCH64_LDST8_ABS_LO12_NC",
+        value: 278,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_LDST16_ABS_LO12_NC",
+        value: 284,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_LDST32_ABS_LO12_NC",
+        value: 285,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_LDST64_ABS_LO12_NC",
+        value: 286,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_LDST128_ABS_LO12_NC",
+        value: 299,
+        is_pc_relative: false,
+        size: 4,
+    },
     // Branch relocations
-    RelocationType { name: "R_AARCH64_CALL26",    value: 283, is_pc_relative: true, size: 4 },
-    RelocationType { name: "R_AARCH64_JUMP26",    value: 282, is_pc_relative: true, size: 4 },
-    RelocationType { name: "R_AARCH64_CONDBR19",  value: 280, is_pc_relative: true, size: 4 },
-    RelocationType { name: "R_AARCH64_TSTBR14",   value: 279, is_pc_relative: true, size: 4 },
+    RelocationType {
+        name: "R_AARCH64_CALL26",
+        value: 283,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_JUMP26",
+        value: 282,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_CONDBR19",
+        value: 280,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_TSTBR14",
+        value: 279,
+        is_pc_relative: true,
+        size: 4,
+    },
     // GOT-relative relocations (PIC/shared libraries)
-    RelocationType { name: "R_AARCH64_ADR_GOT_PAGE",      value: 311, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_AARCH64_LD64_GOT_LO12_NC",  value: 312, is_pc_relative: false, size: 4 },
+    RelocationType {
+        name: "R_AARCH64_ADR_GOT_PAGE",
+        value: 311,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_LD64_GOT_LO12_NC",
+        value: 312,
+        is_pc_relative: false,
+        size: 4,
+    },
     // TLS relocations
-    RelocationType { name: "R_AARCH64_TLSGD_ADR_PAGE21",            value: 513, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_AARCH64_TLSGD_ADD_LO12_NC",           value: 514, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_TLSLE_ADD_TPREL_HI12",        value: 549, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_TLSLE_ADD_TPREL_LO12_NC",     value: 550, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21",   value: 539, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC", value: 540, is_pc_relative: false, size: 4 },
+    RelocationType {
+        name: "R_AARCH64_TLSGD_ADR_PAGE21",
+        value: 513,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_TLSGD_ADD_LO12_NC",
+        value: 514,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_TLSLE_ADD_TPREL_HI12",
+        value: 549,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_TLSLE_ADD_TPREL_LO12_NC",
+        value: 550,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21",
+        value: 539,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC",
+        value: 540,
+        is_pc_relative: false,
+        size: 4,
+    },
     // Dynamic relocations (runtime linker)
-    RelocationType { name: "R_AARCH64_GLOB_DAT",    value: 1025, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_AARCH64_JUMP_SLOT",   value: 1026, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_AARCH64_RELATIVE",     value: 1027, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_AARCH64_COPY",         value: 1024, is_pc_relative: false, size: 0 },
-    RelocationType { name: "R_AARCH64_TLS_DTPMOD64", value: 1028, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_AARCH64_TLS_DTPREL64", value: 1029, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_AARCH64_TLS_TPREL64",  value: 1030, is_pc_relative: false, size: 8 },
+    RelocationType {
+        name: "R_AARCH64_GLOB_DAT",
+        value: 1025,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_AARCH64_JUMP_SLOT",
+        value: 1026,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_AARCH64_RELATIVE",
+        value: 1027,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_AARCH64_COPY",
+        value: 1024,
+        is_pc_relative: false,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_AARCH64_TLS_DTPMOD64",
+        value: 1028,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_AARCH64_TLS_DTPREL64",
+        value: 1029,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_AARCH64_TLS_TPREL64",
+        value: 1030,
+        is_pc_relative: false,
+        size: 8,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -593,9 +763,9 @@ impl ArchCodegen for AArch64Codegen {
         let stp_fp_lr = MachineInstr::with_operands(
             opcodes::STP,
             vec![
-                MachineOperand::Register(registers::FP),  // Rt1 = X29
-                MachineOperand::Register(PhysReg(30)),     // Rt2 = X30 (LR)
-                MachineOperand::Register(registers::SP),   // base = SP
+                MachineOperand::Register(registers::FP), // Rt1 = X29
+                MachineOperand::Register(PhysReg(30)),   // Rt2 = X30 (LR)
+                MachineOperand::Register(registers::SP), // base = SP
                 MachineOperand::Immediate(-(aligned_frame as i64)), // offset (pre-indexed)
             ],
         );
@@ -606,9 +776,9 @@ impl ArchCodegen for AArch64Codegen {
         let mov_fp_sp = MachineInstr::with_operands(
             opcodes::ADD_IMM,
             vec![
-                MachineOperand::Register(registers::FP),  // Rd = X29
-                MachineOperand::Register(registers::SP),   // Rn = SP
-                MachineOperand::Immediate(0),               // #0
+                MachineOperand::Register(registers::FP), // Rd = X29
+                MachineOperand::Register(registers::SP), // Rn = SP
+                MachineOperand::Immediate(0),            // #0
             ],
         );
         prologue_instrs.push(mov_fp_sp);

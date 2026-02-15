@@ -63,8 +63,7 @@ pub mod stmt_lowering;
 use crate::ir::basic_block::BasicBlockId;
 use crate::ir::builder::IrBuilder;
 use crate::ir::function::{
-    FunctionAttributes, IrFunction, Linkage as IrLinkage, Parameter,
-    Visibility as IrVisibility,
+    FunctionAttributes, IrFunction, Linkage as IrLinkage, Parameter, Visibility as IrVisibility,
 };
 use crate::ir::instructions::ValueId;
 use crate::ir::module::{Constant, FunctionDecl, GlobalVariable, IrModule};
@@ -76,9 +75,9 @@ use crate::ir::types::IrType;
 
 use crate::frontend::parser::ast::{self, Statement};
 use crate::frontend::sema::{
-    self, CheckedDeclaration, CheckedParameter, CheckedTranslationUnit,
-    Linkage as SemaLinkage, StorageClass as SemaStorageClass, SymbolEntry,
-    SymbolTable, TypedExpression, ValidatedAttribute, VisibilityKind,
+    self, CheckedDeclaration, CheckedParameter, CheckedTranslationUnit, Linkage as SemaLinkage,
+    StorageClass as SemaStorageClass, SymbolEntry, SymbolTable, TypedExpression,
+    ValidatedAttribute, VisibilityKind,
 };
 
 // ============================================================================
@@ -126,41 +125,25 @@ pub enum LoweringError {
 
     /// A variable was referenced that has no corresponding symbol table
     /// entry or alloca mapping in the current lowering context.
-    UndeclaredVariable {
-        name: Symbol,
-        span: Span,
-    },
+    UndeclaredVariable { name: Symbol, span: Span },
 
     /// An expression was used in lvalue context but does not designate
     /// a memory location (e.g., `42 = x`).
-    InvalidLvalue {
-        span: Span,
-        message: String,
-    },
+    InvalidLvalue { span: Span, message: String },
 
     /// An expression form is not yet supported by the lowering pass
     /// (e.g., a rare GCC extension encountered during kernel compilation).
-    UnsupportedExpression {
-        span: Span,
-        message: String,
-    },
+    UnsupportedExpression { span: Span, message: String },
 
     /// A `goto` statement references a label that was never defined
     /// within the current function scope.
-    UndefinedLabel {
-        name: Symbol,
-        span: Span,
-    },
+    UndefinedLabel { name: Symbol, span: Span },
 
     /// A `break` statement appears outside of any loop or switch body.
-    BreakOutsideLoop {
-        span: Span,
-    },
+    BreakOutsideLoop { span: Span },
 
     /// A `continue` statement appears outside of any loop body.
-    ContinueOutsideLoop {
-        span: Span,
-    },
+    ContinueOutsideLoop { span: Span },
 
     /// An inline assembly constraint string is invalid or unsupported
     /// for the current target architecture.
@@ -180,10 +163,7 @@ pub enum LoweringError {
 
     /// A static or file-scope variable initializer contains a non-constant
     /// expression that cannot be evaluated at compile time.
-    NonConstantStaticInit {
-        span: Span,
-        message: String,
-    },
+    NonConstantStaticInit { span: Span, message: String },
 
     /// A symbol was defined more than once with conflicting definitions
     /// (after linkage resolution).
@@ -195,17 +175,11 @@ pub enum LoweringError {
 
     /// An initializer is structurally invalid for the target type
     /// (e.g., too many elements, wrong nesting).
-    InvalidInitializer {
-        span: Span,
-        message: String,
-    },
+    InvalidInitializer { span: Span, message: String },
 
     /// A C type could not be mapped to an IR type (e.g., incomplete
     /// struct with unknown layout).
-    TypeMappingError {
-        span: Span,
-        message: String,
-    },
+    TypeMappingError { span: Span, message: String },
 
     /// The recursion depth limit was exceeded during nested expression
     /// or statement lowering.
@@ -217,9 +191,7 @@ pub enum LoweringError {
 
     /// A division or modulo by zero was detected at compile time in a
     /// constant expression used during lowering.
-    DivisionByZero {
-        span: Span,
-    },
+    DivisionByZero { span: Span },
 
     /// An inline assembly constraint is recognized but not supported
     /// for the current target architecture.
@@ -233,8 +205,16 @@ pub enum LoweringError {
 impl fmt::Display for LoweringError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoweringError::TypeMismatch { expected, found, message, .. } => {
-                write!(f, "type mismatch: expected {expected:?}, found {found:?}: {message}")
+            LoweringError::TypeMismatch {
+                expected,
+                found,
+                message,
+                ..
+            } => {
+                write!(
+                    f,
+                    "type mismatch: expected {expected:?}, found {found:?}: {message}"
+                )
             }
             LoweringError::UndeclaredVariable { .. } => {
                 write!(f, "use of undeclared variable")
@@ -254,11 +234,20 @@ impl fmt::Display for LoweringError {
             LoweringError::ContinueOutsideLoop { .. } => {
                 write!(f, "'continue' statement outside of loop")
             }
-            LoweringError::InvalidConstraint { constraint, message, .. } => {
+            LoweringError::InvalidConstraint {
+                constraint,
+                message,
+                ..
+            } => {
                 write!(f, "invalid asm constraint '{constraint}': {message}")
             }
-            LoweringError::OperandCountMismatch { expected, found, .. } => {
-                write!(f, "asm operand count mismatch: expected {expected}, found {found}")
+            LoweringError::OperandCountMismatch {
+                expected, found, ..
+            } => {
+                write!(
+                    f,
+                    "asm operand count mismatch: expected {expected}, found {found}"
+                )
             }
             LoweringError::NonConstantStaticInit { message, .. } => {
                 write!(f, "non-constant static initializer: {message}")
@@ -278,7 +267,11 @@ impl fmt::Display for LoweringError {
             LoweringError::DivisionByZero { .. } => {
                 write!(f, "division by zero in constant expression")
             }
-            LoweringError::UnsupportedConstraint { constraint, message, .. } => {
+            LoweringError::UnsupportedConstraint {
+                constraint,
+                message,
+                ..
+            } => {
                 write!(f, "unsupported asm constraint '{constraint}': {message}")
             }
         }
@@ -365,15 +358,9 @@ impl GlobalSymbolInfo {
 
     /// Creates a global symbol info populated from a semantic analysis
     /// [`SymbolEntry`] and its validated attributes.
-    pub fn from_symbol_entry(
-        entry: &SymbolEntry,
-        ir_type: IrType,
-    ) -> Self {
-        let linkage = map_sema_linkage_to_ir(
-            entry.linkage,
-            entry.attributes.is_weak,
-            entry.is_tentative,
-        );
+    pub fn from_symbol_entry(entry: &SymbolEntry, ir_type: IrType) -> Self {
+        let linkage =
+            map_sema_linkage_to_ir(entry.linkage, entry.attributes.is_weak, entry.is_tentative);
         let visibility = entry
             .attributes
             .visibility
@@ -497,10 +484,7 @@ impl ModuleLoweringContext {
     /// If the symbol already exists and is now being defined, updates the
     /// `is_defined` flag. Returns an error if the symbol is already defined
     /// with conflicting properties.
-    pub fn register_global_symbol(
-        &mut self,
-        info: GlobalSymbolInfo,
-    ) -> Result<(), LoweringError> {
+    pub fn register_global_symbol(&mut self, info: GlobalSymbolInfo) -> Result<(), LoweringError> {
         let name = info.name;
         if let Some(existing) = self.global_symbols.get(&name) {
             if existing.is_defined && info.is_defined {
@@ -639,18 +623,12 @@ impl<'a> LoweringContext<'a> {
     /// This implements the "alloca" phase of the alloca-then-promote pattern.
     /// The returned [`ValueId`] is a pointer (IrType::Ptr) to the allocated
     /// stack slot.
-    pub fn create_local_alloca(
-        &mut self,
-        name: Symbol,
-        ir_type: IrType,
-    ) -> ValueId {
+    pub fn create_local_alloca(&mut self, name: Symbol, ir_type: IrType) -> ValueId {
         // Resolve the name to a string, copying to avoid borrow conflicts.
         let name_str = self.module_ctx.interner.resolve(name).to_string();
-        let alloca_id = self.builder.build_alloca(
-            self.function,
-            ir_type,
-            Some(&name_str),
-        );
+        let alloca_id = self
+            .builder
+            .build_alloca(self.function, ir_type, Some(&name_str));
         self.variables.insert(name, alloca_id);
         alloca_id
     }
@@ -676,10 +654,9 @@ impl<'a> LoweringContext<'a> {
             return block_id;
         }
         let label_name = self.module_ctx.interner.resolve(label).to_string();
-        let block_id = self.builder.create_block(
-            self.function,
-            Some(&format!("label.{}", label_name)),
-        );
+        let block_id = self
+            .builder
+            .create_block(self.function, Some(&format!("label.{}", label_name)));
         self.label_blocks.insert(label, block_id);
         block_id
     }
@@ -805,21 +782,12 @@ pub fn lower_translation_unit(
     interner: Interner,
     module_name: String,
 ) -> Result<ModuleLoweringContext, LoweringError> {
-    let mut module_ctx = ModuleLoweringContext::new(
-        module_name,
-        target,
-        diagnostics,
-        source_map,
-        interner,
-    );
+    let mut module_ctx =
+        ModuleLoweringContext::new(module_name, target, diagnostics, source_map, interner);
 
     // Process each top-level declaration in order.
     for decl in &checked_tu.declarations {
-        let result = lower_top_level_declaration(
-            &mut module_ctx,
-            decl,
-            &checked_tu.symbol_table,
-        );
+        let result = lower_top_level_declaration(&mut module_ctx, decl, &checked_tu.symbol_table);
 
         if let Err(e) = result {
             // Emit the error as a diagnostic and continue processing
@@ -1100,21 +1068,19 @@ fn lower_top_level_declaration(
             storage_class,
             attrs,
             span,
-        } => {
-            lower_function_definition(
-                module_ctx,
-                symbol_table,
-                *name,
-                return_ty,
-                params,
-                *variadic,
-                body,
-                *linkage,
-                *storage_class,
-                attrs,
-                *span,
-            )
-        }
+        } => lower_function_definition(
+            module_ctx,
+            symbol_table,
+            *name,
+            return_ty,
+            params,
+            *variadic,
+            body,
+            *linkage,
+            *storage_class,
+            attrs,
+            *span,
+        ),
 
         CheckedDeclaration::FunctionDecl {
             symbol_id: _,
@@ -1126,18 +1092,16 @@ fn lower_top_level_declaration(
             storage_class: _,
             attrs,
             span,
-        } => {
-            lower_function_declaration(
-                module_ctx,
-                *name,
-                return_ty,
-                param_types,
-                *variadic,
-                *linkage,
-                attrs,
-                *span,
-            )
-        }
+        } => lower_function_declaration(
+            module_ctx,
+            *name,
+            return_ty,
+            param_types,
+            *variadic,
+            *linkage,
+            attrs,
+            *span,
+        ),
 
         CheckedDeclaration::Variable {
             symbol_id,
@@ -1147,19 +1111,17 @@ fn lower_top_level_declaration(
             storage_class,
             attrs,
             span,
-        } => {
-            lower_global_variable_decl(
-                module_ctx,
-                symbol_table,
-                *symbol_id,
-                ty,
-                init.as_ref(),
-                *linkage,
-                *storage_class,
-                attrs,
-                *span,
-            )
-        }
+        } => lower_global_variable_decl(
+            module_ctx,
+            symbol_table,
+            *symbol_id,
+            ty,
+            init.as_ref(),
+            *linkage,
+            *storage_class,
+            attrs,
+            *span,
+        ),
 
         // Type definitions produce no IR output — they are resolved
         // during semantic analysis and type lowering.
@@ -1268,11 +1230,9 @@ fn lower_function_definition(
                 // For non-void functions, return a zero value.
                 // This handles the case where control falls off the end
                 // of a function without an explicit return statement.
-                let zero = ctx.builder.build_const_int(
-                    ctx.function,
-                    ir_return_ty.clone(),
-                    0,
-                );
+                let zero = ctx
+                    .builder
+                    .build_const_int(ctx.function, ir_return_ty.clone(), 0);
                 ctx.builder.build_return(ctx.function, Some(zero));
             }
         }
@@ -1381,11 +1341,7 @@ fn lower_global_variable_decl(
     let mut global = GlobalVariable::new(var_name, ir_type.clone(), alignment);
 
     // Set linkage.
-    global.linkage = map_sema_linkage_to_ir(
-        linkage,
-        entry.attributes.is_weak,
-        entry.is_tentative,
-    );
+    global.linkage = map_sema_linkage_to_ir(linkage, entry.attributes.is_weak, entry.is_tentative);
 
     // Set const qualifier.
     // A variable declared with `const` at file scope goes into .rodata.
@@ -1452,15 +1408,15 @@ pub(crate) fn lower_initializer_to_constant(
             lower_scalar_init_to_constant(typed_expr, module_ctx)
         }
 
-        sema::CheckedInitializer::Aggregate { fields, zero_filled: _ } => {
+        sema::CheckedInitializer::Aggregate {
+            fields,
+            zero_filled: _,
+        } => {
             let ir_type = c_type_to_ir_type(ty, &module_ctx.target)?;
             let mut field_constants = Vec::with_capacity(fields.len());
             for field_init in fields {
-                let field_const = lower_initializer_to_constant(
-                    &field_init.value,
-                    &field_init.ty,
-                    module_ctx,
-                )?;
+                let field_const =
+                    lower_initializer_to_constant(&field_init.value, &field_init.ty, module_ctx)?;
                 field_constants.push(field_const);
             }
 
@@ -1683,7 +1639,11 @@ fn finalize_tentative_definitions(
         let align = alignment.unwrap_or_else(|| {
             // Default alignment based on type size.
             let size = ir_type.size_bits(&module_ctx.target) / 8;
-            if size == 0 { 1 } else { size.min(16) }
+            if size == 0 {
+                1
+            } else {
+                size.min(16)
+            }
         }) as u32;
 
         let mut global = GlobalVariable::new(var_name, ir_type.clone(), align);
@@ -1709,8 +1669,14 @@ mod tests {
     #[test]
     fn test_c_type_to_ir_type_scalars_lp64() {
         let target = Target::X86_64;
-        assert_eq!(c_type_to_ir_type(&CType::Void, &target).unwrap(), IrType::Void);
-        assert_eq!(c_type_to_ir_type(&CType::Bool, &target).unwrap(), IrType::I1);
+        assert_eq!(
+            c_type_to_ir_type(&CType::Void, &target).unwrap(),
+            IrType::Void
+        );
+        assert_eq!(
+            c_type_to_ir_type(&CType::Bool, &target).unwrap(),
+            IrType::I1
+        );
         assert_eq!(
             c_type_to_ir_type(&CType::Char { signed: true }, &target).unwrap(),
             IrType::I8
@@ -1731,8 +1697,14 @@ mod tests {
             c_type_to_ir_type(&CType::LongLong { signed: true }, &target).unwrap(),
             IrType::I64
         );
-        assert_eq!(c_type_to_ir_type(&CType::Float, &target).unwrap(), IrType::F32);
-        assert_eq!(c_type_to_ir_type(&CType::Double, &target).unwrap(), IrType::F64);
+        assert_eq!(
+            c_type_to_ir_type(&CType::Float, &target).unwrap(),
+            IrType::F32
+        );
+        assert_eq!(
+            c_type_to_ir_type(&CType::Double, &target).unwrap(),
+            IrType::F64
+        );
         assert_eq!(
             c_type_to_ir_type(&CType::LongDouble, &target).unwrap(),
             IrType::F80
@@ -1797,10 +1769,7 @@ mod tests {
     fn test_c_type_to_ir_type_atomic_transparent() {
         let target = Target::X86_64;
         let atomic_ty = CType::Atomic(Box::new(CType::Int { signed: true }));
-        assert_eq!(
-            c_type_to_ir_type(&atomic_ty, &target).unwrap(),
-            IrType::I32
-        );
+        assert_eq!(c_type_to_ir_type(&atomic_ty, &target).unwrap(), IrType::I32);
     }
 
     #[test]
@@ -1810,10 +1779,7 @@ mod tests {
             name: Some("color".to_string()),
             underlying: Box::new(CType::Int { signed: true }),
         };
-        assert_eq!(
-            c_type_to_ir_type(&enum_ty, &target).unwrap(),
-            IrType::I32
-        );
+        assert_eq!(c_type_to_ir_type(&enum_ty, &target).unwrap(), IrType::I32);
     }
 
     #[test]
@@ -1967,11 +1933,7 @@ mod tests {
         span: Span,
     ) -> Result<(), LoweringError> {
         if depth >= limit {
-            Err(LoweringError::RecursionLimitExceeded {
-                depth,
-                limit,
-                span,
-            })
+            Err(LoweringError::RecursionLimitExceeded { depth, limit, span })
         } else {
             Ok(())
         }

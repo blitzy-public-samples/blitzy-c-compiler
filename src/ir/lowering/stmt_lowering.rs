@@ -46,20 +46,15 @@
 use crate::common::diagnostics::Span;
 use crate::common::fx_hash::FxHashMap;
 use crate::common::string_interner::Symbol;
-use crate::frontend::parser::ast::{
-    BlockItem, Declaration, Expression, ForInit, Statement,
-};
+use crate::frontend::parser::ast::{BlockItem, Declaration, Expression, ForInit, Statement};
 use crate::frontend::sema::constant_eval::evaluate_integer_constant;
 use crate::ir::basic_block::BasicBlockId;
 use crate::ir::instructions::ValueId;
 use crate::ir::types::IrType;
 
-use super::{
-    LoweringContext, LoweringError,
-    check_recursion_depth, ensure_not_terminated,
-};
-use super::expr_lowering::lower_expression;
 use super::asm_lowering::lower_asm_statement;
+use super::expr_lowering::lower_expression;
+use super::{check_recursion_depth, ensure_not_terminated, LoweringContext, LoweringError};
 
 // ============================================================================
 // Public API
@@ -115,74 +110,76 @@ fn lower_statement_inner(
     }
 
     match stmt {
-        Statement::Compound { items, span } => {
-            lower_compound_stmt(ctx, items, *span)
-        }
+        Statement::Compound { items, span } => lower_compound_stmt(ctx, items, *span),
 
-        Statement::If { condition, then_branch, else_branch, span } => {
-            lower_if_stmt(ctx, condition, then_branch, else_branch.as_deref(), *span)
-        }
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+            span,
+        } => lower_if_stmt(ctx, condition, then_branch, else_branch.as_deref(), *span),
 
-        Statement::While { condition, body, span } => {
-            lower_while_stmt(ctx, condition, body, *span)
-        }
+        Statement::While {
+            condition,
+            body,
+            span,
+        } => lower_while_stmt(ctx, condition, body, *span),
 
-        Statement::DoWhile { body, condition, span } => {
-            lower_do_while_stmt(ctx, body, condition, *span)
-        }
+        Statement::DoWhile {
+            body,
+            condition,
+            span,
+        } => lower_do_while_stmt(ctx, body, condition, *span),
 
-        Statement::For { init, condition, increment, body, span } => {
-            lower_for_stmt(ctx, init.as_ref(), condition.as_deref(), increment.as_deref(), body, *span)
-        }
+        Statement::For {
+            init,
+            condition,
+            increment,
+            body,
+            span,
+        } => lower_for_stmt(
+            ctx,
+            init.as_ref(),
+            condition.as_deref(),
+            increment.as_deref(),
+            body,
+            *span,
+        ),
 
-        Statement::Switch { expression, body, span } => {
-            lower_switch_stmt(ctx, expression, body, *span)
-        }
+        Statement::Switch {
+            expression,
+            body,
+            span,
+        } => lower_switch_stmt(ctx, expression, body, *span),
 
         // Case/CaseRange/Default outside of switch context: these are
         // handled specially during switch body lowering. If encountered
         // at the top level, they are erroneous but we lower the body anyway.
         Statement::Case { body, .. }
         | Statement::CaseRange { body, .. }
-        | Statement::Default { body, .. } => {
-            lower_statement(ctx, body)
-        }
+        | Statement::Default { body, .. } => lower_statement(ctx, body),
 
-        Statement::Goto { label, span } => {
-            lower_goto_stmt(ctx, *label, *span)
-        }
+        Statement::Goto { label, span } => lower_goto_stmt(ctx, *label, *span),
 
-        Statement::ComputedGoto { target, span } => {
-            lower_computed_goto(ctx, target, *span)
-        }
+        Statement::ComputedGoto { target, span } => lower_computed_goto(ctx, target, *span),
 
-        Statement::Break { span } => {
-            lower_break(ctx, *span)
-        }
+        Statement::Break { span } => lower_break(ctx, *span),
 
-        Statement::Continue { span } => {
-            lower_continue(ctx, *span)
-        }
+        Statement::Continue { span } => lower_continue(ctx, *span),
 
-        Statement::Return { value, span } => {
-            lower_return_stmt(ctx, value.as_deref(), *span)
-        }
+        Statement::Return { value, span } => lower_return_stmt(ctx, value.as_deref(), *span),
 
-        Statement::Labeled { label, body, span, .. } => {
-            lower_labeled_stmt(ctx, *label, body, *span)
-        }
+        Statement::Labeled {
+            label, body, span, ..
+        } => lower_labeled_stmt(ctx, *label, body, *span),
 
-        Statement::Expression { expr, .. } => {
-            lower_expr_stmt(ctx, expr)
-        }
+        Statement::Expression { expr, .. } => lower_expr_stmt(ctx, expr),
 
         // Null statement — no-op.
         Statement::Null { .. } => Ok(()),
 
         // Inline assembly — delegate to asm_lowering module.
-        Statement::Asm(asm_stmt) => {
-            lower_asm_statement(ctx, asm_stmt)
-        }
+        Statement::Asm(asm_stmt) => lower_asm_statement(ctx, asm_stmt),
 
         // Error recovery node — skip silently.
         Statement::Error { .. } => Ok(()),
@@ -259,7 +256,8 @@ fn lower_if_stmt(
     };
 
     // Emit conditional branch: true → then_bb, false → else_bb/merge_bb.
-    ctx.builder.build_cond_branch(ctx.function, cond_val, then_bb, else_bb);
+    ctx.builder
+        .build_cond_branch(ctx.function, cond_val, then_bb, else_bb);
 
     // Lower "then" branch.
     ctx.builder.set_insert_point(then_bb);
@@ -324,7 +322,8 @@ fn lower_while_stmt(
     // Lower condition in header block.
     ctx.builder.set_insert_point(header_bb);
     let cond_val = lower_expression(ctx, condition)?;
-    ctx.builder.build_cond_branch(ctx.function, cond_val, body_bb, exit_bb);
+    ctx.builder
+        .build_cond_branch(ctx.function, cond_val, body_bb, exit_bb);
 
     // Push loop context for break/continue resolution.
     // break → exit_bb, continue → header_bb.
@@ -371,7 +370,9 @@ fn lower_do_while_stmt(
     _span: Span,
 ) -> Result<(), LoweringError> {
     let body_bb = ctx.builder.create_block(ctx.function, Some("dowhile.body"));
-    let latch_bb = ctx.builder.create_block(ctx.function, Some("dowhile.latch"));
+    let latch_bb = ctx
+        .builder
+        .create_block(ctx.function, Some("dowhile.latch"));
     let exit_bb = ctx.builder.create_block(ctx.function, Some("dowhile.exit"));
 
     // Branch from current block into the body (first iteration always executes).
@@ -392,7 +393,8 @@ fn lower_do_while_stmt(
     // Lower condition in latch block.
     ctx.builder.set_insert_point(latch_bb);
     let cond_val = lower_expression(ctx, condition)?;
-    ctx.builder.build_cond_branch(ctx.function, cond_val, body_bb, exit_bb);
+    ctx.builder
+        .build_cond_branch(ctx.function, cond_val, body_bb, exit_bb);
 
     ctx.pop_loop();
     ctx.builder.set_insert_point(exit_bb);
@@ -460,7 +462,8 @@ fn lower_for_stmt(
     ctx.builder.set_insert_point(header_bb);
     if let Some(cond_expr) = condition {
         let cond_val = lower_expression(ctx, cond_expr)?;
-        ctx.builder.build_cond_branch(ctx.function, cond_val, body_bb, exit_bb);
+        ctx.builder
+            .build_cond_branch(ctx.function, cond_val, body_bb, exit_bb);
     } else {
         // No condition → infinite loop (equivalent to `for(;;)`).
         ctx.builder.build_branch(ctx.function, body_bb);
@@ -549,7 +552,9 @@ fn lower_switch_stmt(
 
     // --- Pass 2: Lower the switch body with case transitions ---
     // Create an initial body block for any code before the first case label.
-    let body_start_bb = ctx.builder.create_block(ctx.function, Some("switch.body.start"));
+    let body_start_bb = ctx
+        .builder
+        .create_block(ctx.function, Some("switch.body.start"));
     ctx.builder.set_insert_point(body_start_bb);
 
     lower_switch_body(ctx, body, &case_info)?;
@@ -576,17 +581,18 @@ fn collect_switch_cases(
     match stmt {
         Statement::Case { value, body, .. } => {
             let case_val = try_eval_case_value(ctx, value)?;
-            let block = ctx.builder.create_block(
-                ctx.function,
-                Some(&format!("case.{}", case_val)),
-            );
+            let block = ctx
+                .builder
+                .create_block(ctx.function, Some(&format!("case.{}", case_val)));
             info.cases.push((case_val, block));
             info.value_to_block.insert(case_val, block);
             // Recursively scan the case body for nested case labels.
             collect_switch_cases(ctx, body, info)?;
         }
 
-        Statement::CaseRange { low, high, body, .. } => {
+        Statement::CaseRange {
+            low, high, body, ..
+        } => {
             let low_val = try_eval_case_value(ctx, low)?;
             let high_val = try_eval_case_value(ctx, high)?;
             // All values in the range map to the same block.
@@ -621,7 +627,11 @@ fn collect_switch_cases(
 
         // Scan into nested control-flow statements — case labels can
         // technically appear inside if/else, loops, etc. (legal in C).
-        Statement::If { then_branch, else_branch, .. } => {
+        Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
             collect_switch_cases(ctx, then_branch, info)?;
             if let Some(else_br) = else_branch {
                 collect_switch_cases(ctx, else_br, info)?;
@@ -682,7 +692,8 @@ fn lower_switch_body(
         Statement::Default { body, .. } => {
             if case_info.has_default {
                 if ensure_not_terminated(ctx) {
-                    ctx.builder.build_branch(ctx.function, case_info.default_block);
+                    ctx.builder
+                        .build_branch(ctx.function, case_info.default_block);
                 }
                 ctx.builder.set_insert_point(case_info.default_block);
             }
@@ -838,7 +849,9 @@ fn lower_computed_goto(
     if taken_labels.is_empty() {
         // No address-taken labels — degenerate case. Emit an unreachable-
         // style branch to a dead block.
-        let dead_bb = ctx.builder.create_block(ctx.function, Some("computed.goto.dead"));
+        let dead_bb = ctx
+            .builder
+            .create_block(ctx.function, Some("computed.goto.dead"));
         if ensure_not_terminated(ctx) {
             ctx.builder.build_branch(ctx.function, dead_bb);
         }
@@ -864,15 +877,19 @@ fn lower_computed_goto(
 
     // The default target of the switch is the first label (or a dead block).
     let default_target = first_block.unwrap_or_else(|| {
-        ctx.builder.create_block(ctx.function, Some("computed.goto.default"))
+        ctx.builder
+            .create_block(ctx.function, Some("computed.goto.default"))
     });
 
     if ensure_not_terminated(ctx) {
-        ctx.builder.build_switch(ctx.function, target_val, default_target, cases);
+        ctx.builder
+            .build_switch(ctx.function, target_val, default_target, cases);
     }
 
     // After computed goto, subsequent code is unreachable.
-    let after_bb = ctx.builder.create_block(ctx.function, Some("after.computed.goto"));
+    let after_bb = ctx
+        .builder
+        .create_block(ctx.function, Some("after.computed.goto"));
     ctx.builder.set_insert_point(after_bb);
     Ok(())
 }
@@ -885,13 +902,10 @@ fn lower_computed_goto(
 ///
 /// Emits an unconditional branch to the break target at the top of the
 /// combined loop/switch break stack.
-fn lower_break(
-    ctx: &mut LoweringContext<'_>,
-    span: Span,
-) -> Result<(), LoweringError> {
-    let break_target = ctx.current_break_target().ok_or(
-        LoweringError::BreakOutsideLoop { span }
-    )?;
+fn lower_break(ctx: &mut LoweringContext<'_>, span: Span) -> Result<(), LoweringError> {
+    let break_target = ctx
+        .current_break_target()
+        .ok_or(LoweringError::BreakOutsideLoop { span })?;
 
     if ensure_not_terminated(ctx) {
         ctx.builder.build_branch(ctx.function, break_target);
@@ -907,20 +921,19 @@ fn lower_break(
 ///
 /// Emits an unconditional branch to the continue target (header or latch)
 /// of the innermost enclosing loop.
-fn lower_continue(
-    ctx: &mut LoweringContext<'_>,
-    span: Span,
-) -> Result<(), LoweringError> {
-    let continue_target = ctx.current_continue_target().ok_or(
-        LoweringError::ContinueOutsideLoop { span }
-    )?;
+fn lower_continue(ctx: &mut LoweringContext<'_>, span: Span) -> Result<(), LoweringError> {
+    let continue_target = ctx
+        .current_continue_target()
+        .ok_or(LoweringError::ContinueOutsideLoop { span })?;
 
     if ensure_not_terminated(ctx) {
         ctx.builder.build_branch(ctx.function, continue_target);
     }
 
     // Create unreachable block for subsequent dead code.
-    let after_bb = ctx.builder.create_block(ctx.function, Some("after.continue"));
+    let after_bb = ctx
+        .builder
+        .create_block(ctx.function, Some("after.continue"));
     ctx.builder.set_insert_point(after_bb);
     Ok(())
 }
@@ -963,10 +976,7 @@ fn lower_return_stmt(
 ///
 /// The expression is lowered for its side effects; the result value
 /// is discarded.
-fn lower_expr_stmt(
-    ctx: &mut LoweringContext<'_>,
-    expr: &Expression,
-) -> Result<(), LoweringError> {
+fn lower_expr_stmt(ctx: &mut LoweringContext<'_>, expr: &Expression) -> Result<(), LoweringError> {
     // Lower the expression; discard the result.
     let _ = lower_expression(ctx, expr)?;
     Ok(())
@@ -999,7 +1009,11 @@ fn lower_block_declaration(
     decl: &Declaration,
 ) -> Result<(), LoweringError> {
     match decl {
-        Declaration::Variable { specifiers, declarators, .. } => {
+        Declaration::Variable {
+            specifiers,
+            declarators,
+            ..
+        } => {
             // Resolve the base IR type from declaration specifiers.
             let base_ir_type = resolve_base_ir_type_from_specifiers(ctx, specifiers);
 
@@ -1011,10 +1025,8 @@ fn lower_block_declaration(
                 };
 
                 // Adjust the type based on derived declarators (pointers, arrays).
-                let ir_type = apply_derived_declarators(
-                    &base_ir_type,
-                    &init_decl.declarator.derived,
-                );
+                let ir_type =
+                    apply_derived_declarators(&base_ir_type, &init_decl.declarator.derived);
 
                 // Create an alloca for this variable.
                 let alloca = ctx.create_local_alloca(var_name, ir_type.clone());
@@ -1040,8 +1052,7 @@ fn lower_block_declaration(
         // Function definitions and declarations at block scope are legal
         // in C (local function declarations). They don't produce IR in
         // the current function body.
-        Declaration::FunctionDef { .. }
-        | Declaration::FunctionDecl { .. } => Ok(()),
+        Declaration::FunctionDef { .. } | Declaration::FunctionDecl { .. } => Ok(()),
     }
 }
 
@@ -1148,12 +1159,13 @@ fn apply_derived_declarators(
             }
             DerivedDeclarator::Array { size, .. } => {
                 // Array of current_type with given size.
-                let count = size.as_ref().and_then(|s| {
-                    match s.as_ref() {
+                let count = size
+                    .as_ref()
+                    .and_then(|s| match s.as_ref() {
                         Expression::IntegerLiteral { value, .. } => Some(*value as usize),
                         _ => None,
-                    }
-                }).unwrap_or(0);
+                    })
+                    .unwrap_or(0);
                 current_type = IrType::Array {
                     element: Box::new(current_type),
                     count,

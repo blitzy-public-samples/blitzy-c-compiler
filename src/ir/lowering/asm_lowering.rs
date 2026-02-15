@@ -198,12 +198,7 @@ pub fn lower_asm_statement(
 
     // Step 3: Lower input operands — produces rvalues (register) or
     // addresses (memory) or validates constants (immediate).
-    let input_values = lower_input_operands(
-        ctx,
-        &asm_stmt.inputs,
-        &output_bindings,
-        span,
-    )?;
+    let input_values = lower_input_operands(ctx, &asm_stmt.inputs, &output_bindings, span)?;
 
     // Step 4: Process clobber list into structured form.
     let clobber_set = process_clobbers(&asm_stmt.clobbers);
@@ -221,12 +216,7 @@ pub fn lower_asm_statement(
     let processed_template = if operand_map.is_empty() {
         // No named operands — use the simpler template processor that
         // doesn't need interner access.
-        process_asm_template(
-            &asm_stmt.template,
-            &operand_map,
-            total_operand_count,
-            span,
-        )?
+        process_asm_template(&asm_stmt.template, &operand_map, total_operand_count, span)?
     } else {
         // Named operands present — use the interner-aware processor.
         process_asm_template_with_interner(
@@ -243,11 +233,7 @@ pub fn lower_asm_statement(
     // Format: output constraints separated by commas, then input constraints
     // separated by commas, with a colon separating the two groups.
     // Example: "=r,=m:r,i,0"
-    let combined_constraints = build_constraint_string(
-        &output_bindings,
-        &asm_stmt.inputs,
-        span,
-    )?;
+    let combined_constraints = build_constraint_string(&output_bindings, &asm_stmt.inputs, span)?;
 
     // Step 8: Collect all operand ValueIds in order: outputs' store targets
     // first (for the backend to know where to write), then read-write
@@ -276,9 +262,8 @@ pub fn lower_asm_statement(
     // having side effects (it might be a memory barrier, cpuid, etc.).
     // Non-volatile asm with outputs and no memory clobber could
     // potentially be eliminated if unused, but we conservatively keep it.
-    let has_side_effects = asm_stmt.is_volatile
-        || asm_stmt.outputs.is_empty()
-        || clobber_set.has_memory_clobber;
+    let has_side_effects =
+        asm_stmt.is_volatile || asm_stmt.outputs.is_empty() || clobber_set.has_memory_clobber;
 
     // Step 10: Emit the InlineAsm IR instruction.
     let _asm_result = ctx.builder.build_inline_asm(
@@ -299,16 +284,21 @@ pub fn lower_asm_statement(
             // Add goto targets as successors of the current block.
             for &target_bb in &goto_targets {
                 ctx.function.get_block_mut(curr_bb).add_successor(target_bb);
-                ctx.function.get_block_mut(target_bb).add_predecessor(curr_bb);
+                ctx.function
+                    .get_block_mut(target_bb)
+                    .add_predecessor(curr_bb);
             }
 
             // Create a fall-through block for the normal (non-goto) path.
-            let fallthrough_bb = ctx.builder.create_block(
-                ctx.function,
-                Some("asm_goto.fallthrough"),
-            );
-            ctx.function.get_block_mut(curr_bb).add_successor(fallthrough_bb);
-            ctx.function.get_block_mut(fallthrough_bb).add_predecessor(curr_bb);
+            let fallthrough_bb = ctx
+                .builder
+                .create_block(ctx.function, Some("asm_goto.fallthrough"));
+            ctx.function
+                .get_block_mut(curr_bb)
+                .add_successor(fallthrough_bb);
+            ctx.function
+                .get_block_mut(fallthrough_bb)
+                .add_predecessor(curr_bb);
 
             // Move the insertion point to the fall-through block so that
             // subsequent instructions after the asm goto are placed there.
@@ -346,11 +336,8 @@ pub fn lower_asm_statement(
                     // For subsequent outputs, the single-result InlineAsm
                     // model means the backend must extract them.
                     if idx == 0 {
-                        ctx.builder.build_store(
-                            ctx.function,
-                            asm_result_val,
-                            binding.store_target,
-                        );
+                        ctx.builder
+                            .build_store(ctx.function, asm_result_val, binding.store_target);
                     }
                     // Additional outputs: The backend extracts values
                     // from the InlineAsm instruction using the constraint
@@ -378,10 +365,7 @@ pub fn lower_asm_statement(
 ///   out → 0
 ///   in  → 1
 /// ```
-fn build_operand_map(
-    outputs: &[AsmOperand],
-    inputs: &[AsmOperand],
-) -> AsmOperandMap {
+fn build_operand_map(outputs: &[AsmOperand], inputs: &[AsmOperand]) -> AsmOperandMap {
     let mut map = FxHashMap::default();
 
     for (idx, operand) in outputs.iter().enumerate() {
@@ -501,10 +485,7 @@ fn process_asm_template(
                 return Err(LoweringError::InvalidConstraint {
                     constraint: name_str.clone(),
                     span,
-                    message: format!(
-                        "undefined named operand '%[{}]' in asm template",
-                        name_str
-                    ),
+                    message: format!("undefined named operand '%[{}]' in asm template", name_str),
                 });
             } else if next.is_ascii_digit() {
                 // Positional operand: %0, %1, ...
@@ -605,11 +586,9 @@ fn lower_output_operands(
 
         // For read-write (+) constraints, emit a pre-asm load.
         let pre_load_value = if parsed.modifier == Some(ConstraintModifier::ReadWrite) {
-            let loaded = ctx.builder.build_load(
-                ctx.function,
-                lvalue_addr,
-                operand_type.clone(),
-            );
+            let loaded = ctx
+                .builder
+                .build_load(ctx.function, lvalue_addr, operand_type.clone());
             Some(loaded)
         } else {
             None
@@ -669,10 +648,7 @@ fn lower_input_operands(
                     LoweringError::InvalidConstraint {
                         constraint: operand.constraint.clone(),
                         span: operand.span,
-                        message: format!(
-                            "memory constraint operand is not addressable: {}",
-                            e
-                        ),
+                        message: format!("memory constraint operand is not addressable: {}", e),
                     }
                 })?
             }
@@ -892,10 +868,9 @@ fn validate_constraint(
             ConstraintClass::Matching(idx)
         }
         // Architecture-specific constraints.
-        'a' | 'b' | 'c' | 'd' | 'S' | 'D' | 'A' | 'q' | 'Q'
-        | 'R' | 'f' | 't' | 'u' | 'x' | 'y' | 'l' | 'p' | 'e'
-        | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P'
-        | 'w' | 'k' | 'Z' | 'X' => {
+        'a' | 'b' | 'c' | 'd' | 'S' | 'D' | 'A' | 'q' | 'Q' | 'R' | 'f' | 't' | 'u' | 'x' | 'y'
+        | 'l' | 'p' | 'e' | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P' | 'w' | 'k' | 'Z'
+        | 'X' => {
             validate_arch_specific_constraint(class_char, ctx.target(), span)?;
             ConstraintClass::ArchSpecific(class_char)
         }
@@ -936,20 +911,39 @@ fn validate_arch_specific_constraint(
     let valid = match target {
         Target::X86_64 | Target::I686 => matches!(
             ch,
-            'a' | 'b' | 'c' | 'd' | 'S' | 'D' | 'A' | 'q' | 'Q'
-            | 'R' | 'f' | 't' | 'u' | 'x' | 'y' | 'l'
-            | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P'
-            | 'e' | 'p' | 'Z' | 'X'
+            'a' | 'b'
+                | 'c'
+                | 'd'
+                | 'S'
+                | 'D'
+                | 'A'
+                | 'q'
+                | 'Q'
+                | 'R'
+                | 'f'
+                | 't'
+                | 'u'
+                | 'x'
+                | 'y'
+                | 'l'
+                | 'I'
+                | 'J'
+                | 'K'
+                | 'L'
+                | 'M'
+                | 'N'
+                | 'O'
+                | 'P'
+                | 'e'
+                | 'p'
+                | 'Z'
+                | 'X'
         ),
         Target::AArch64 => matches!(
             ch,
-            'w' | 'k' | 'Z' | 'X'
-            | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P'
+            'w' | 'k' | 'Z' | 'X' | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P'
         ),
-        Target::RiscV64 => matches!(
-            ch,
-            'f' | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P'
-        ),
+        Target::RiscV64 => matches!(ch, 'f' | 'I' | 'J' | 'K' | 'L' | 'M' | 'N' | 'O' | 'P'),
     };
 
     if valid {
@@ -1038,18 +1032,11 @@ fn default_operand_ir_type(ctx: &LoweringContext<'_>) -> IrType {
 ///
 /// The returned type is a hint for the backend; the actual operand IR type
 /// is determined by the expression lowering and may differ.
-fn constraint_preferred_ir_type(
-    class: &ConstraintClass,
-    ctx: &LoweringContext<'_>,
-) -> IrType {
+fn constraint_preferred_ir_type(class: &ConstraintClass, ctx: &LoweringContext<'_>) -> IrType {
     match class {
         ConstraintClass::Memory => IrType::Ptr,
-        ConstraintClass::Register | ConstraintClass::General => {
-            default_operand_ir_type(ctx)
-        }
-        ConstraintClass::Immediate | ConstraintClass::Numeric => {
-            default_operand_ir_type(ctx)
-        }
+        ConstraintClass::Register | ConstraintClass::General => default_operand_ir_type(ctx),
+        ConstraintClass::Immediate | ConstraintClass::Numeric => default_operand_ir_type(ctx),
         ConstraintClass::Matching(_) => default_operand_ir_type(ctx),
         ConstraintClass::ArchSpecific(ch) => {
             // Architecture-specific type mapping for sub-register constraints.
@@ -1120,7 +1107,8 @@ fn create_output_temporary(
     operand_idx: usize,
 ) -> ValueId {
     let name = format!("asm_out_tmp_{}", operand_idx);
-    ctx.builder.build_alloca(ctx.function, operand_type.clone(), Some(&name))
+    ctx.builder
+        .build_alloca(ctx.function, operand_type.clone(), Some(&name))
 }
 
 // ============================================================================
@@ -1187,11 +1175,7 @@ fn process_asm_template_with_interner(
                 i += 1; // skip ']'
 
                 // Resolve the name using the interner.
-                let resolved = resolve_named_operand_via_interner(
-                    ctx,
-                    &name_str,
-                    operand_map,
-                );
+                let resolved = resolve_named_operand_via_interner(ctx, &name_str, operand_map);
 
                 match resolved {
                     Some(idx) => {
@@ -1416,10 +1400,7 @@ mod tests {
 
     #[test]
     fn test_template_multiple_fragments() {
-        let template = vec![
-            b"mov %0, ".to_vec(),
-            b"%1".to_vec(),
-        ];
+        let template = vec![b"mov %0, ".to_vec(), b"%1".to_vec()];
         let map = FxHashMap::default();
         let result = process_asm_template(&template, &map, 2, Span::DUMMY);
         assert!(result.is_ok());
@@ -1438,32 +1419,28 @@ mod tests {
 
     #[test]
     fn test_build_constraint_string_outputs_and_inputs() {
-        let outputs = vec![
-            AsmOutputBinding {
-                store_target: ValueId(0),
-                pre_load_value: None,
-                parsed_constraint: ParsedConstraint {
-                    modifier: Some(ConstraintModifier::WriteOnly),
-                    early_clobber: false,
-                    constraint_class: ConstraintClass::Register,
-                    raw: "=r".to_string(),
-                },
-                operand_type: IrType::I64,
+        let outputs = vec![AsmOutputBinding {
+            store_target: ValueId(0),
+            pre_load_value: None,
+            parsed_constraint: ParsedConstraint {
+                modifier: Some(ConstraintModifier::WriteOnly),
+                early_clobber: false,
+                constraint_class: ConstraintClass::Register,
+                raw: "=r".to_string(),
             },
-        ];
+            operand_type: IrType::I64,
+        }];
 
-        let inputs = vec![
-            AsmOperand {
-                name: None,
-                constraint: "r".to_string(),
-                expression: Box::new(crate::frontend::parser::ast::Expression::IntegerLiteral {
-                    value: 42,
-                    suffix: crate::frontend::parser::ast::IntegerSuffix::None,
-                    span: Span::DUMMY,
-                }),
+        let inputs = vec![AsmOperand {
+            name: None,
+            constraint: "r".to_string(),
+            expression: Box::new(crate::frontend::parser::ast::Expression::IntegerLiteral {
+                value: 42,
+                suffix: crate::frontend::parser::ast::IntegerSuffix::None,
                 span: Span::DUMMY,
-            },
-        ];
+            }),
+            span: Span::DUMMY,
+        }];
 
         let result = build_constraint_string(&outputs, &inputs, Span::DUMMY);
         assert!(result.is_ok());
@@ -1474,18 +1451,16 @@ mod tests {
     #[test]
     fn test_build_constraint_string_no_outputs() {
         let outputs: Vec<AsmOutputBinding> = vec![];
-        let inputs = vec![
-            AsmOperand {
-                name: None,
-                constraint: "r".to_string(),
-                expression: Box::new(crate::frontend::parser::ast::Expression::IntegerLiteral {
-                    value: 0,
-                    suffix: crate::frontend::parser::ast::IntegerSuffix::None,
-                    span: Span::DUMMY,
-                }),
+        let inputs = vec![AsmOperand {
+            name: None,
+            constraint: "r".to_string(),
+            expression: Box::new(crate::frontend::parser::ast::Expression::IntegerLiteral {
+                value: 0,
+                suffix: crate::frontend::parser::ast::IntegerSuffix::None,
                 span: Span::DUMMY,
-            },
-        ];
+            }),
+            span: Span::DUMMY,
+        }];
 
         let result = build_constraint_string(&outputs, &inputs, Span::DUMMY);
         assert!(result.is_ok());

@@ -367,9 +367,7 @@ impl RiscV64Abi {
             CType::LongDouble => ArgClassification::FloatReg(registers::FA0),
 
             // Complex: two FP registers (real + imaginary)
-            CType::Complex(_) => {
-                ArgClassification::FloatRegPair(registers::FA0, registers::FA1)
-            }
+            CType::Complex(_) => ArgClassification::FloatRegPair(registers::FA0, registers::FA1),
 
             // Pointer: integer register
             CType::Pointer(_) => ArgClassification::IntegerReg(registers::A0),
@@ -381,14 +379,10 @@ impl RiscV64Abi {
             CType::Function { .. } => ArgClassification::IntegerReg(registers::A0),
 
             // Struct: apply LP64D flattening rules
-            CType::Struct { fields, .. } => {
-                self.classify_aggregate_arg(fields, type_size, target)
-            }
+            CType::Struct { fields, .. } => self.classify_aggregate_arg(fields, type_size, target),
 
             // Union: treated as opaque aggregate
-            CType::Union { fields, .. } => {
-                self.classify_union_arg(fields, type_size, target)
-            }
+            CType::Union { fields, .. } => self.classify_union_arg(fields, type_size, target),
 
             // Array: treated as aggregate (not recursively flattened)
             CType::Array { element, size } => {
@@ -468,9 +462,7 @@ impl RiscV64Abi {
             }
 
             // Union: opaque aggregate
-            CType::Union { fields, .. } => {
-                self.classify_union_return(fields, type_size, target)
-            }
+            CType::Union { fields, .. } => self.classify_union_return(fields, type_size, target),
 
             // Array: aggregate
             CType::Array { .. } => {
@@ -610,10 +602,7 @@ impl RiscV64Abi {
         let stack_align = target.stack_alignment();
 
         // Verify data model is LP64 for RISC-V 64
-        debug_assert_eq!(
-            target.data_model(),
-            crate::common::target::DataModel::LP64
-        );
+        debug_assert_eq!(target.data_model(), crate::common::target::DataModel::LP64);
 
         // Confirm long is 8 bytes on LP64
         debug_assert_eq!(target.long_size(), 8);
@@ -886,9 +875,9 @@ impl RiscV64Abi {
         }
         let first_ty = fields[0].ty.canonical();
         first_ty.is_floating()
-            && fields.iter().all(|f| {
-                f.bit_width.is_none() && f.ty.canonical() == first_ty
-            })
+            && fields
+                .iter()
+                .all(|f| f.bit_width.is_none() && f.ty.canonical() == first_ty)
     }
 
     /// Attempts to classify a flat-field list as FP-register-eligible for
@@ -905,13 +894,13 @@ impl RiscV64Abi {
                 let (a, b) = (flat[0], flat[1]);
                 match (a, b) {
                     // Two FP fields → FloatRegPair
-                    (FlatFieldKind::Float32 | FlatFieldKind::Float64,
-                     FlatFieldKind::Float32 | FlatFieldKind::Float64) => {
-                        Some(ArgClassification::FloatRegPair(
-                            registers::FA0,
-                            registers::FA1,
-                        ))
-                    }
+                    (
+                        FlatFieldKind::Float32 | FlatFieldKind::Float64,
+                        FlatFieldKind::Float32 | FlatFieldKind::Float64,
+                    ) => Some(ArgClassification::FloatRegPair(
+                        registers::FA0,
+                        registers::FA1,
+                    )),
                     // One int + one FP → IntAndFloat
                     (FlatFieldKind::Integer, FlatFieldKind::Float32 | FlatFieldKind::Float64) => {
                         Some(ArgClassification::IntAndFloat(
@@ -946,13 +935,13 @@ impl RiscV64Abi {
             2 => {
                 let (a, b) = (flat[0], flat[1]);
                 match (a, b) {
-                    (FlatFieldKind::Float32 | FlatFieldKind::Float64,
-                     FlatFieldKind::Float32 | FlatFieldKind::Float64) => {
-                        Some(ReturnClassification::InFloatRegPair(
-                            registers::FA0,
-                            registers::FA1,
-                        ))
-                    }
+                    (
+                        FlatFieldKind::Float32 | FlatFieldKind::Float64,
+                        FlatFieldKind::Float32 | FlatFieldKind::Float64,
+                    ) => Some(ReturnClassification::InFloatRegPair(
+                        registers::FA0,
+                        registers::FA1,
+                    )),
                     (FlatFieldKind::Integer, FlatFieldKind::Float32 | FlatFieldKind::Float64)
                     | (FlatFieldKind::Float32 | FlatFieldKind::Float64, FlatFieldKind::Integer) => {
                         Some(ReturnClassification::IntAndFloat(
@@ -968,11 +957,7 @@ impl RiscV64Abi {
     }
 
     /// Collects [`FlatFieldKind`] entries from struct fields for classification.
-    fn collect_flat_fields(
-        &self,
-        fields: &[FieldDef],
-        target: &Target,
-    ) -> Vec<FlatFieldKind> {
+    fn collect_flat_fields(&self, fields: &[FieldDef], target: &Target) -> Vec<FlatFieldKind> {
         let mut result = Vec::with_capacity(fields.len());
         self.flatten_into(fields, target, &mut result);
         result
@@ -982,12 +967,7 @@ impl RiscV64Abi {
     ///
     /// Nested structs and homogeneous FP unions are recursively descended.
     /// Arrays and bit-fields are treated as opaque integer entries.
-    fn flatten_into(
-        &self,
-        fields: &[FieldDef],
-        _target: &Target,
-        result: &mut Vec<FlatFieldKind>,
-    ) {
+    fn flatten_into(&self, fields: &[FieldDef], _target: &Target, result: &mut Vec<FlatFieldKind>) {
         for field in fields {
             // Bit-fields disqualify the struct from FP register passing
             if field.bit_width.is_some() {
@@ -1112,17 +1092,13 @@ impl RiscV64Abi {
             CType::Function { .. } => self.alloc_int_reg(XLEN, int_idx, stk_off),
 
             // ---- Struct: LP64D flattening ----
-            CType::Struct { fields, .. } => {
-                self.classify_struct_with_state(
-                    fields, type_size, type_align, target, int_idx, fp_idx, stk_off,
-                )
-            }
+            CType::Struct { fields, .. } => self.classify_struct_with_state(
+                fields, type_size, type_align, target, int_idx, fp_idx, stk_off,
+            ),
 
             // ---- Union: opaque aggregate ----
             CType::Union { fields, .. } => {
-                self.classify_union_with_state(
-                    fields, type_size, target, int_idx, fp_idx, stk_off,
-                )
+                self.classify_union_with_state(fields, type_size, target, int_idx, fp_idx, stk_off)
             }
 
             // ---- Array: opaque aggregate ----
@@ -1348,11 +1324,7 @@ impl RiscV64Abi {
 
     /// Allocates an integer register to hold a pointer for indirect (by-reference)
     /// passing, or spills the pointer to the stack.
-    fn alloc_indirect(
-        &self,
-        int_idx: &mut usize,
-        stk_off: &mut i32,
-    ) -> ArgClassification {
+    fn alloc_indirect(&self, int_idx: &mut usize, stk_off: &mut i32) -> ArgClassification {
         if *int_idx < NUM_INT_ARG_REGS {
             let reg = registers::INTEGER_ARG_REGS[*int_idx];
             *int_idx += 1;
@@ -1360,7 +1332,10 @@ impl RiscV64Abi {
         } else {
             let offset = *stk_off;
             *stk_off += XLEN as i32; // Pointer-sized stack slot
-            ArgClassification::Stack { offset, size: XLEN as u32 }
+            ArgClassification::Stack {
+                offset,
+                size: XLEN as u32,
+            }
         }
     }
 }

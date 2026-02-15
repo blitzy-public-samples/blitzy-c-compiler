@@ -290,85 +290,227 @@ pub const RM_DYN: u8 = 0x7;
 #[allow(non_camel_case_types)]
 pub enum RvOpcode {
     // --- RV64I base integer register-register (R-type) ---
-    ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND,
+    ADD,
+    SUB,
+    SLL,
+    SLT,
+    SLTU,
+    XOR,
+    SRL,
+    SRA,
+    OR,
+    AND,
     // --- RV64I word variants (R-type, OP_32) ---
-    ADDW, SUBW, SLLW, SRLW, SRAW,
+    ADDW,
+    SUBW,
+    SLLW,
+    SRLW,
+    SRAW,
 
     // --- RV64M multiply/divide (R-type) ---
-    MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
-    MULW, DIVW, DIVUW, REMW, REMUW,
+    MUL,
+    MULH,
+    MULHSU,
+    MULHU,
+    DIV,
+    DIVU,
+    REM,
+    REMU,
+    MULW,
+    DIVW,
+    DIVUW,
+    REMW,
+    REMUW,
 
     // --- RV64I immediate operations (I-type) ---
-    ADDI, SLTI, SLTIU, XORI, ORI, ANDI, ADDIW,
+    ADDI,
+    SLTI,
+    SLTIU,
+    XORI,
+    ORI,
+    ANDI,
+    ADDIW,
     // --- Shifts with immediate (I-type specialization) ---
-    SLLI, SRLI, SRAI, SLLIW, SRLIW, SRAIW,
+    SLLI,
+    SRLI,
+    SRAI,
+    SLLIW,
+    SRLIW,
+    SRAIW,
 
     // --- RV64I loads (I-type) ---
-    LB, LH, LW, LD, LBU, LHU, LWU,
+    LB,
+    LH,
+    LW,
+    LD,
+    LBU,
+    LHU,
+    LWU,
 
     // --- RV64I stores (S-type) ---
-    SB, SH, SW, SD,
+    SB,
+    SH,
+    SW,
+    SD,
 
     // --- RV64I branches (B-type) ---
-    BEQ, BNE, BLT, BGE, BLTU, BGEU,
+    BEQ,
+    BNE,
+    BLT,
+    BGE,
+    BLTU,
+    BGEU,
 
     // --- RV64I upper immediate (U-type) ---
-    LUI, AUIPC,
+    LUI,
+    AUIPC,
 
     // --- RV64I jumps ---
     JAL,  // J-type
     JALR, // I-type
 
     // --- RV64I system / fence ---
-    ECALL, EBREAK, FENCE,
-    CSRRW, CSRRS, CSRRC,
+    ECALL,
+    EBREAK,
+    FENCE,
+    CSRRW,
+    CSRRS,
+    CSRRC,
 
     // --- RV64F single-precision FP loads/stores ---
-    FLW, FSW,
+    FLW,
+    FSW,
     // --- RV64D double-precision FP loads/stores ---
-    FLD, FSD,
+    FLD,
+    FSD,
 
     // --- RV64F single-precision FP arithmetic (R-type, OP_FP) ---
-    FADD_S, FSUB_S, FMUL_S, FDIV_S, FSQRT_S,
-    FSGNJ_S, FSGNJN_S, FSGNJX_S,
-    FMIN_S, FMAX_S,
-    FCVT_W_S, FCVT_WU_S, FMV_X_W,
-    FEQ_S, FLT_S, FLE_S, FCLASS_S,
-    FCVT_S_W, FCVT_S_WU, FMV_W_X,
-    FCVT_L_S, FCVT_LU_S, FCVT_S_L, FCVT_S_LU,
+    FADD_S,
+    FSUB_S,
+    FMUL_S,
+    FDIV_S,
+    FSQRT_S,
+    FSGNJ_S,
+    FSGNJN_S,
+    FSGNJX_S,
+    FMIN_S,
+    FMAX_S,
+    FCVT_W_S,
+    FCVT_WU_S,
+    FMV_X_W,
+    FEQ_S,
+    FLT_S,
+    FLE_S,
+    FCLASS_S,
+    FCVT_S_W,
+    FCVT_S_WU,
+    FMV_W_X,
+    FCVT_L_S,
+    FCVT_LU_S,
+    FCVT_S_L,
+    FCVT_S_LU,
 
     // --- RV64D double-precision FP arithmetic (R-type, OP_FP) ---
-    FADD_D, FSUB_D, FMUL_D, FDIV_D, FSQRT_D,
-    FSGNJ_D, FSGNJN_D, FSGNJX_D,
-    FMIN_D, FMAX_D,
-    FCVT_S_D, FCVT_D_S,
-    FEQ_D, FLT_D, FLE_D, FCLASS_D,
-    FCVT_W_D, FCVT_WU_D, FCVT_D_W, FCVT_D_WU,
-    FCVT_L_D, FCVT_LU_D, FCVT_D_L, FCVT_D_LU,
-    FMV_X_D, FMV_D_X,
+    FADD_D,
+    FSUB_D,
+    FMUL_D,
+    FDIV_D,
+    FSQRT_D,
+    FSGNJ_D,
+    FSGNJN_D,
+    FSGNJX_D,
+    FMIN_D,
+    FMAX_D,
+    FCVT_S_D,
+    FCVT_D_S,
+    FEQ_D,
+    FLT_D,
+    FLE_D,
+    FCLASS_D,
+    FCVT_W_D,
+    FCVT_WU_D,
+    FCVT_D_W,
+    FCVT_D_WU,
+    FCVT_L_D,
+    FCVT_LU_D,
+    FCVT_D_L,
+    FCVT_D_LU,
+    FMV_X_D,
+    FMV_D_X,
 
     // --- RV64F/D fused multiply-add (R4-type) ---
-    FMADD_S, FMSUB_S, FNMSUB_S, FNMADD_S,
-    FMADD_D, FMSUB_D, FNMSUB_D, FNMADD_D,
+    FMADD_S,
+    FMSUB_S,
+    FNMSUB_S,
+    FNMADD_S,
+    FMADD_D,
+    FMSUB_D,
+    FNMSUB_D,
+    FNMADD_D,
 
     // --- RV64A atomics (R-type, AMO opcode) ---
-    LR_W, SC_W, AMOSWAP_W, AMOADD_W,
-    AMOXOR_W, AMOAND_W, AMOOR_W,
-    AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
-    LR_D, SC_D, AMOSWAP_D, AMOADD_D,
-    AMOXOR_D, AMOAND_D, AMOOR_D,
-    AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
+    LR_W,
+    SC_W,
+    AMOSWAP_W,
+    AMOADD_W,
+    AMOXOR_W,
+    AMOAND_W,
+    AMOOR_W,
+    AMOMIN_W,
+    AMOMAX_W,
+    AMOMINU_W,
+    AMOMAXU_W,
+    LR_D,
+    SC_D,
+    AMOSWAP_D,
+    AMOADD_D,
+    AMOXOR_D,
+    AMOAND_D,
+    AMOOR_D,
+    AMOMIN_D,
+    AMOMAX_D,
+    AMOMINU_D,
+    AMOMAXU_D,
 
     // --- RV64C compressed instructions ---
-    C_NOP, C_ADDI, C_ADDIW, C_LI, C_LUI, C_ADDI16SP, C_ADDI4SPN,
-    C_SLLI, C_SRLI, C_SRAI, C_ANDI,
-    C_MV, C_ADD, C_AND, C_OR, C_XOR, C_SUB, C_ADDW, C_SUBW,
-    C_LW, C_LD, C_SW, C_SD,
-    C_LWSP, C_LDSP, C_SWSP, C_SDSP,
-    C_J, C_JAL, C_JR, C_JALR,
-    C_BEQZ, C_BNEZ,
+    C_NOP,
+    C_ADDI,
+    C_ADDIW,
+    C_LI,
+    C_LUI,
+    C_ADDI16SP,
+    C_ADDI4SPN,
+    C_SLLI,
+    C_SRLI,
+    C_SRAI,
+    C_ANDI,
+    C_MV,
+    C_ADD,
+    C_AND,
+    C_OR,
+    C_XOR,
+    C_SUB,
+    C_ADDW,
+    C_SUBW,
+    C_LW,
+    C_LD,
+    C_SW,
+    C_SD,
+    C_LWSP,
+    C_LDSP,
+    C_SWSP,
+    C_SDSP,
+    C_J,
+    C_JAL,
+    C_JR,
+    C_JALR,
+    C_BEQZ,
+    C_BNEZ,
     C_EBREAK,
-    C_FLD, C_FSD, C_FLDSP, C_FSDSP,
+    C_FLD,
+    C_FSD,
+    C_FLDSP,
+    C_FSDSP,
 
     // --- Pseudo-instructions (expand to real instruction sequences) ---
     /// NOP → ADDI x0, x0, 0
@@ -402,99 +544,209 @@ pub enum RvOpcode {
 impl fmt::Display for RvOpcode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            Self::ADD => "add", Self::SUB => "sub", Self::SLL => "sll",
-            Self::SLT => "slt", Self::SLTU => "sltu", Self::XOR => "xor",
-            Self::SRL => "srl", Self::SRA => "sra", Self::OR => "or",
+            Self::ADD => "add",
+            Self::SUB => "sub",
+            Self::SLL => "sll",
+            Self::SLT => "slt",
+            Self::SLTU => "sltu",
+            Self::XOR => "xor",
+            Self::SRL => "srl",
+            Self::SRA => "sra",
+            Self::OR => "or",
             Self::AND => "and",
-            Self::ADDW => "addw", Self::SUBW => "subw", Self::SLLW => "sllw",
-            Self::SRLW => "srlw", Self::SRAW => "sraw",
-            Self::MUL => "mul", Self::MULH => "mulh", Self::MULHSU => "mulhsu",
-            Self::MULHU => "mulhu", Self::DIV => "div", Self::DIVU => "divu",
-            Self::REM => "rem", Self::REMU => "remu",
-            Self::MULW => "mulw", Self::DIVW => "divw", Self::DIVUW => "divuw",
-            Self::REMW => "remw", Self::REMUW => "remuw",
-            Self::ADDI => "addi", Self::SLTI => "slti", Self::SLTIU => "sltiu",
-            Self::XORI => "xori", Self::ORI => "ori", Self::ANDI => "andi",
+            Self::ADDW => "addw",
+            Self::SUBW => "subw",
+            Self::SLLW => "sllw",
+            Self::SRLW => "srlw",
+            Self::SRAW => "sraw",
+            Self::MUL => "mul",
+            Self::MULH => "mulh",
+            Self::MULHSU => "mulhsu",
+            Self::MULHU => "mulhu",
+            Self::DIV => "div",
+            Self::DIVU => "divu",
+            Self::REM => "rem",
+            Self::REMU => "remu",
+            Self::MULW => "mulw",
+            Self::DIVW => "divw",
+            Self::DIVUW => "divuw",
+            Self::REMW => "remw",
+            Self::REMUW => "remuw",
+            Self::ADDI => "addi",
+            Self::SLTI => "slti",
+            Self::SLTIU => "sltiu",
+            Self::XORI => "xori",
+            Self::ORI => "ori",
+            Self::ANDI => "andi",
             Self::ADDIW => "addiw",
-            Self::SLLI => "slli", Self::SRLI => "srli", Self::SRAI => "srai",
-            Self::SLLIW => "slliw", Self::SRLIW => "srliw", Self::SRAIW => "sraiw",
-            Self::LB => "lb", Self::LH => "lh", Self::LW => "lw", Self::LD => "ld",
-            Self::LBU => "lbu", Self::LHU => "lhu", Self::LWU => "lwu",
-            Self::SB => "sb", Self::SH => "sh", Self::SW => "sw", Self::SD => "sd",
-            Self::BEQ => "beq", Self::BNE => "bne", Self::BLT => "blt",
-            Self::BGE => "bge", Self::BLTU => "bltu", Self::BGEU => "bgeu",
-            Self::LUI => "lui", Self::AUIPC => "auipc",
-            Self::JAL => "jal", Self::JALR => "jalr",
-            Self::ECALL => "ecall", Self::EBREAK => "ebreak", Self::FENCE => "fence",
-            Self::CSRRW => "csrrw", Self::CSRRS => "csrrs", Self::CSRRC => "csrrc",
-            Self::FLW => "flw", Self::FSW => "fsw", Self::FLD => "fld", Self::FSD => "fsd",
-            Self::FADD_S => "fadd.s", Self::FSUB_S => "fsub.s",
-            Self::FMUL_S => "fmul.s", Self::FDIV_S => "fdiv.s", Self::FSQRT_S => "fsqrt.s",
-            Self::FSGNJ_S => "fsgnj.s", Self::FSGNJN_S => "fsgnjn.s",
+            Self::SLLI => "slli",
+            Self::SRLI => "srli",
+            Self::SRAI => "srai",
+            Self::SLLIW => "slliw",
+            Self::SRLIW => "srliw",
+            Self::SRAIW => "sraiw",
+            Self::LB => "lb",
+            Self::LH => "lh",
+            Self::LW => "lw",
+            Self::LD => "ld",
+            Self::LBU => "lbu",
+            Self::LHU => "lhu",
+            Self::LWU => "lwu",
+            Self::SB => "sb",
+            Self::SH => "sh",
+            Self::SW => "sw",
+            Self::SD => "sd",
+            Self::BEQ => "beq",
+            Self::BNE => "bne",
+            Self::BLT => "blt",
+            Self::BGE => "bge",
+            Self::BLTU => "bltu",
+            Self::BGEU => "bgeu",
+            Self::LUI => "lui",
+            Self::AUIPC => "auipc",
+            Self::JAL => "jal",
+            Self::JALR => "jalr",
+            Self::ECALL => "ecall",
+            Self::EBREAK => "ebreak",
+            Self::FENCE => "fence",
+            Self::CSRRW => "csrrw",
+            Self::CSRRS => "csrrs",
+            Self::CSRRC => "csrrc",
+            Self::FLW => "flw",
+            Self::FSW => "fsw",
+            Self::FLD => "fld",
+            Self::FSD => "fsd",
+            Self::FADD_S => "fadd.s",
+            Self::FSUB_S => "fsub.s",
+            Self::FMUL_S => "fmul.s",
+            Self::FDIV_S => "fdiv.s",
+            Self::FSQRT_S => "fsqrt.s",
+            Self::FSGNJ_S => "fsgnj.s",
+            Self::FSGNJN_S => "fsgnjn.s",
             Self::FSGNJX_S => "fsgnjx.s",
-            Self::FMIN_S => "fmin.s", Self::FMAX_S => "fmax.s",
-            Self::FCVT_W_S => "fcvt.w.s", Self::FCVT_WU_S => "fcvt.wu.s",
+            Self::FMIN_S => "fmin.s",
+            Self::FMAX_S => "fmax.s",
+            Self::FCVT_W_S => "fcvt.w.s",
+            Self::FCVT_WU_S => "fcvt.wu.s",
             Self::FMV_X_W => "fmv.x.w",
-            Self::FEQ_S => "feq.s", Self::FLT_S => "flt.s", Self::FLE_S => "fle.s",
+            Self::FEQ_S => "feq.s",
+            Self::FLT_S => "flt.s",
+            Self::FLE_S => "fle.s",
             Self::FCLASS_S => "fclass.s",
-            Self::FCVT_S_W => "fcvt.s.w", Self::FCVT_S_WU => "fcvt.s.wu",
+            Self::FCVT_S_W => "fcvt.s.w",
+            Self::FCVT_S_WU => "fcvt.s.wu",
             Self::FMV_W_X => "fmv.w.x",
-            Self::FCVT_L_S => "fcvt.l.s", Self::FCVT_LU_S => "fcvt.lu.s",
-            Self::FCVT_S_L => "fcvt.s.l", Self::FCVT_S_LU => "fcvt.s.lu",
-            Self::FADD_D => "fadd.d", Self::FSUB_D => "fsub.d",
-            Self::FMUL_D => "fmul.d", Self::FDIV_D => "fdiv.d", Self::FSQRT_D => "fsqrt.d",
-            Self::FSGNJ_D => "fsgnj.d", Self::FSGNJN_D => "fsgnjn.d",
+            Self::FCVT_L_S => "fcvt.l.s",
+            Self::FCVT_LU_S => "fcvt.lu.s",
+            Self::FCVT_S_L => "fcvt.s.l",
+            Self::FCVT_S_LU => "fcvt.s.lu",
+            Self::FADD_D => "fadd.d",
+            Self::FSUB_D => "fsub.d",
+            Self::FMUL_D => "fmul.d",
+            Self::FDIV_D => "fdiv.d",
+            Self::FSQRT_D => "fsqrt.d",
+            Self::FSGNJ_D => "fsgnj.d",
+            Self::FSGNJN_D => "fsgnjn.d",
             Self::FSGNJX_D => "fsgnjx.d",
-            Self::FMIN_D => "fmin.d", Self::FMAX_D => "fmax.d",
-            Self::FCVT_S_D => "fcvt.s.d", Self::FCVT_D_S => "fcvt.d.s",
-            Self::FEQ_D => "feq.d", Self::FLT_D => "flt.d", Self::FLE_D => "fle.d",
+            Self::FMIN_D => "fmin.d",
+            Self::FMAX_D => "fmax.d",
+            Self::FCVT_S_D => "fcvt.s.d",
+            Self::FCVT_D_S => "fcvt.d.s",
+            Self::FEQ_D => "feq.d",
+            Self::FLT_D => "flt.d",
+            Self::FLE_D => "fle.d",
             Self::FCLASS_D => "fclass.d",
-            Self::FCVT_W_D => "fcvt.w.d", Self::FCVT_WU_D => "fcvt.wu.d",
-            Self::FCVT_D_W => "fcvt.d.w", Self::FCVT_D_WU => "fcvt.d.wu",
-            Self::FCVT_L_D => "fcvt.l.d", Self::FCVT_LU_D => "fcvt.lu.d",
-            Self::FCVT_D_L => "fcvt.d.l", Self::FCVT_D_LU => "fcvt.d.lu",
-            Self::FMV_X_D => "fmv.x.d", Self::FMV_D_X => "fmv.d.x",
-            Self::FMADD_S => "fmadd.s", Self::FMSUB_S => "fmsub.s",
-            Self::FNMSUB_S => "fnmsub.s", Self::FNMADD_S => "fnmadd.s",
-            Self::FMADD_D => "fmadd.d", Self::FMSUB_D => "fmsub.d",
-            Self::FNMSUB_D => "fnmsub.d", Self::FNMADD_D => "fnmadd.d",
-            Self::LR_W => "lr.w", Self::SC_W => "sc.w",
-            Self::AMOSWAP_W => "amoswap.w", Self::AMOADD_W => "amoadd.w",
-            Self::AMOXOR_W => "amoxor.w", Self::AMOAND_W => "amoand.w",
-            Self::AMOOR_W => "amoor.w", Self::AMOMIN_W => "amomin.w",
-            Self::AMOMAX_W => "amomax.w", Self::AMOMINU_W => "amominu.w",
+            Self::FCVT_W_D => "fcvt.w.d",
+            Self::FCVT_WU_D => "fcvt.wu.d",
+            Self::FCVT_D_W => "fcvt.d.w",
+            Self::FCVT_D_WU => "fcvt.d.wu",
+            Self::FCVT_L_D => "fcvt.l.d",
+            Self::FCVT_LU_D => "fcvt.lu.d",
+            Self::FCVT_D_L => "fcvt.d.l",
+            Self::FCVT_D_LU => "fcvt.d.lu",
+            Self::FMV_X_D => "fmv.x.d",
+            Self::FMV_D_X => "fmv.d.x",
+            Self::FMADD_S => "fmadd.s",
+            Self::FMSUB_S => "fmsub.s",
+            Self::FNMSUB_S => "fnmsub.s",
+            Self::FNMADD_S => "fnmadd.s",
+            Self::FMADD_D => "fmadd.d",
+            Self::FMSUB_D => "fmsub.d",
+            Self::FNMSUB_D => "fnmsub.d",
+            Self::FNMADD_D => "fnmadd.d",
+            Self::LR_W => "lr.w",
+            Self::SC_W => "sc.w",
+            Self::AMOSWAP_W => "amoswap.w",
+            Self::AMOADD_W => "amoadd.w",
+            Self::AMOXOR_W => "amoxor.w",
+            Self::AMOAND_W => "amoand.w",
+            Self::AMOOR_W => "amoor.w",
+            Self::AMOMIN_W => "amomin.w",
+            Self::AMOMAX_W => "amomax.w",
+            Self::AMOMINU_W => "amominu.w",
             Self::AMOMAXU_W => "amomaxu.w",
-            Self::LR_D => "lr.d", Self::SC_D => "sc.d",
-            Self::AMOSWAP_D => "amoswap.d", Self::AMOADD_D => "amoadd.d",
-            Self::AMOXOR_D => "amoxor.d", Self::AMOAND_D => "amoand.d",
-            Self::AMOOR_D => "amoor.d", Self::AMOMIN_D => "amomin.d",
-            Self::AMOMAX_D => "amomax.d", Self::AMOMINU_D => "amominu.d",
+            Self::LR_D => "lr.d",
+            Self::SC_D => "sc.d",
+            Self::AMOSWAP_D => "amoswap.d",
+            Self::AMOADD_D => "amoadd.d",
+            Self::AMOXOR_D => "amoxor.d",
+            Self::AMOAND_D => "amoand.d",
+            Self::AMOOR_D => "amoor.d",
+            Self::AMOMIN_D => "amomin.d",
+            Self::AMOMAX_D => "amomax.d",
+            Self::AMOMINU_D => "amominu.d",
             Self::AMOMAXU_D => "amomaxu.d",
-            Self::C_NOP => "c.nop", Self::C_ADDI => "c.addi",
-            Self::C_ADDIW => "c.addiw", Self::C_LI => "c.li",
-            Self::C_LUI => "c.lui", Self::C_ADDI16SP => "c.addi16sp",
+            Self::C_NOP => "c.nop",
+            Self::C_ADDI => "c.addi",
+            Self::C_ADDIW => "c.addiw",
+            Self::C_LI => "c.li",
+            Self::C_LUI => "c.lui",
+            Self::C_ADDI16SP => "c.addi16sp",
             Self::C_ADDI4SPN => "c.addi4spn",
-            Self::C_SLLI => "c.slli", Self::C_SRLI => "c.srli",
-            Self::C_SRAI => "c.srai", Self::C_ANDI => "c.andi",
-            Self::C_MV => "c.mv", Self::C_ADD => "c.add",
-            Self::C_AND => "c.and", Self::C_OR => "c.or",
-            Self::C_XOR => "c.xor", Self::C_SUB => "c.sub",
-            Self::C_ADDW => "c.addw", Self::C_SUBW => "c.subw",
-            Self::C_LW => "c.lw", Self::C_LD => "c.ld",
-            Self::C_SW => "c.sw", Self::C_SD => "c.sd",
-            Self::C_LWSP => "c.lwsp", Self::C_LDSP => "c.ldsp",
-            Self::C_SWSP => "c.swsp", Self::C_SDSP => "c.sdsp",
-            Self::C_J => "c.j", Self::C_JAL => "c.jal",
-            Self::C_JR => "c.jr", Self::C_JALR => "c.jalr",
-            Self::C_BEQZ => "c.beqz", Self::C_BNEZ => "c.bnez",
+            Self::C_SLLI => "c.slli",
+            Self::C_SRLI => "c.srli",
+            Self::C_SRAI => "c.srai",
+            Self::C_ANDI => "c.andi",
+            Self::C_MV => "c.mv",
+            Self::C_ADD => "c.add",
+            Self::C_AND => "c.and",
+            Self::C_OR => "c.or",
+            Self::C_XOR => "c.xor",
+            Self::C_SUB => "c.sub",
+            Self::C_ADDW => "c.addw",
+            Self::C_SUBW => "c.subw",
+            Self::C_LW => "c.lw",
+            Self::C_LD => "c.ld",
+            Self::C_SW => "c.sw",
+            Self::C_SD => "c.sd",
+            Self::C_LWSP => "c.lwsp",
+            Self::C_LDSP => "c.ldsp",
+            Self::C_SWSP => "c.swsp",
+            Self::C_SDSP => "c.sdsp",
+            Self::C_J => "c.j",
+            Self::C_JAL => "c.jal",
+            Self::C_JR => "c.jr",
+            Self::C_JALR => "c.jalr",
+            Self::C_BEQZ => "c.beqz",
+            Self::C_BNEZ => "c.bnez",
             Self::C_EBREAK => "c.ebreak",
-            Self::C_FLD => "c.fld", Self::C_FSD => "c.fsd",
-            Self::C_FLDSP => "c.fldsp", Self::C_FSDSP => "c.fsdsp",
-            Self::NOP => "nop", Self::LI => "li", Self::LA => "la",
-            Self::CALL => "call", Self::TAIL => "tail", Self::RET => "ret",
-            Self::MV => "mv", Self::NOT => "not", Self::NEG => "neg",
-            Self::SEQZ => "seqz", Self::SNEZ => "snez",
-            Self::J => "j", Self::JR => "jr",
+            Self::C_FLD => "c.fld",
+            Self::C_FSD => "c.fsd",
+            Self::C_FLDSP => "c.fldsp",
+            Self::C_FSDSP => "c.fsdsp",
+            Self::NOP => "nop",
+            Self::LI => "li",
+            Self::LA => "la",
+            Self::CALL => "call",
+            Self::TAIL => "tail",
+            Self::RET => "ret",
+            Self::MV => "mv",
+            Self::NOT => "not",
+            Self::NEG => "neg",
+            Self::SEQZ => "seqz",
+            Self::SNEZ => "snez",
+            Self::J => "j",
+            Self::JR => "jr",
         };
         write!(f, "{}", name)
     }
@@ -578,11 +830,7 @@ impl fmt::Display for EncoderError {
                 )
             }
             EncoderError::AlignmentError { value, required } => {
-                write!(
-                    f,
-                    "value {} is not aligned to {} bytes",
-                    value, required
-                )
+                write!(f, "value {} is not aligned to {} bytes", value, required)
             }
         }
     }
@@ -647,22 +895,20 @@ impl EncodedInstr {
     pub fn relocation_type(&self, opcode: &RvOpcode) -> Option<RiscV64RelocationType> {
         match opcode {
             RvOpcode::JAL => Some(RiscV64RelocationType::R_RISCV_JAL),
-            RvOpcode::BEQ | RvOpcode::BNE | RvOpcode::BLT
-            | RvOpcode::BGE | RvOpcode::BLTU | RvOpcode::BGEU => {
-                Some(RiscV64RelocationType::R_RISCV_BRANCH)
-            }
+            RvOpcode::BEQ
+            | RvOpcode::BNE
+            | RvOpcode::BLT
+            | RvOpcode::BGE
+            | RvOpcode::BLTU
+            | RvOpcode::BGEU => Some(RiscV64RelocationType::R_RISCV_BRANCH),
             RvOpcode::AUIPC => Some(RiscV64RelocationType::R_RISCV_PCREL_HI20),
             RvOpcode::LUI => Some(RiscV64RelocationType::R_RISCV_HI20),
             RvOpcode::CALL => Some(RiscV64RelocationType::R_RISCV_CALL),
             // TAIL uses R_RISCV_CALL_PLT because it always goes through the PLT
             // to allow the linker to perform tail-call optimisation via relaxation.
             RvOpcode::TAIL => Some(RiscV64RelocationType::R_RISCV_CALL_PLT),
-            RvOpcode::C_J | RvOpcode::C_JAL => {
-                Some(RiscV64RelocationType::R_RISCV_RVC_JUMP)
-            }
-            RvOpcode::C_BEQZ | RvOpcode::C_BNEZ => {
-                Some(RiscV64RelocationType::R_RISCV_RVC_BRANCH)
-            }
+            RvOpcode::C_J | RvOpcode::C_JAL => Some(RiscV64RelocationType::R_RISCV_RVC_JUMP),
+            RvOpcode::C_BEQZ | RvOpcode::C_BNEZ => Some(RiscV64RelocationType::R_RISCV_RVC_BRANCH),
             _ => None,
         }
     }
@@ -692,11 +938,18 @@ impl EncodedInstr {
         match opcode {
             // I-type instructions that can carry a LO12 immediate:
             // loads, ADDI/ADDIW, JALR, FP loads.
-            RvOpcode::ADDI | RvOpcode::ADDIW
-            | RvOpcode::LB | RvOpcode::LH | RvOpcode::LW | RvOpcode::LD
-            | RvOpcode::LBU | RvOpcode::LHU | RvOpcode::LWU
+            RvOpcode::ADDI
+            | RvOpcode::ADDIW
+            | RvOpcode::LB
+            | RvOpcode::LH
+            | RvOpcode::LW
+            | RvOpcode::LD
+            | RvOpcode::LBU
+            | RvOpcode::LHU
+            | RvOpcode::LWU
             | RvOpcode::JALR
-            | RvOpcode::FLW | RvOpcode::FLD => {
+            | RvOpcode::FLW
+            | RvOpcode::FLD => {
                 if pc_relative {
                     Some(RiscV64RelocationType::R_RISCV_PCREL_LO12_I)
                 } else {
@@ -705,8 +958,12 @@ impl EncodedInstr {
             }
             // S-type instructions that can carry a LO12 immediate:
             // stores, FP stores.
-            RvOpcode::SB | RvOpcode::SH | RvOpcode::SW | RvOpcode::SD
-            | RvOpcode::FSW | RvOpcode::FSD => {
+            RvOpcode::SB
+            | RvOpcode::SH
+            | RvOpcode::SW
+            | RvOpcode::SD
+            | RvOpcode::FSW
+            | RvOpcode::FSD => {
                 if pc_relative {
                     Some(RiscV64RelocationType::R_RISCV_PCREL_LO12_S)
                 } else {
@@ -724,9 +981,7 @@ impl EncodedInstr {
     /// GOT entry's PC-relative offset. The associated relocation is
     /// [`R_RISCV_GOT_HI20`](RiscV64RelocationType::R_RISCV_GOT_HI20),
     /// which tells the linker to resolve the symbol through a GOT slot.
-    pub fn got_relocation_type(
-        opcode: &RvOpcode,
-    ) -> Option<RiscV64RelocationType> {
+    pub fn got_relocation_type(opcode: &RvOpcode) -> Option<RiscV64RelocationType> {
         match opcode {
             RvOpcode::AUIPC => Some(RiscV64RelocationType::R_RISCV_GOT_HI20),
             _ => None,
@@ -894,14 +1149,7 @@ impl RiscV64Encoder {
     ///
     /// The 12-bit immediate is sign-extended. Valid range: −2048..2047.
     #[inline]
-    pub fn encode_i_type(
-        &self,
-        opcode: u8,
-        rd: u8,
-        funct3: u8,
-        rs1: u8,
-        imm: i32,
-    ) -> u32 {
+    pub fn encode_i_type(&self, opcode: u8, rd: u8, funct3: u8, rs1: u8, imm: i32) -> u32 {
         let imm_bits = (imm as u32) & 0xFFF;
         (imm_bits << 20)
             | ((rs1 as u32 & 0x1F) << 15)
@@ -917,14 +1165,7 @@ impl RiscV64Encoder {
     /// The 12-bit immediate is split: bits [11:5] in the upper field (bits 31:25)
     /// and bits [4:0] in the lower field (bits 11:7).
     #[inline]
-    pub fn encode_s_type(
-        &self,
-        opcode: u8,
-        funct3: u8,
-        rs1: u8,
-        rs2: u8,
-        imm: i32,
-    ) -> u32 {
+    pub fn encode_s_type(&self, opcode: u8, funct3: u8, rs1: u8, rs2: u8, imm: i32) -> u32 {
         let imm_u = imm as u32;
         let imm_11_5 = (imm_u >> 5) & 0x7F;
         let imm_4_0 = imm_u & 0x1F;
@@ -953,14 +1194,7 @@ impl RiscV64Encoder {
     /// The 13-bit signed immediate (PC-relative, always even) has its bits
     /// scattered across four non-contiguous fields.
     #[inline]
-    pub fn encode_b_type(
-        &self,
-        opcode: u8,
-        funct3: u8,
-        rs1: u8,
-        rs2: u8,
-        imm: i32,
-    ) -> u32 {
+    pub fn encode_b_type(&self, opcode: u8, funct3: u8, rs1: u8, rs2: u8, imm: i32) -> u32 {
         let imm_u = imm as u32;
         let bit_12 = (imm_u >> 12) & 0x1;
         let bits_10_5 = (imm_u >> 5) & 0x3F;
@@ -984,9 +1218,7 @@ impl RiscV64Encoder {
     /// instruction word, forming bits [31:12] of the resulting value.
     #[inline]
     pub fn encode_u_type(&self, opcode: u8, rd: u8, imm: u32) -> u32 {
-        ((imm & 0xFFFFF) << 12)
-            | ((rd as u32 & 0x1F) << 7)
-            | (opcode as u32 & 0x7F)
+        ((imm & 0xFFFFF) << 12) | ((rd as u32 & 0x1F) << 7) | (opcode as u32 & 0x7F)
     }
 
     /// Encodes a J-type instruction (JAL).
@@ -1189,9 +1421,7 @@ impl RiscV64Encoder {
             | (bit_7 << 4)
             | (bits_3_1 << 1)
             | bit_5;
-        ((funct3 as u16 & 0x7) << 13)
-            | ((imm_field as u16) << 2)
-            | (op as u16 & 0x3)
+        ((funct3 as u16 & 0x7) << 13) | ((imm_field as u16) << 2) | (op as u16 & 0x3)
     }
 
     // ========================================================================
@@ -1255,43 +1485,103 @@ impl RiscV64Encoder {
             // ================================================================
             RvOpcode::ADD => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_ADD, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_ADD,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::SUB => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_ADD, rs1, rs2, FUNCT7_ALT)))
+                Ok(EncodedInstr::Word(
+                    self.encode_r_type(OP, rd, FUNCT3_ADD, rs1, rs2, FUNCT7_ALT),
+                ))
             }
             RvOpcode::SLL => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SLL, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SLL,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::SLT => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SLT, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SLT,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::SLTU => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SLTU, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SLTU,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::XOR => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_XOR, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_XOR,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::SRL => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SRL, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SRL,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::SRA => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SRL, rs1, rs2, FUNCT7_ALT)))
+                Ok(EncodedInstr::Word(
+                    self.encode_r_type(OP, rd, FUNCT3_SRL, rs1, rs2, FUNCT7_ALT),
+                ))
             }
             RvOpcode::OR => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_OR, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_OR,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::AND => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_AND, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_AND,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
 
             // ================================================================
@@ -1299,23 +1589,48 @@ impl RiscV64Encoder {
             // ================================================================
             RvOpcode::ADDW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_ADD, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32,
+                    rd,
+                    FUNCT3_ADD,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::SUBW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_ADD, rs1, rs2, FUNCT7_ALT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32, rd, FUNCT3_ADD, rs1, rs2, FUNCT7_ALT,
+                )))
             }
             RvOpcode::SLLW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_SLL, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32,
+                    rd,
+                    FUNCT3_SLL,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::SRLW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_SRL, rs1, rs2, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32,
+                    rd,
+                    FUNCT3_SRL,
+                    rs1,
+                    rs2,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::SRAW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_SRL, rs1, rs2, FUNCT7_ALT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32, rd, FUNCT3_SRL, rs1, rs2, FUNCT7_ALT,
+                )))
             }
 
             // ================================================================
@@ -1323,56 +1638,147 @@ impl RiscV64Encoder {
             // ================================================================
             RvOpcode::MUL => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_ADD, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_ADD,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::MULH => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SLL, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SLL,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::MULHSU => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SLT, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SLT,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::MULHU => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SLTU, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SLTU,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::DIV => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_XOR, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_XOR,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::DIVU => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SRL, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SRL,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::REM => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_OR, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_OR,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::REMU => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_AND, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_AND,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             // RV64M word-width multiply/divide
             RvOpcode::MULW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_ADD, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32,
+                    rd,
+                    FUNCT3_ADD,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::DIVW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_XOR, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32,
+                    rd,
+                    FUNCT3_XOR,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::DIVUW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_SRL, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32,
+                    rd,
+                    FUNCT3_SRL,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::REMW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_OR, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32,
+                    rd,
+                    FUNCT3_OR,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
             RvOpcode::REMUW => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_32, rd, FUNCT3_AND, rs1, rs2, FUNCT7_MULDIV)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_32,
+                    rd,
+                    FUNCT3_AND,
+                    rs1,
+                    rs2,
+                    FUNCT7_MULDIV,
+                )))
             }
 
             // ================================================================
@@ -1381,37 +1787,55 @@ impl RiscV64Encoder {
             RvOpcode::ADDI => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_ADD, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM, rd, FUNCT3_ADD, rs1, imm),
+                ))
             }
             RvOpcode::SLTI => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_SLT, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM, rd, FUNCT3_SLT, rs1, imm),
+                ))
             }
             RvOpcode::SLTIU => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_SLTU, rs1, imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    OP_IMM,
+                    rd,
+                    FUNCT3_SLTU,
+                    rs1,
+                    imm,
+                )))
             }
             RvOpcode::XORI => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_XOR, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM, rd, FUNCT3_XOR, rs1, imm),
+                ))
             }
             RvOpcode::ORI => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_OR, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM, rd, FUNCT3_OR, rs1, imm),
+                ))
             }
             RvOpcode::ANDI => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_AND, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM, rd, FUNCT3_AND, rs1, imm),
+                ))
             }
             RvOpcode::ADDIW => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM_32, rd, FUNCT3_ADD, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM_32, rd, FUNCT3_ADD, rs1, imm),
+                ))
             }
 
             // ================================================================
@@ -1423,38 +1847,74 @@ impl RiscV64Encoder {
                 // RV64 SLLI: shamt is 6 bits (0-63)
                 let shamt = (imm as u32) & 0x3F;
                 let encoded_imm = shamt as i32; // upper bits are 0
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_SLL, rs1, encoded_imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    OP_IMM,
+                    rd,
+                    FUNCT3_SLL,
+                    rs1,
+                    encoded_imm,
+                )))
             }
             RvOpcode::SRLI => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 let shamt = (imm as u32) & 0x3F;
                 let encoded_imm = shamt as i32; // funct6=0x00
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_SRL, rs1, encoded_imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    OP_IMM,
+                    rd,
+                    FUNCT3_SRL,
+                    rs1,
+                    encoded_imm,
+                )))
             }
             RvOpcode::SRAI => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 let shamt = (imm as u32) & 0x3F;
                 let encoded_imm = (0x400 | shamt) as i32; // funct6=0x10 → bit 10 set
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_SRL, rs1, encoded_imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    OP_IMM,
+                    rd,
+                    FUNCT3_SRL,
+                    rs1,
+                    encoded_imm,
+                )))
             }
             // RV64I word-width shift immediates (OP_IMM_32)
             RvOpcode::SLLIW => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 let shamt = (imm as u32) & 0x1F; // 5-bit shamt for W variants
                 let encoded_imm = shamt as i32;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM_32, rd, FUNCT3_SLL, rs1, encoded_imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    OP_IMM_32,
+                    rd,
+                    FUNCT3_SLL,
+                    rs1,
+                    encoded_imm,
+                )))
             }
             RvOpcode::SRLIW => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 let shamt = (imm as u32) & 0x1F;
                 let encoded_imm = shamt as i32;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM_32, rd, FUNCT3_SRL, rs1, encoded_imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    OP_IMM_32,
+                    rd,
+                    FUNCT3_SRL,
+                    rs1,
+                    encoded_imm,
+                )))
             }
             RvOpcode::SRAIW => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 let shamt = (imm as u32) & 0x1F;
                 let encoded_imm = (0x400 | shamt) as i32; // bit 10 set for arithmetic
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM_32, rd, FUNCT3_SRL, rs1, encoded_imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    OP_IMM_32,
+                    rd,
+                    FUNCT3_SRL,
+                    rs1,
+                    encoded_imm,
+                )))
             }
 
             // ================================================================
@@ -1463,37 +1923,51 @@ impl RiscV64Encoder {
             RvOpcode::LB => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD, rd, FUNCT3_LB, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(LOAD, rd, FUNCT3_LB, rs1, imm),
+                ))
             }
             RvOpcode::LH => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD, rd, FUNCT3_LH, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(LOAD, rd, FUNCT3_LH, rs1, imm),
+                ))
             }
             RvOpcode::LW => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD, rd, FUNCT3_LW, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(LOAD, rd, FUNCT3_LW, rs1, imm),
+                ))
             }
             RvOpcode::LD => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD, rd, FUNCT3_LD, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(LOAD, rd, FUNCT3_LD, rs1, imm),
+                ))
             }
             RvOpcode::LBU => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD, rd, FUNCT3_LBU, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(LOAD, rd, FUNCT3_LBU, rs1, imm),
+                ))
             }
             RvOpcode::LHU => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD, rd, FUNCT3_LHU, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(LOAD, rd, FUNCT3_LHU, rs1, imm),
+                ))
             }
             RvOpcode::LWU => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD, rd, FUNCT3_LWU, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(LOAD, rd, FUNCT3_LWU, rs1, imm),
+                ))
             }
 
             // ================================================================
@@ -1502,22 +1976,30 @@ impl RiscV64Encoder {
             RvOpcode::SB => {
                 let (rs2, rs1, imm) = self.extract_s_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_s_type(STORE, FUNCT3_SB, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_s_type(STORE, FUNCT3_SB, rs1, rs2, imm),
+                ))
             }
             RvOpcode::SH => {
                 let (rs2, rs1, imm) = self.extract_s_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_s_type(STORE, FUNCT3_SH, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_s_type(STORE, FUNCT3_SH, rs1, rs2, imm),
+                ))
             }
             RvOpcode::SW => {
                 let (rs2, rs1, imm) = self.extract_s_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_s_type(STORE, FUNCT3_SW, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_s_type(STORE, FUNCT3_SW, rs1, rs2, imm),
+                ))
             }
             RvOpcode::SD => {
                 let (rs2, rs1, imm) = self.extract_s_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_s_type(STORE, FUNCT3_SD, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_s_type(STORE, FUNCT3_SD, rs1, rs2, imm),
+                ))
             }
 
             // ================================================================
@@ -1526,32 +2008,52 @@ impl RiscV64Encoder {
             RvOpcode::BEQ => {
                 let (rs1, rs2, imm) = self.extract_b_operands(operands)?;
                 validate_branch_offset(imm)?;
-                Ok(EncodedInstr::Word(self.encode_b_type(BRANCH, FUNCT3_BEQ, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_b_type(BRANCH, FUNCT3_BEQ, rs1, rs2, imm),
+                ))
             }
             RvOpcode::BNE => {
                 let (rs1, rs2, imm) = self.extract_b_operands(operands)?;
                 validate_branch_offset(imm)?;
-                Ok(EncodedInstr::Word(self.encode_b_type(BRANCH, FUNCT3_BNE, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_b_type(BRANCH, FUNCT3_BNE, rs1, rs2, imm),
+                ))
             }
             RvOpcode::BLT => {
                 let (rs1, rs2, imm) = self.extract_b_operands(operands)?;
                 validate_branch_offset(imm)?;
-                Ok(EncodedInstr::Word(self.encode_b_type(BRANCH, FUNCT3_BLT, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_b_type(BRANCH, FUNCT3_BLT, rs1, rs2, imm),
+                ))
             }
             RvOpcode::BGE => {
                 let (rs1, rs2, imm) = self.extract_b_operands(operands)?;
                 validate_branch_offset(imm)?;
-                Ok(EncodedInstr::Word(self.encode_b_type(BRANCH, FUNCT3_BGE, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_b_type(BRANCH, FUNCT3_BGE, rs1, rs2, imm),
+                ))
             }
             RvOpcode::BLTU => {
                 let (rs1, rs2, imm) = self.extract_b_operands(operands)?;
                 validate_branch_offset(imm)?;
-                Ok(EncodedInstr::Word(self.encode_b_type(BRANCH, FUNCT3_BLTU, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(self.encode_b_type(
+                    BRANCH,
+                    FUNCT3_BLTU,
+                    rs1,
+                    rs2,
+                    imm,
+                )))
             }
             RvOpcode::BGEU => {
                 let (rs1, rs2, imm) = self.extract_b_operands(operands)?;
                 validate_branch_offset(imm)?;
-                Ok(EncodedInstr::Word(self.encode_b_type(BRANCH, FUNCT3_BGEU, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(self.encode_b_type(
+                    BRANCH,
+                    FUNCT3_BGEU,
+                    rs1,
+                    rs2,
+                    imm,
+                )))
             }
 
             // ================================================================
@@ -1573,23 +2075,35 @@ impl RiscV64Encoder {
                 let rd = Self::get_reg(operands, 0)?;
                 let imm_val = Self::get_imm(operands, 1)? as i32;
                 validate_jal_offset(imm_val)?;
-                Ok(EncodedInstr::Word(self.encode_j_type(BASE_JAL, rd, imm_val)))
+                Ok(EncodedInstr::Word(
+                    self.encode_j_type(BASE_JAL, rd, imm_val),
+                ))
             }
             RvOpcode::JALR => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(BASE_JALR, rd, FUNCT3_ADD, rs1, imm)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(BASE_JALR, rd, FUNCT3_ADD, rs1, imm),
+                ))
             }
 
             // ================================================================
             // RV64I system / fence
             // ================================================================
-            RvOpcode::ECALL => {
-                Ok(EncodedInstr::Word(self.encode_i_type(SYSTEM, 0, FUNCT3_PRIV, 0, 0)))
-            }
-            RvOpcode::EBREAK => {
-                Ok(EncodedInstr::Word(self.encode_i_type(SYSTEM, 0, FUNCT3_PRIV, 0, 1)))
-            }
+            RvOpcode::ECALL => Ok(EncodedInstr::Word(self.encode_i_type(
+                SYSTEM,
+                0,
+                FUNCT3_PRIV,
+                0,
+                0,
+            ))),
+            RvOpcode::EBREAK => Ok(EncodedInstr::Word(self.encode_i_type(
+                SYSTEM,
+                0,
+                FUNCT3_PRIV,
+                0,
+                1,
+            ))),
             RvOpcode::FENCE => {
                 // Default FENCE: predecessor=iorw, successor=iorw (0x0FF)
                 // Operands can optionally carry the fence bits as an immediate.
@@ -1598,19 +2112,43 @@ impl RiscV64Encoder {
                 } else {
                     Self::get_imm(operands, 0).unwrap_or(0x0FF) as i32
                 };
-                Ok(EncodedInstr::Word(self.encode_i_type(MISC_MEM, 0, FUNCT3_FENCE, 0, imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    MISC_MEM,
+                    0,
+                    FUNCT3_FENCE,
+                    0,
+                    imm,
+                )))
             }
             RvOpcode::CSRRW => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(SYSTEM, rd, FUNCT3_CSRRW, rs1, imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    SYSTEM,
+                    rd,
+                    FUNCT3_CSRRW,
+                    rs1,
+                    imm,
+                )))
             }
             RvOpcode::CSRRS => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(SYSTEM, rd, FUNCT3_CSRRS, rs1, imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    SYSTEM,
+                    rd,
+                    FUNCT3_CSRRS,
+                    rs1,
+                    imm,
+                )))
             }
             RvOpcode::CSRRC => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(SYSTEM, rd, FUNCT3_CSRRC, rs1, imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    SYSTEM,
+                    rd,
+                    FUNCT3_CSRRC,
+                    rs1,
+                    imm,
+                )))
             }
 
             // ================================================================
@@ -1619,22 +2157,46 @@ impl RiscV64Encoder {
             RvOpcode::FLW => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD_FP, rd, FUNCT3_W_FP, rs1, imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    LOAD_FP,
+                    rd,
+                    FUNCT3_W_FP,
+                    rs1,
+                    imm,
+                )))
             }
             RvOpcode::FLD => {
                 let (rd, rs1, imm) = self.extract_i_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(LOAD_FP, rd, FUNCT3_D_FP, rs1, imm)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    LOAD_FP,
+                    rd,
+                    FUNCT3_D_FP,
+                    rs1,
+                    imm,
+                )))
             }
             RvOpcode::FSW => {
                 let (rs2, rs1, imm) = self.extract_s_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_s_type(STORE_FP, FUNCT3_W_FP, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(self.encode_s_type(
+                    STORE_FP,
+                    FUNCT3_W_FP,
+                    rs1,
+                    rs2,
+                    imm,
+                )))
             }
             RvOpcode::FSD => {
                 let (rs2, rs1, imm) = self.extract_s_operands(operands)?;
                 validate_imm12(imm)?;
-                Ok(EncodedInstr::Word(self.encode_s_type(STORE_FP, FUNCT3_D_FP, rs1, rs2, imm)))
+                Ok(EncodedInstr::Word(self.encode_s_type(
+                    STORE_FP,
+                    FUNCT3_D_FP,
+                    rs1,
+                    rs2,
+                    imm,
+                )))
             }
 
             // ================================================================
@@ -1648,94 +2210,234 @@ impl RiscV64Encoder {
                 // FSQRT only uses rs1, rs2 field is 0
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 0, FUNCT7_FSQRT_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    0,
+                    FUNCT7_FSQRT_S,
+                )))
             }
             RvOpcode::FSGNJ_S => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, rs2, FUNCT7_FSGNJ_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    rs2,
+                    FUNCT7_FSGNJ_S,
+                )))
             }
             RvOpcode::FSGNJN_S => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x1, rs1, rs2, FUNCT7_FSGNJ_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x1,
+                    rs1,
+                    rs2,
+                    FUNCT7_FSGNJ_S,
+                )))
             }
             RvOpcode::FSGNJX_S => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x2, rs1, rs2, FUNCT7_FSGNJ_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x2,
+                    rs1,
+                    rs2,
+                    FUNCT7_FSGNJ_S,
+                )))
             }
             RvOpcode::FMIN_S => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, rs2, FUNCT7_FMINMAX_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    rs2,
+                    FUNCT7_FMINMAX_S,
+                )))
             }
             RvOpcode::FMAX_S => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x1, rs1, rs2, FUNCT7_FMINMAX_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x1,
+                    rs1,
+                    rs2,
+                    FUNCT7_FMINMAX_S,
+                )))
             }
             RvOpcode::FCVT_W_S => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 0, FUNCT7_FCVT_INT_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    0,
+                    FUNCT7_FCVT_INT_S,
+                )))
             }
             RvOpcode::FCVT_WU_S => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 1, FUNCT7_FCVT_INT_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    1,
+                    FUNCT7_FCVT_INT_S,
+                )))
             }
             RvOpcode::FCVT_L_S => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 2, FUNCT7_FCVT_INT_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    2,
+                    FUNCT7_FCVT_INT_S,
+                )))
             }
             RvOpcode::FCVT_LU_S => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 3, FUNCT7_FCVT_INT_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    3,
+                    FUNCT7_FCVT_INT_S,
+                )))
             }
             RvOpcode::FMV_X_W => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, 0, FUNCT7_FMV_X_W)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    0,
+                    FUNCT7_FMV_X_W,
+                )))
             }
             RvOpcode::FCLASS_S => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x1, rs1, 0, FUNCT7_FMV_X_W)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x1,
+                    rs1,
+                    0,
+                    FUNCT7_FMV_X_W,
+                )))
             }
             RvOpcode::FEQ_S => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x2, rs1, rs2, FUNCT7_FCMP_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x2,
+                    rs1,
+                    rs2,
+                    FUNCT7_FCMP_S,
+                )))
             }
             RvOpcode::FLT_S => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x1, rs1, rs2, FUNCT7_FCMP_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x1,
+                    rs1,
+                    rs2,
+                    FUNCT7_FCMP_S,
+                )))
             }
             RvOpcode::FLE_S => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, rs2, FUNCT7_FCMP_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    rs2,
+                    FUNCT7_FCMP_S,
+                )))
             }
             RvOpcode::FCVT_S_W => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 0, FUNCT7_FCVT_S_INT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    0,
+                    FUNCT7_FCVT_S_INT,
+                )))
             }
             RvOpcode::FCVT_S_WU => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 1, FUNCT7_FCVT_S_INT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    1,
+                    FUNCT7_FCVT_S_INT,
+                )))
             }
             RvOpcode::FCVT_S_L => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 2, FUNCT7_FCVT_S_INT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    2,
+                    FUNCT7_FCVT_S_INT,
+                )))
             }
             RvOpcode::FCVT_S_LU => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 3, FUNCT7_FCVT_S_INT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    3,
+                    FUNCT7_FCVT_S_INT,
+                )))
             }
             RvOpcode::FMV_W_X => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, 0, FUNCT7_FMV_W_X)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    0,
+                    FUNCT7_FMV_W_X,
+                )))
             }
 
             // ================================================================
@@ -1748,104 +2450,258 @@ impl RiscV64Encoder {
             RvOpcode::FSQRT_D => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 0, FUNCT7_FSQRT_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    0,
+                    FUNCT7_FSQRT_D,
+                )))
             }
             RvOpcode::FSGNJ_D => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, rs2, FUNCT7_FSGNJ_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    rs2,
+                    FUNCT7_FSGNJ_D,
+                )))
             }
             RvOpcode::FSGNJN_D => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x1, rs1, rs2, FUNCT7_FSGNJ_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x1,
+                    rs1,
+                    rs2,
+                    FUNCT7_FSGNJ_D,
+                )))
             }
             RvOpcode::FSGNJX_D => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x2, rs1, rs2, FUNCT7_FSGNJ_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x2,
+                    rs1,
+                    rs2,
+                    FUNCT7_FSGNJ_D,
+                )))
             }
             RvOpcode::FMIN_D => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, rs2, FUNCT7_FMINMAX_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    rs2,
+                    FUNCT7_FMINMAX_D,
+                )))
             }
             RvOpcode::FMAX_D => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x1, rs1, rs2, FUNCT7_FMINMAX_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x1,
+                    rs1,
+                    rs2,
+                    FUNCT7_FMINMAX_D,
+                )))
             }
             RvOpcode::FCVT_S_D => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 1, FUNCT7_FCVT_S_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    1,
+                    FUNCT7_FCVT_S_D,
+                )))
             }
             RvOpcode::FCVT_D_S => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 0, FUNCT7_FCVT_D_S)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    0,
+                    FUNCT7_FCVT_D_S,
+                )))
             }
             RvOpcode::FEQ_D => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x2, rs1, rs2, FUNCT7_FCMP_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x2,
+                    rs1,
+                    rs2,
+                    FUNCT7_FCMP_D,
+                )))
             }
             RvOpcode::FLT_D => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x1, rs1, rs2, FUNCT7_FCMP_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x1,
+                    rs1,
+                    rs2,
+                    FUNCT7_FCMP_D,
+                )))
             }
             RvOpcode::FLE_D => {
                 let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, rs2, FUNCT7_FCMP_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    rs2,
+                    FUNCT7_FCMP_D,
+                )))
             }
             RvOpcode::FCLASS_D => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x1, rs1, 0, FUNCT7_FCLASS_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x1,
+                    rs1,
+                    0,
+                    FUNCT7_FCLASS_D,
+                )))
             }
             RvOpcode::FCVT_W_D => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 0, FUNCT7_FCVT_INT_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    0,
+                    FUNCT7_FCVT_INT_D,
+                )))
             }
             RvOpcode::FCVT_WU_D => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 1, FUNCT7_FCVT_INT_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    1,
+                    FUNCT7_FCVT_INT_D,
+                )))
             }
             RvOpcode::FCVT_L_D => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 2, FUNCT7_FCVT_INT_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    2,
+                    FUNCT7_FCVT_INT_D,
+                )))
             }
             RvOpcode::FCVT_LU_D => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 3, FUNCT7_FCVT_INT_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    3,
+                    FUNCT7_FCVT_INT_D,
+                )))
             }
             RvOpcode::FCVT_D_W => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 0, FUNCT7_FCVT_D_INT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    0,
+                    FUNCT7_FCVT_D_INT,
+                )))
             }
             RvOpcode::FCVT_D_WU => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 1, FUNCT7_FCVT_D_INT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    1,
+                    FUNCT7_FCVT_D_INT,
+                )))
             }
             RvOpcode::FCVT_D_L => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 2, FUNCT7_FCVT_D_INT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    2,
+                    FUNCT7_FCVT_D_INT,
+                )))
             }
             RvOpcode::FCVT_D_LU => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, 3, FUNCT7_FCVT_D_INT)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    RM_DYN,
+                    rs1,
+                    3,
+                    FUNCT7_FCVT_D_INT,
+                )))
             }
             RvOpcode::FMV_X_D => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, 0, FUNCT7_FCLASS_D)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    0,
+                    FUNCT7_FCLASS_D,
+                )))
             }
             RvOpcode::FMV_D_X => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs1 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, 0x0, rs1, 0, FUNCT7_FMV_D_X)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP_FP,
+                    rd,
+                    0x0,
+                    rs1,
+                    0,
+                    FUNCT7_FMV_D_X,
+                )))
             }
 
             // ================================================================
@@ -1889,69 +2745,103 @@ impl RiscV64Encoder {
             // ================================================================
             // RV64C compressed instructions
             // ================================================================
-            RvOpcode::C_NOP => {
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b000, 0, 0, 0b01)))
-            }
+            RvOpcode::C_NOP => Ok(EncodedInstr::Compressed(self.encode_ci(0b000, 0, 0, 0b01))),
             RvOpcode::C_ADDI => {
                 let rd = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b000, imm, rd, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_ci(0b000, imm, rd, 0b01),
+                ))
             }
             RvOpcode::C_ADDIW => {
                 let rd = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b001, imm, rd, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_ci(0b001, imm, rd, 0b01),
+                ))
             }
             RvOpcode::C_LI => {
                 let rd = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b010, imm, rd, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_ci(0b010, imm, rd, 0b01),
+                ))
             }
             RvOpcode::C_LUI => {
                 let rd = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b011, imm, rd, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_ci(0b011, imm, rd, 0b01),
+                ))
             }
             RvOpcode::C_ADDI16SP => {
                 // C.ADDI16SP uses rd=2 (sp), special immediate encoding
                 let imm = Self::get_imm(operands, 0)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b011, imm >> 4, 2, 0b01)))
+                Ok(EncodedInstr::Compressed(self.encode_ci(
+                    0b011,
+                    imm >> 4,
+                    2,
+                    0b01,
+                )))
             }
             RvOpcode::C_ADDI4SPN => {
                 let rd_prime = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_ciw(0b000, rd_prime, imm >> 2, 0b00)))
+                Ok(EncodedInstr::Compressed(self.encode_ciw(
+                    0b000,
+                    rd_prime,
+                    imm >> 2,
+                    0b00,
+                )))
             }
             RvOpcode::C_SLLI => {
                 let rd = Self::get_reg(operands, 0)?;
                 let shamt = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b000, shamt, rd, 0b10)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_ci(0b000, shamt, rd, 0b10),
+                ))
             }
             RvOpcode::C_SRLI => {
                 let rs1_prime = Self::get_reg(operands, 0)?;
                 let shamt = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_cb(0b100, rs1_prime, shamt, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cb(0b100, rs1_prime, shamt, 0b01),
+                ))
             }
             RvOpcode::C_SRAI => {
                 let rs1_prime = Self::get_reg(operands, 0)?;
                 let shamt = Self::get_imm(operands, 1)? as i32;
                 // SRAI has bit 10 set in the immediate encoding
-                Ok(EncodedInstr::Compressed(self.encode_cb(0b100, rs1_prime, shamt | 0x20, 0b01)))
+                Ok(EncodedInstr::Compressed(self.encode_cb(
+                    0b100,
+                    rs1_prime,
+                    shamt | 0x20,
+                    0b01,
+                )))
             }
             RvOpcode::C_ANDI => {
                 let rs1_prime = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_cb(0b100, rs1_prime, imm | 0x40, 0b01)))
+                Ok(EncodedInstr::Compressed(self.encode_cb(
+                    0b100,
+                    rs1_prime,
+                    imm | 0x40,
+                    0b01,
+                )))
             }
             RvOpcode::C_MV => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs2 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Compressed(self.encode_cr(0b1000, rd, rs2, 0b10)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cr(0b1000, rd, rs2, 0b10),
+                ))
             }
             RvOpcode::C_ADD => {
                 let rd = Self::get_reg(operands, 0)?;
                 let rs2 = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Compressed(self.encode_cr(0b1001, rd, rs2, 0b10)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cr(0b1001, rd, rs2, 0b10),
+                ))
             }
             RvOpcode::C_AND => {
                 let rd_prime = Self::get_reg(operands, 0)?;
@@ -1995,138 +2885,235 @@ impl RiscV64Encoder {
                 let rd_prime = Self::get_reg(operands, 0)?;
                 let rs1_prime = Self::get_reg(operands, 1)?;
                 let imm = Self::get_imm(operands, 2)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_cl(0b010, rd_prime, rs1_prime, imm >> 2, 0b00)))
+                Ok(EncodedInstr::Compressed(self.encode_cl(
+                    0b010,
+                    rd_prime,
+                    rs1_prime,
+                    imm >> 2,
+                    0b00,
+                )))
             }
             RvOpcode::C_LD => {
                 let rd_prime = Self::get_reg(operands, 0)?;
                 let rs1_prime = Self::get_reg(operands, 1)?;
                 let imm = Self::get_imm(operands, 2)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_cl(0b011, rd_prime, rs1_prime, imm >> 3, 0b00)))
+                Ok(EncodedInstr::Compressed(self.encode_cl(
+                    0b011,
+                    rd_prime,
+                    rs1_prime,
+                    imm >> 3,
+                    0b00,
+                )))
             }
             RvOpcode::C_FLD => {
                 let rd_prime = Self::get_reg(operands, 0)?;
                 let rs1_prime = Self::get_reg(operands, 1)?;
                 let imm = Self::get_imm(operands, 2)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_cl(0b001, rd_prime, rs1_prime, imm >> 3, 0b00)))
+                Ok(EncodedInstr::Compressed(self.encode_cl(
+                    0b001,
+                    rd_prime,
+                    rs1_prime,
+                    imm >> 3,
+                    0b00,
+                )))
             }
             // Compressed stores
             RvOpcode::C_SW => {
                 let rs2_prime = Self::get_reg(operands, 0)?;
                 let rs1_prime = Self::get_reg(operands, 1)?;
                 let imm = Self::get_imm(operands, 2)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_cs(0b110, rs2_prime, rs1_prime, imm >> 2, 0b00)))
+                Ok(EncodedInstr::Compressed(self.encode_cs(
+                    0b110,
+                    rs2_prime,
+                    rs1_prime,
+                    imm >> 2,
+                    0b00,
+                )))
             }
             RvOpcode::C_SD => {
                 let rs2_prime = Self::get_reg(operands, 0)?;
                 let rs1_prime = Self::get_reg(operands, 1)?;
                 let imm = Self::get_imm(operands, 2)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_cs(0b111, rs2_prime, rs1_prime, imm >> 3, 0b00)))
+                Ok(EncodedInstr::Compressed(self.encode_cs(
+                    0b111,
+                    rs2_prime,
+                    rs1_prime,
+                    imm >> 3,
+                    0b00,
+                )))
             }
             RvOpcode::C_FSD => {
                 let rs2_prime = Self::get_reg(operands, 0)?;
                 let rs1_prime = Self::get_reg(operands, 1)?;
                 let imm = Self::get_imm(operands, 2)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_cs(0b101, rs2_prime, rs1_prime, imm >> 3, 0b00)))
+                Ok(EncodedInstr::Compressed(self.encode_cs(
+                    0b101,
+                    rs2_prime,
+                    rs1_prime,
+                    imm >> 3,
+                    0b00,
+                )))
             }
             // Compressed stack-pointer relative loads/stores
             RvOpcode::C_LWSP => {
                 let rd = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b010, imm >> 2, rd, 0b10)))
+                Ok(EncodedInstr::Compressed(self.encode_ci(
+                    0b010,
+                    imm >> 2,
+                    rd,
+                    0b10,
+                )))
             }
             RvOpcode::C_LDSP => {
                 let rd = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b011, imm >> 3, rd, 0b10)))
+                Ok(EncodedInstr::Compressed(self.encode_ci(
+                    0b011,
+                    imm >> 3,
+                    rd,
+                    0b10,
+                )))
             }
             RvOpcode::C_FLDSP => {
                 let rd = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_ci(0b001, imm >> 3, rd, 0b10)))
+                Ok(EncodedInstr::Compressed(self.encode_ci(
+                    0b001,
+                    imm >> 3,
+                    rd,
+                    0b10,
+                )))
             }
             RvOpcode::C_SWSP => {
                 let rs2 = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_css(0b110, rs2, imm >> 2, 0b10)))
+                Ok(EncodedInstr::Compressed(self.encode_css(
+                    0b110,
+                    rs2,
+                    imm >> 2,
+                    0b10,
+                )))
             }
             RvOpcode::C_SDSP => {
                 let rs2 = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_css(0b111, rs2, imm >> 3, 0b10)))
+                Ok(EncodedInstr::Compressed(self.encode_css(
+                    0b111,
+                    rs2,
+                    imm >> 3,
+                    0b10,
+                )))
             }
             RvOpcode::C_FSDSP => {
                 let rs2 = Self::get_reg(operands, 0)?;
                 let imm = Self::get_imm(operands, 1)? as u32;
-                Ok(EncodedInstr::Compressed(self.encode_css(0b101, rs2, imm >> 3, 0b10)))
+                Ok(EncodedInstr::Compressed(self.encode_css(
+                    0b101,
+                    rs2,
+                    imm >> 3,
+                    0b10,
+                )))
             }
             // Compressed jumps
             RvOpcode::C_J => {
                 let target = Self::get_imm(operands, 0)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_cj(0b101, target, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cj(0b101, target, 0b01),
+                ))
             }
             RvOpcode::C_JAL => {
                 let target = Self::get_imm(operands, 0)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_cj(0b001, target, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cj(0b001, target, 0b01),
+                ))
             }
             RvOpcode::C_JR => {
                 let rs1 = Self::get_reg(operands, 0)?;
-                Ok(EncodedInstr::Compressed(self.encode_cr(0b1000, rs1, 0, 0b10)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cr(0b1000, rs1, 0, 0b10),
+                ))
             }
             RvOpcode::C_JALR => {
                 let rs1 = Self::get_reg(operands, 0)?;
-                Ok(EncodedInstr::Compressed(self.encode_cr(0b1001, rs1, 0, 0b10)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cr(0b1001, rs1, 0, 0b10),
+                ))
             }
             // Compressed branches
             RvOpcode::C_BEQZ => {
                 let rs1_prime = Self::get_reg(operands, 0)?;
                 let offset = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_cb(0b110, rs1_prime, offset, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cb(0b110, rs1_prime, offset, 0b01),
+                ))
             }
             RvOpcode::C_BNEZ => {
                 let rs1_prime = Self::get_reg(operands, 0)?;
                 let offset = Self::get_imm(operands, 1)? as i32;
-                Ok(EncodedInstr::Compressed(self.encode_cb(0b111, rs1_prime, offset, 0b01)))
+                Ok(EncodedInstr::Compressed(
+                    self.encode_cb(0b111, rs1_prime, offset, 0b01),
+                ))
             }
-            RvOpcode::C_EBREAK => {
-                Ok(EncodedInstr::Compressed(self.encode_cr(0b1001, 0, 0, 0b10)))
-            }
+            RvOpcode::C_EBREAK => Ok(EncodedInstr::Compressed(self.encode_cr(0b1001, 0, 0, 0b10))),
 
             // ================================================================
             // Pseudo-instructions (expand to real instructions)
             // ================================================================
             RvOpcode::NOP => {
                 // NOP → ADDI x0, x0, 0
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, 0, FUNCT3_ADD, 0, 0)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM, 0, FUNCT3_ADD, 0, 0),
+                ))
             }
             RvOpcode::MV => {
                 // MV rd, rs → ADDI rd, rs, 0
                 let rd = Self::get_reg(operands, 0)?;
                 let rs = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_ADD, rs, 0)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM, rd, FUNCT3_ADD, rs, 0),
+                ))
             }
             RvOpcode::NOT => {
                 // NOT rd, rs → XORI rd, rs, -1
                 let rd = Self::get_reg(operands, 0)?;
                 let rs = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_XOR, rs, -1)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(OP_IMM, rd, FUNCT3_XOR, rs, -1),
+                ))
             }
             RvOpcode::NEG => {
                 // NEG rd, rs → SUB rd, x0, rs
                 let rd = Self::get_reg(operands, 0)?;
                 let rs = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_ADD, 0, rs, FUNCT7_ALT)))
+                Ok(EncodedInstr::Word(
+                    self.encode_r_type(OP, rd, FUNCT3_ADD, 0, rs, FUNCT7_ALT),
+                ))
             }
             RvOpcode::SEQZ => {
                 // SEQZ rd, rs → SLTIU rd, rs, 1
                 let rd = Self::get_reg(operands, 0)?;
                 let rs = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_SLTU, rs, 1)))
+                Ok(EncodedInstr::Word(self.encode_i_type(
+                    OP_IMM,
+                    rd,
+                    FUNCT3_SLTU,
+                    rs,
+                    1,
+                )))
             }
             RvOpcode::SNEZ => {
                 // SNEZ rd, rs → SLTU rd, x0, rs
                 let rd = Self::get_reg(operands, 0)?;
                 let rs = Self::get_reg(operands, 1)?;
-                Ok(EncodedInstr::Word(self.encode_r_type(OP, rd, FUNCT3_SLTU, 0, rs, FUNCT7_BASE)))
+                Ok(EncodedInstr::Word(self.encode_r_type(
+                    OP,
+                    rd,
+                    FUNCT3_SLTU,
+                    0,
+                    rs,
+                    FUNCT7_BASE,
+                )))
             }
             RvOpcode::J => {
                 // J offset → JAL x0, offset
@@ -2137,11 +3124,15 @@ impl RiscV64Encoder {
             RvOpcode::JR => {
                 // JR rs → JALR x0, rs, 0
                 let rs = Self::get_reg(operands, 0)?;
-                Ok(EncodedInstr::Word(self.encode_i_type(BASE_JALR, 0, FUNCT3_ADD, rs, 0)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(BASE_JALR, 0, FUNCT3_ADD, rs, 0),
+                ))
             }
             RvOpcode::RET => {
                 // RET → JALR x0, x1(ra), 0
-                Ok(EncodedInstr::Word(self.encode_i_type(BASE_JALR, 0, FUNCT3_ADD, 1, 0)))
+                Ok(EncodedInstr::Word(
+                    self.encode_i_type(BASE_JALR, 0, FUNCT3_ADD, 1, 0),
+                ))
             }
             RvOpcode::LI => {
                 // LI rd, imm — materialize an immediate into rd.
@@ -2176,7 +3167,10 @@ impl RiscV64Encoder {
     // ========================================================================
 
     /// Extracts (rd, rs1, rs2) for R-type instructions from operands.
-    fn extract_r_operands(&self, operands: &[EncoderOperand]) -> Result<(u8, u8, u8), EncoderError> {
+    fn extract_r_operands(
+        &self,
+        operands: &[EncoderOperand],
+    ) -> Result<(u8, u8, u8), EncoderError> {
         let rd = Self::get_reg(operands, 0)?;
         let rs1 = Self::get_reg(operands, 1)?;
         let rs2 = Self::get_reg(operands, 2)?;
@@ -2184,7 +3178,10 @@ impl RiscV64Encoder {
     }
 
     /// Extracts (rd, rs1, imm) for I-type instructions from operands.
-    fn extract_i_operands(&self, operands: &[EncoderOperand]) -> Result<(u8, u8, i32), EncoderError> {
+    fn extract_i_operands(
+        &self,
+        operands: &[EncoderOperand],
+    ) -> Result<(u8, u8, i32), EncoderError> {
         let rd = Self::get_reg(operands, 0)?;
         let rs1 = Self::get_reg(operands, 1)?;
         let imm = Self::get_imm(operands, 2)? as i32;
@@ -2192,7 +3189,10 @@ impl RiscV64Encoder {
     }
 
     /// Extracts (rs2, rs1, imm) for S-type instructions from operands.
-    fn extract_s_operands(&self, operands: &[EncoderOperand]) -> Result<(u8, u8, i32), EncoderError> {
+    fn extract_s_operands(
+        &self,
+        operands: &[EncoderOperand],
+    ) -> Result<(u8, u8, i32), EncoderError> {
         let rs2 = Self::get_reg(operands, 0)?;
         let rs1 = Self::get_reg(operands, 1)?;
         let imm = Self::get_imm(operands, 2)? as i32;
@@ -2200,7 +3200,10 @@ impl RiscV64Encoder {
     }
 
     /// Extracts (rs1, rs2, imm) for B-type instructions from operands.
-    fn extract_b_operands(&self, operands: &[EncoderOperand]) -> Result<(u8, u8, i32), EncoderError> {
+    fn extract_b_operands(
+        &self,
+        operands: &[EncoderOperand],
+    ) -> Result<(u8, u8, i32), EncoderError> {
         let rs1 = Self::get_reg(operands, 0)?;
         let rs2 = Self::get_reg(operands, 1)?;
         let imm = Self::get_imm(operands, 2)? as i32;
@@ -2217,19 +3220,38 @@ impl RiscV64Encoder {
 
     /// Encodes a floating-point R-type instruction with dynamic rounding mode.
     /// Operands: [Register(rd), Register(rs1), Register(rs2)]
-    fn encode_fp_r(&self, funct7: u8, operands: &[EncoderOperand]) -> Result<EncodedInstr, EncoderError> {
+    fn encode_fp_r(
+        &self,
+        funct7: u8,
+        operands: &[EncoderOperand],
+    ) -> Result<EncodedInstr, EncoderError> {
         let (rd, rs1, rs2) = self.extract_r_operands(operands)?;
-        Ok(EncodedInstr::Word(self.encode_r_type(OP_FP, rd, RM_DYN, rs1, rs2, funct7)))
+        Ok(EncodedInstr::Word(
+            self.encode_r_type(OP_FP, rd, RM_DYN, rs1, rs2, funct7),
+        ))
     }
 
     /// Encodes a fused multiply-add R4-type instruction.
     /// Operands: [Register(rd), Register(rs1), Register(rs2), Register(rs3)]
-    fn encode_fma(&self, base_opcode: u8, fmt: u8, operands: &[EncoderOperand]) -> Result<EncodedInstr, EncoderError> {
+    fn encode_fma(
+        &self,
+        base_opcode: u8,
+        fmt: u8,
+        operands: &[EncoderOperand],
+    ) -> Result<EncodedInstr, EncoderError> {
         let rd = Self::get_reg(operands, 0)?;
         let rs1 = Self::get_reg(operands, 1)?;
         let rs2 = Self::get_reg(operands, 2)?;
         let rs3 = Self::get_reg(operands, 3)?;
-        Ok(EncodedInstr::Word(self.encode_r4_type(base_opcode, rd, RM_DYN, rs1, rs2, rs3, fmt)))
+        Ok(EncodedInstr::Word(self.encode_r4_type(
+            base_opcode,
+            rd,
+            RM_DYN,
+            rs1,
+            rs2,
+            rs3,
+            fmt,
+        )))
     }
 
     /// Encodes an atomic memory operation (AMO).
@@ -2258,7 +3280,9 @@ impl RiscV64Encoder {
         };
         // Default aq=0, rl=0 (can be extended via additional operand if needed)
         let funct7 = funct5 << 2; // aq=0, rl=0
-        Ok(EncodedInstr::Word(self.encode_r_type(AMO, rd, funct3, rs1, rs2, funct7)))
+        Ok(EncodedInstr::Word(
+            self.encode_r_type(AMO, rd, funct3, rs1, rs2, funct7),
+        ))
     }
 
     /// Encodes a CA-format compressed ALU instruction.
@@ -2280,7 +3304,9 @@ impl RiscV64Encoder {
         let imm32 = imm as i32;
         // Check if fits in 12-bit signed immediate
         if (-2048..=2047).contains(&imm32) {
-            Ok(EncodedInstr::Word(self.encode_i_type(OP_IMM, rd, FUNCT3_ADD, 0, imm32)))
+            Ok(EncodedInstr::Word(
+                self.encode_i_type(OP_IMM, rd, FUNCT3_ADD, 0, imm32),
+            ))
         } else {
             // Split into upper 20 bits (LUI) and lower 12 bits (ADDI).
             // The lower 12 bits are sign-extended, so if bit 11 is set we need

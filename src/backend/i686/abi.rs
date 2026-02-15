@@ -44,9 +44,7 @@
 //! let layout = abi.compute_stack_layout(&param_types, &target);
 //! ```
 
-use crate::backend::i686::registers::{
-    EAX, ECX, EDX, EBP, ESP, ST0, CALLEE_SAVED, CALLER_SAVED,
-};
+use crate::backend::i686::registers::{CALLEE_SAVED, CALLER_SAVED, EAX, EBP, ECX, EDX, ESP, ST0};
 use crate::backend::traits::{ParamClass, PhysReg};
 use crate::common::target::Target;
 use crate::common::types::{align_of, size_of, CType, FieldDef};
@@ -367,17 +365,12 @@ impl I686Abi {
             }
 
             // ----- int, long (4 bytes on ILP32), pointer, enum → EAX ---
-            CType::Int { .. } | CType::Long { .. } => {
-                ReturnClassification::InRegister { reg: EAX }
-            }
+            CType::Int { .. } | CType::Long { .. } => ReturnClassification::InRegister { reg: EAX },
             CType::Pointer(_) => ReturnClassification::InRegister { reg: EAX },
             CType::Enum { .. } => ReturnClassification::InRegister { reg: EAX },
 
             // ----- long long (8 bytes) → EDX:EAX -----------------------
-            CType::LongLong { .. } => ReturnClassification::RegisterPair {
-                lo: EAX,
-                hi: EDX,
-            },
+            CType::LongLong { .. } => ReturnClassification::RegisterPair { lo: EAX, hi: EDX },
 
             // ----- floating-point → x87 ST(0) --------------------------
             CType::Float | CType::Double | CType::LongDouble => {
@@ -397,10 +390,7 @@ impl I686Abi {
                 } else if sz <= 4 {
                     ReturnClassification::InRegister { reg: EAX }
                 } else if sz <= MAX_REG_RETURN_SIZE {
-                    ReturnClassification::RegisterPair {
-                        lo: EAX,
-                        hi: EDX,
-                    }
+                    ReturnClassification::RegisterPair { lo: EAX, hi: EDX }
                 } else {
                     ReturnClassification::Indirect
                 }
@@ -448,11 +438,7 @@ impl I686Abi {
     /// slot size).  The **total** argument area is then rounded up to the
     /// call-site alignment requirement (16 bytes on modern i386 ABI, per
     /// [`Target::stack_alignment()`]).
-    pub fn compute_stack_layout(
-        &self,
-        params: &[CType],
-        target: &Target,
-    ) -> StackLayout {
+    pub fn compute_stack_layout(&self, params: &[CType], target: &Target) -> StackLayout {
         // Validate we are targeting the right architecture using the ILP32
         // data model check.
         debug_assert!(
@@ -650,10 +636,7 @@ impl I686Abi {
         if sz <= 4 {
             ReturnClassification::InRegister { reg: EAX }
         } else if sz <= MAX_REG_RETURN_SIZE {
-            ReturnClassification::RegisterPair {
-                lo: EAX,
-                hi: EDX,
-            }
+            ReturnClassification::RegisterPair { lo: EAX, hi: EDX }
         } else {
             ReturnClassification::Indirect
         }
@@ -755,9 +738,7 @@ impl I686Abi {
             CType::Atomic(inner) => self.compute_arg_stack_size(inner, target),
 
             // -- typedef(T): unwrap and classify underlying --
-            CType::Typedef { underlying, .. } => {
-                self.compute_arg_stack_size(underlying, target)
-            }
+            CType::Typedef { underlying, .. } => self.compute_arg_stack_size(underlying, target),
         }
     }
 }
@@ -771,7 +752,10 @@ impl I686Abi {
 /// `align` must be a power of two and greater than zero.
 #[inline]
 fn round_up_u32(value: u32, align: u32) -> u32 {
-    debug_assert!(align > 0 && align.is_power_of_two(), "align must be a positive power of 2");
+    debug_assert!(
+        align > 0 && align.is_power_of_two(),
+        "align must be a positive power of 2"
+    );
     (value + align - 1) & !(align - 1)
 }
 
@@ -810,7 +794,10 @@ mod tests {
     fn test_return_void() {
         let abi = I686Abi::new();
         let t = i686_target();
-        assert_eq!(abi.classify_return(&CType::Void, &t), ReturnClassification::Void);
+        assert_eq!(
+            abi.classify_return(&CType::Void, &t),
+            ReturnClassification::Void
+        );
     }
 
     #[test]
@@ -826,10 +813,7 @@ mod tests {
         let abi = I686Abi::new();
         let t = i686_target();
         let cls = abi.classify_return(&CType::LongLong { signed: true }, &t);
-        assert_eq!(
-            cls,
-            ReturnClassification::RegisterPair { lo: EAX, hi: EDX }
-        );
+        assert_eq!(cls, ReturnClassification::RegisterPair { lo: EAX, hi: EDX });
     }
 
     #[test]
@@ -950,10 +934,7 @@ mod tests {
     fn test_layout_two_ints() {
         let abi = I686Abi::new();
         let t = i686_target();
-        let params = [
-            CType::Int { signed: true },
-            CType::Int { signed: false },
-        ];
+        let params = [CType::Int { signed: true }, CType::Int { signed: false }];
         let layout = abi.compute_stack_layout(&params, &t);
 
         // Each int is 4 bytes → 8 bytes raw, padded to 16 for alignment.
@@ -981,9 +962,9 @@ mod tests {
         let abi = I686Abi::new();
         let t = i686_target();
         let params = [
-            CType::Int { signed: true },           // 4 bytes at offset 0
-            CType::Double,                         // 8 bytes at offset 4
-            CType::Char { signed: false },         // 4 bytes (promoted) at offset 12
+            CType::Int { signed: true },   // 4 bytes at offset 0
+            CType::Double,                 // 8 bytes at offset 4
+            CType::Char { signed: false }, // 4 bytes (promoted) at offset 12
         ];
         let layout = abi.compute_stack_layout(&params, &t);
 

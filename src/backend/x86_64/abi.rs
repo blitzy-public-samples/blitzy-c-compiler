@@ -371,9 +371,7 @@ pub fn classify_type(ty: &CType, target: &Target) -> Vec<ParamClass> {
 
         // -- Array — classified as aggregate based on total size ---------
         CType::Array { element, size } => {
-            let total_size = size
-                .map(|n| n * size_of(element, target))
-                .unwrap_or(0);
+            let total_size = size.map(|n| n * size_of(element, target)).unwrap_or(0);
             if total_size > MAX_REGISTER_AGGREGATE_SIZE {
                 vec![ParamClass::Memory]
             } else if total_size == 0 {
@@ -408,10 +406,7 @@ pub fn classify_type(ty: &CType, target: &Target) -> Vec<ParamClass> {
 /// Each 8-byte "eightbyte" of the struct is independently classified based
 /// on which fields overlap it. The classification of an eightbyte is the
 /// merge of all field classifications that touch that eightbyte.
-fn classify_struct(
-    fields: &[FieldDef],
-    target: &Target,
-) -> Vec<ParamClass> {
+fn classify_struct(fields: &[FieldDef], target: &Target) -> Vec<ParamClass> {
     // Use the type builder's struct layout computation to get accurate
     // field offsets with proper alignment and padding.
     let layout: StructLayout = compute_struct_layout(fields, target);
@@ -490,7 +485,11 @@ fn classify_struct(
         };
 
         // Merge the field's class into each overlapping eightbyte.
-        for class in classes.iter_mut().take(end_eb.min(num_eightbytes - 1) + 1).skip(start_eb) {
+        for class in classes
+            .iter_mut()
+            .take(end_eb.min(num_eightbytes - 1) + 1)
+            .skip(start_eb)
+        {
             *class = class.merge(field_class);
         }
     }
@@ -526,10 +525,7 @@ fn classify_struct(
 /// Union members all start at offset zero, so each member's per-eightbyte
 /// classification is merged with the union's running classification for
 /// that eightbyte index.
-fn classify_union(
-    fields: &[FieldDef],
-    target: &Target,
-) -> Vec<ParamClass> {
+fn classify_union(fields: &[FieldDef], target: &Target) -> Vec<ParamClass> {
     // Union size is the maximum of all member sizes.
     let total_size = fields
         .iter()
@@ -714,8 +710,8 @@ pub fn compute_param_locations(params: &[CType], target: &Target) -> Vec<ParamLo
         let classes = classify_type(ty, target);
 
         // MEMORY class or ComplexX87 → pass by hidden pointer or on stack.
-        let has_memory = classes.contains(&ParamClass::Memory)
-            || classes.contains(&ParamClass::ComplexX87);
+        let has_memory =
+            classes.contains(&ParamClass::Memory) || classes.contains(&ParamClass::ComplexX87);
 
         // X87 class → always passed on the stack (x87 FPU values).
         let has_x87 = classes.contains(&ParamClass::X87);
@@ -756,10 +752,7 @@ pub fn compute_param_locations(params: &[CType], target: &Target) -> Vec<ParamLo
             .iter()
             .filter(|c| **c == ParamClass::Integer)
             .count();
-        let sse_needed = classes
-            .iter()
-            .filter(|c| **c == ParamClass::SSE)
-            .count();
+        let sse_needed = classes.iter().filter(|c| **c == ParamClass::SSE).count();
 
         // Check if we have enough registers for this parameter.
         let int_avail = registers::ARG_REGS_INT.len() - int_reg_idx;
@@ -882,12 +875,9 @@ pub fn compute_return_location(ret_type: &CType, target: &Target) -> ReturnLocat
         .iter()
         .filter(|c| **c == ParamClass::Integer)
         .count();
-    let sse_count = classes
-        .iter()
-        .filter(|c| **c == ParamClass::SSE)
-        .count();
-    let has_memory = classes.contains(&ParamClass::Memory)
-        || classes.contains(&ParamClass::ComplexX87);
+    let sse_count = classes.iter().filter(|c| **c == ParamClass::SSE).count();
+    let has_memory =
+        classes.contains(&ParamClass::Memory) || classes.contains(&ParamClass::ComplexX87);
     let has_x87 = classes.contains(&ParamClass::X87);
 
     // MEMORY class: returned via hidden pointer in RDI.
@@ -976,9 +966,7 @@ pub fn compute_frame_layout(
     // Validate that every callee-saved register is a real (non-sentinel)
     // register by inspecting PhysReg.0 — sentinel NONE uses u16::MAX.
     debug_assert!(
-        callee_saved
-            .iter()
-            .all(|r| r.0 != u16::MAX),
+        callee_saved.iter().all(|r| r.0 != u16::MAX),
         "compute_frame_layout: callee_saved list contains NONE sentinel register"
     );
 
@@ -1299,10 +1287,7 @@ mod tests {
 
     #[test]
     fn classify_complex_double() {
-        let classes = classify_type(
-            &CType::Complex(Box::new(CType::Double)),
-            &Target::X86_64,
-        );
+        let classes = classify_type(&CType::Complex(Box::new(CType::Double)), &Target::X86_64);
         assert_eq!(classes, vec![ParamClass::SSE, ParamClass::SSE]);
     }
 
@@ -1432,19 +1417,13 @@ mod tests {
     fn param_locations_basic() {
         let params = vec![
             CType::Int { signed: true },           // → RDI
-            CType::Pointer(Box::new(CType::Void)),  // → RSI
-            CType::Double,                           // → XMM0
+            CType::Pointer(Box::new(CType::Void)), // → RSI
+            CType::Double,                         // → XMM0
         ];
         let locs = compute_param_locations(&params, &Target::X86_64);
         assert_eq!(locs.len(), 3);
-        assert_eq!(
-            locs[0],
-            ParamLocation::Register(registers::ARG_REGS_INT[0])
-        );
-        assert_eq!(
-            locs[1],
-            ParamLocation::Register(registers::ARG_REGS_INT[1])
-        );
+        assert_eq!(locs[0], ParamLocation::Register(registers::ARG_REGS_INT[0]));
+        assert_eq!(locs[1], ParamLocation::Register(registers::ARG_REGS_INT[1]));
         assert_eq!(
             locs[2],
             ParamLocation::Register(registers::ARG_REGS_FLOAT[0])
@@ -1458,10 +1437,7 @@ mod tests {
         let locs = compute_param_locations(&params, &Target::X86_64);
         assert_eq!(locs.len(), 7);
         for (i, loc) in locs.iter().enumerate().take(6) {
-            assert_eq!(
-                *loc,
-                ParamLocation::Register(registers::ARG_REGS_INT[i])
-            );
+            assert_eq!(*loc, ParamLocation::Register(registers::ARG_REGS_INT[i]));
         }
         assert!(matches!(locs[6], ParamLocation::Stack { .. }));
     }
@@ -1469,7 +1445,7 @@ mod tests {
     #[test]
     fn param_locations_mixed_int_float() {
         let params = vec![
-            CType::Int { signed: true },  // → RDI
+            CType::Int { signed: true },   // → RDI
             CType::Float,                  // → XMM0
             CType::Long { signed: false }, // → RSI
             CType::Double,                 // → XMM1

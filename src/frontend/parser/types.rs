@@ -25,7 +25,7 @@
 
 use super::ast::{
     AbstractDeclarator, AlignasSpecifier, AlignofOperand, Attribute, DeclarationSpecifiers,
-    DerivedDeclarator, Expression, FunctionSpecifiers, SpecifierQualifierList, Span, StorageClass,
+    DerivedDeclarator, Expression, FunctionSpecifiers, Span, SpecifierQualifierList, StorageClass,
     TypeName, TypeQualifiers, TypeSpecifier, TypeofOperand,
 };
 use super::{ParseError, ParseResult, Parser};
@@ -340,8 +340,8 @@ pub fn parse_type_specifier(parser: &mut Parser<'_>) -> ParseResult<TypeSpecifie
                 parse_atomic_type_specifier(parser)
             } else {
                 let span = tok.span;
-                let msg = "_Atomic without parentheses is a type qualifier, not a specifier"
-                    .to_string();
+                let msg =
+                    "_Atomic without parentheses is a type qualifier, not a specifier".to_string();
                 parser.diagnostics.error(span, &msg);
                 Err(ParseError {
                     span,
@@ -581,8 +581,7 @@ pub fn parse_specifier_qualifier_list(
             // Struct / Union / Enum — delegate to declarations module
             // ---------------------------------------------------------------
             TokenKind::Struct => {
-                let spec =
-                    super::declarations::parse_struct_or_union_specifier(parser, true)?;
+                let spec = super::declarations::parse_struct_or_union_specifier(parser, true)?;
                 if let Some(sp) = type_specifier_span(&spec) {
                     last_span = sp;
                 }
@@ -590,8 +589,7 @@ pub fn parse_specifier_qualifier_list(
                 count += 1;
             }
             TokenKind::Union => {
-                let spec =
-                    super::declarations::parse_struct_or_union_specifier(parser, false)?;
+                let spec = super::declarations::parse_struct_or_union_specifier(parser, false)?;
                 if let Some(sp) = type_specifier_span(&spec) {
                     last_span = sp;
                 }
@@ -695,8 +693,7 @@ pub fn parse_specifier_qualifier_list(
                 // but cannot be stored in SpecifierQualifierList directly.
                 // Callers that need attributes should use
                 // spec_qual_to_declaration_specifiers() after parsing.
-                let attrs: Vec<Attribute> =
-                    super::attributes::parse_attribute_list(parser)?;
+                let attrs: Vec<Attribute> = super::attributes::parse_attribute_list(parser)?;
                 // Consume parsed attributes — in specifier-qualifier context
                 // these are typically transparent_union, aligned, packed, etc.
                 // They are consumed here and the caller can reconstruct them
@@ -993,9 +990,7 @@ pub fn parse_alignas(parser: &mut Parser<'_>) -> ParseResult<AlignasSpecifier> {
 ///
 /// Returns `ParseError` for invalid combinations such as `void int`,
 /// `float char`, `unsigned void`, or duplicate incompatible specifiers.
-pub fn combine_type_specifiers(
-    specifiers: &[TypeSpecifier],
-) -> ParseResult<CombinedType> {
+pub fn combine_type_specifiers(specifiers: &[TypeSpecifier]) -> ParseResult<CombinedType> {
     // Empty specifier list — defaults to int (with a warning in real usage)
     if specifiers.is_empty() {
         return Ok(CombinedType::SignedInt);
@@ -1192,9 +1187,7 @@ pub fn combine_type_specifiers(
     if flags & SPEC_CHAR != 0 {
         let other = flags & !(SPEC_CHAR | SPEC_SIGNED | SPEC_UNSIGNED);
         if other != 0 {
-            return make_combine_error(
-                "'char' can only be combined with 'signed' or 'unsigned'",
-            );
+            return make_combine_error("'char' can only be combined with 'signed' or 'unsigned'");
         }
         if flags & SPEC_UNSIGNED != 0 {
             return Ok(CombinedType::UnsignedChar);
@@ -1218,8 +1211,7 @@ pub fn combine_type_specifiers(
 
     // long long — can combine with signed/unsigned and int
     if flags & SPEC_LONG_LONG != 0 {
-        let other = flags
-            & !(SPEC_LONG | SPEC_LONG_LONG | SPEC_INT | SPEC_SIGNED | SPEC_UNSIGNED);
+        let other = flags & !(SPEC_LONG | SPEC_LONG_LONG | SPEC_INT | SPEC_SIGNED | SPEC_UNSIGNED);
         if other != 0 {
             return make_combine_error(
                 "'long long' can only be combined with 'signed', 'unsigned', or 'int'",
@@ -1260,9 +1252,7 @@ pub fn combine_type_specifiers(
     if flags & SPEC_FLOAT != 0 {
         let other = flags & !SPEC_FLOAT;
         if other != 0 {
-            return make_combine_error(
-                "'float' cannot be combined with other type specifiers",
-            );
+            return make_combine_error("'float' cannot be combined with other type specifiers");
         }
         return Ok(CombinedType::Float);
     }
@@ -1271,9 +1261,7 @@ pub fn combine_type_specifiers(
     if flags & SPEC_DOUBLE != 0 {
         let other = flags & !SPEC_DOUBLE;
         if other != 0 {
-            return make_combine_error(
-                "'double' cannot be combined with other type specifiers",
-            );
+            return make_combine_error("'double' cannot be combined with other type specifiers");
         }
         return Ok(CombinedType::Double);
     }
@@ -1282,9 +1270,7 @@ pub fn combine_type_specifiers(
     if flags & SPEC_INT != 0 {
         let other = flags & !(SPEC_INT | SPEC_SIGNED | SPEC_UNSIGNED);
         if other != 0 {
-            return make_combine_error(
-                "'int' can only be combined with 'signed' or 'unsigned'",
-            );
+            return make_combine_error("'int' can only be combined with 'signed' or 'unsigned'");
         }
         if flags & SPEC_UNSIGNED != 0 {
             return Ok(CombinedType::UnsignedInt);
@@ -1406,9 +1392,7 @@ pub fn parse_type_name(parser: &mut Parser<'_>) -> ParseResult<TypeName> {
 ///     direct-abstract-declarator(opt) [ assignment-expression(opt) ]
 ///     direct-abstract-declarator(opt) ( parameter-type-list(opt) )
 /// ```
-pub fn parse_abstract_declarator(
-    parser: &mut Parser<'_>,
-) -> ParseResult<AbstractDeclarator> {
+pub fn parse_abstract_declarator(parser: &mut Parser<'_>) -> ParseResult<AbstractDeclarator> {
     let start = parser.current().span;
     let mut derived: Vec<DerivedDeclarator> = Vec::new();
 
@@ -1494,9 +1478,7 @@ fn parse_direct_abstract_declarator(
 /// - `[N]` — fixed-size array
 /// - `[*]` — VLA with unspecified size
 /// - `[static N]` or `[static qualifiers N]` — C11 parameter array notation
-fn parse_array_abstract_declarator(
-    parser: &mut Parser<'_>,
-) -> ParseResult<DerivedDeclarator> {
+fn parse_array_abstract_declarator(parser: &mut Parser<'_>) -> ParseResult<DerivedDeclarator> {
     parser.expect(TokenKind::LeftBracket)?;
 
     let mut is_static = false;
@@ -1519,16 +1501,15 @@ fn parse_array_abstract_declarator(
     // Parse size expression (or `*` for VLA)
     let size = if parser.check(TokenKind::RightBracket) {
         None
-    } else if parser.check(TokenKind::Star)
-        && parser.peek_ahead(1).kind == TokenKind::RightBracket
+    } else if parser.check(TokenKind::Star) && parser.peek_ahead(1).kind == TokenKind::RightBracket
     {
         // [*] — VLA with unspecified size
         parser.advance();
         None
     } else {
-        Some(Box::new(
-            super::expressions::parse_assignment_expression(parser)?,
-        ))
+        Some(Box::new(super::expressions::parse_assignment_expression(
+            parser,
+        )?))
     };
 
     parser.expect(TokenKind::RightBracket)?;
@@ -1786,9 +1767,7 @@ mod tests {
     #[test]
     fn test_combine_invalid_specifiers() {
         // void int
-        assert!(
-            combine_type_specifiers(&[TypeSpecifier::Void, TypeSpecifier::Int]).is_err()
-        );
+        assert!(combine_type_specifiers(&[TypeSpecifier::Void, TypeSpecifier::Int]).is_err());
 
         // signed unsigned
         assert!(
@@ -1796,14 +1775,10 @@ mod tests {
         );
 
         // _Bool int
-        assert!(
-            combine_type_specifiers(&[TypeSpecifier::Bool, TypeSpecifier::Int]).is_err()
-        );
+        assert!(combine_type_specifiers(&[TypeSpecifier::Bool, TypeSpecifier::Int]).is_err());
 
         // float char
-        assert!(
-            combine_type_specifiers(&[TypeSpecifier::Float, TypeSpecifier::Char]).is_err()
-        );
+        assert!(combine_type_specifiers(&[TypeSpecifier::Float, TypeSpecifier::Char]).is_err());
 
         // three longs
         assert!(combine_type_specifiers(&[

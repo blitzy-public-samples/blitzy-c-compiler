@@ -149,22 +149,22 @@ pub mod opcodes {
 #[inline]
 fn cc_to_nibble(cc: ConditionCode) -> u8 {
     match cc {
-        ConditionCode::O  => 0x0,
+        ConditionCode::O => 0x0,
         ConditionCode::No => 0x1,
-        ConditionCode::B  => 0x2,
+        ConditionCode::B => 0x2,
         ConditionCode::Ae => 0x3,
-        ConditionCode::E  => 0x4,
+        ConditionCode::E => 0x4,
         ConditionCode::Ne => 0x5,
         ConditionCode::Be => 0x6,
-        ConditionCode::A  => 0x7,
-        ConditionCode::S  => 0x8,
+        ConditionCode::A => 0x7,
+        ConditionCode::S => 0x8,
         ConditionCode::Ns => 0x9,
-        ConditionCode::P  => 0xA,
+        ConditionCode::P => 0xA,
         ConditionCode::Np => 0xB,
-        ConditionCode::L  => 0xC,
+        ConditionCode::L => 0xC,
         ConditionCode::Ge => 0xD,
         ConditionCode::Le => 0xE,
-        ConditionCode::G  => 0xF,
+        ConditionCode::G => 0xF,
     }
 }
 
@@ -196,7 +196,7 @@ fn extract_cc(ops: &[MachineOperand]) -> u8 {
             0xC => ConditionCode::L,
             0xD => ConditionCode::Ge,
             0xE => ConditionCode::Le,
-            _   => ConditionCode::G,
+            _ => ConditionCode::G,
         };
         cc_to_nibble(cc)
     } else {
@@ -470,12 +470,7 @@ fn parent_gpr(reg: PhysReg) -> PhysReg {
 /// - EBP as base with no displacement uses mod=01 + disp8(0) to avoid
 ///   the [disp32] ambiguity (rm=5 mod=00 means absolute addressing)
 /// - Displacement is sized as disp8 (±127) or disp32 as appropriate
-fn encode_memory(
-    buf: &mut Vec<u8>,
-    reg_field: u8,
-    mem: &MemOperand,
-    ctx: &mut EncoderContext,
-) {
+fn encode_memory(buf: &mut Vec<u8>, reg_field: u8, mem: &MemOperand, ctx: &mut EncoderContext) {
     let has_base = mem.base.is_some();
     let has_index = mem.index.is_some();
 
@@ -532,7 +527,11 @@ fn encode_memory(
             Some(idx) => {
                 let enc = reg_encoding(idx);
                 // ESP cannot be used as SIB index — enc=4 means "no index"
-                if enc == ESP_ENC { ESP_ENC } else { enc }
+                if enc == ESP_ENC {
+                    ESP_ENC
+                } else {
+                    enc
+                }
             }
             None => ESP_ENC, // No index (SIB index field = 4)
         };
@@ -652,12 +651,7 @@ fn encode_mem_ext(
 /// Writes a placeholder displacement (0x00000000) and records the
 /// appropriate relocation (R_386_PC32 for direct calls, R_386_PLT32
 /// for PIC mode calls).
-fn emit_symbol_call(
-    buf: &mut Vec<u8>,
-    symbol: &str,
-    ctx: &mut EncoderContext,
-    is_call: bool,
-) {
+fn emit_symbol_call(buf: &mut Vec<u8>, symbol: &str, ctx: &mut EncoderContext, is_call: bool) {
     // CALL rel32 or JMP rel32 opcode
     if is_call {
         buf.push(0xE8);
@@ -692,11 +686,7 @@ fn emit_symbol_call(
 /// - Non-PIC mode: `R_386_32` (absolute address)
 /// - PIC mode, `_GLOBAL_OFFSET_TABLE_`: `R_386_GOTPC` (GOT base address)
 /// - PIC mode, other symbols: `R_386_GOT32` (GOT slot offset)
-fn emit_symbol_imm32(
-    buf: &mut Vec<u8>,
-    symbol: &str,
-    ctx: &mut EncoderContext,
-) {
+fn emit_symbol_imm32(buf: &mut Vec<u8>, symbol: &str, ctx: &mut EncoderContext) {
     let reloc_offset = ctx.offset + buf.len() as u32;
     buf.extend_from_slice(&0i32.to_le_bytes());
 
@@ -825,7 +815,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncoderContext) -> Enc
         opcodes::SUB => encode_alu(instr, &mut bytes, ctx, 0x29, 0x2B, 0x81, 0x83, 5),
         opcodes::SBB => encode_alu(instr, &mut bytes, ctx, 0x19, 0x1B, 0x81, 0x83, 3),
         opcodes::AND => encode_alu(instr, &mut bytes, ctx, 0x21, 0x23, 0x81, 0x83, 4),
-        opcodes::OR  => encode_alu(instr, &mut bytes, ctx, 0x09, 0x0B, 0x81, 0x83, 1),
+        opcodes::OR => encode_alu(instr, &mut bytes, ctx, 0x09, 0x0B, 0x81, 0x83, 1),
         opcodes::XOR => encode_alu(instr, &mut bytes, ctx, 0x31, 0x33, 0x81, 0x83, 6),
         opcodes::CMP => encode_alu(instr, &mut bytes, ctx, 0x39, 0x3B, 0x81, 0x83, 7),
 
@@ -847,10 +837,10 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncoderContext) -> Enc
         // IDIV (F7 /7), DIV (F7 /6), MUL (F7 /4)
         // ---------------------------------------------------------------
         opcodes::IDIV => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 7),
-        opcodes::DIV  => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 6),
-        opcodes::MUL  => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 4),
-        opcodes::NEG  => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 3),
-        opcodes::NOT  => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 2),
+        opcodes::DIV => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 6),
+        opcodes::MUL => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 4),
+        opcodes::NEG => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 3),
+        opcodes::NOT => encode_unary_rm(instr, &mut bytes, ctx, 0xF7, 2),
 
         // ---------------------------------------------------------------
         // INC (FF /0), DEC (FF /1)
@@ -930,27 +920,45 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncoderContext) -> Enc
         // ---------------------------------------------------------------
         // x87 FPU instructions
         // ---------------------------------------------------------------
-        opcodes::FLD    => encode_fld(instr, &mut bytes, ctx),
-        opcodes::FST    => encode_fst_fstp(instr, &mut bytes, ctx, false),
-        opcodes::FSTP   => encode_fst_fstp(instr, &mut bytes, ctx, true),
-        opcodes::FADD   => encode_fpu_arith(instr, &mut bytes, ctx, 0xD8, 0xDC, 0xC0),
-        opcodes::FADDP  => { bytes.push(0xDE); encode_fpu_stack_op(&mut bytes, instr, 0xC0); }
-        opcodes::FSUB   => encode_fpu_arith(instr, &mut bytes, ctx, 0xD8, 0xDC, 0xE0),
-        opcodes::FSUBP  => { bytes.push(0xDE); encode_fpu_stack_op(&mut bytes, instr, 0xE8); }
-        opcodes::FMUL   => encode_fpu_arith(instr, &mut bytes, ctx, 0xD8, 0xDC, 0xC8),
-        opcodes::FMULP  => { bytes.push(0xDE); encode_fpu_stack_op(&mut bytes, instr, 0xC8); }
-        opcodes::FDIV   => encode_fpu_arith(instr, &mut bytes, ctx, 0xD8, 0xDC, 0xF0),
-        opcodes::FDIVP  => { bytes.push(0xDE); encode_fpu_stack_op(&mut bytes, instr, 0xF8); }
-        opcodes::FCHS   => { bytes.push(0xD9); bytes.push(0xE0); }
-        opcodes::FABS   => { bytes.push(0xD9); bytes.push(0xE1); }
+        opcodes::FLD => encode_fld(instr, &mut bytes, ctx),
+        opcodes::FST => encode_fst_fstp(instr, &mut bytes, ctx, false),
+        opcodes::FSTP => encode_fst_fstp(instr, &mut bytes, ctx, true),
+        opcodes::FADD => encode_fpu_arith(instr, &mut bytes, ctx, 0xD8, 0xDC, 0xC0),
+        opcodes::FADDP => {
+            bytes.push(0xDE);
+            encode_fpu_stack_op(&mut bytes, instr, 0xC0);
+        }
+        opcodes::FSUB => encode_fpu_arith(instr, &mut bytes, ctx, 0xD8, 0xDC, 0xE0),
+        opcodes::FSUBP => {
+            bytes.push(0xDE);
+            encode_fpu_stack_op(&mut bytes, instr, 0xE8);
+        }
+        opcodes::FMUL => encode_fpu_arith(instr, &mut bytes, ctx, 0xD8, 0xDC, 0xC8),
+        opcodes::FMULP => {
+            bytes.push(0xDE);
+            encode_fpu_stack_op(&mut bytes, instr, 0xC8);
+        }
+        opcodes::FDIV => encode_fpu_arith(instr, &mut bytes, ctx, 0xD8, 0xDC, 0xF0),
+        opcodes::FDIVP => {
+            bytes.push(0xDE);
+            encode_fpu_stack_op(&mut bytes, instr, 0xF8);
+        }
+        opcodes::FCHS => {
+            bytes.push(0xD9);
+            bytes.push(0xE0);
+        }
+        opcodes::FABS => {
+            bytes.push(0xD9);
+            bytes.push(0xE1);
+        }
         opcodes::FUCOMIP => {
             bytes.push(0xDF);
             let st_i = extract_fpu_index(instr, 0);
             bytes.push(0xE8 + st_i);
         }
-        opcodes::FILD   => encode_fild(instr, &mut bytes, ctx),
-        opcodes::FISTP  => encode_fistp(instr, &mut bytes, ctx),
-        opcodes::FXCH   => {
+        opcodes::FILD => encode_fild(instr, &mut bytes, ctx),
+        opcodes::FISTP => encode_fistp(instr, &mut bytes, ctx),
+        opcodes::FXCH => {
             bytes.push(0xD9);
             let st_i = extract_fpu_index(instr, 0);
             bytes.push(0xC8 + st_i);
@@ -980,8 +988,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncoderContext) -> Enc
     }
 
     // Collect any relocations emitted into ctx during this instruction.
-    let new_ctx_relocs: Vec<RelocationEntry> =
-        ctx.relocations.drain(ctx_relocs_before..).collect();
+    let new_ctx_relocs: Vec<RelocationEntry> = ctx.relocations.drain(ctx_relocs_before..).collect();
     relocs.extend(new_ctx_relocs);
 
     EncodedInstr {
@@ -1029,7 +1036,15 @@ fn encode_mov(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
             emit_symbol_imm32(buf, sym, ctx);
         }
         // MOV reg, [mem]
-        (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) => {
+        (
+            MachineOperand::Register(dst),
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[0x8B], *dst, &mem, ctx);
         }
@@ -1039,7 +1054,15 @@ fn encode_mov(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
             encode_reg_mem(buf, &[0x8B], *dst, &mem, ctx);
         }
         // MOV [mem], reg
-        (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Register(src)) => {
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Register(src),
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[0x89], *src, &mem, ctx);
         }
@@ -1049,7 +1072,15 @@ fn encode_mov(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
             encode_reg_mem(buf, &[0x89], *src, &mem, ctx);
         }
         // MOV [mem], imm32
-        (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Immediate(imm)) => {
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Immediate(imm),
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[0xC7], 0, &mem, ctx);
             buf.extend_from_slice(&(*imm as i32).to_le_bytes());
@@ -1096,8 +1127,8 @@ fn encode_movsx_movzx(
     };
 
     let opcode_byte = match (is_sign_extend, src_width) {
-        (true, 8)  => 0xBE, // MOVSX r32, r/m8
-        (true, _)  => 0xBF, // MOVSX r32, r/m16
+        (true, 8) => 0xBE,  // MOVSX r32, r/m8
+        (true, _) => 0xBF,  // MOVSX r32, r/m16
         (false, 8) => 0xB6, // MOVZX r32, r/m8
         (false, _) => 0xB7, // MOVZX r32, r/m16
     };
@@ -1115,7 +1146,15 @@ fn encode_movsx_movzx(
             };
             buf.push(encode_modrm(0b11, reg_encoding(*dst), src_enc));
         }
-        (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) => {
+        (
+            MachineOperand::Register(dst),
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_memory(buf, reg_encoding(*dst), &mem, ctx);
         }
@@ -1139,7 +1178,15 @@ fn encode_lea(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
     }
 
     match (&ops[0], &ops[1]) {
-        (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) => {
+        (
+            MachineOperand::Register(dst),
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[0x8D], *dst, &mem, ctx);
         }
@@ -1178,7 +1225,12 @@ fn encode_push(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
                 buf.extend_from_slice(&val.to_le_bytes());
             }
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[0xFF], 6, &mem, ctx);
         }
@@ -1244,7 +1296,15 @@ fn encode_alu(
             encode_reg_imm(buf, op_imm32, op_imm8, ext, *dst, *imm as i32);
         }
         // reg, [mem]
-        (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) => {
+        (
+            MachineOperand::Register(dst),
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[op_r_rm], *dst, &mem, ctx);
         }
@@ -1254,7 +1314,15 @@ fn encode_alu(
             encode_reg_mem(buf, &[op_r_rm], *dst, &mem, ctx);
         }
         // [mem], reg
-        (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Register(src)) => {
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Register(src),
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[op_rm_r], *src, &mem, ctx);
         }
@@ -1264,7 +1332,15 @@ fn encode_alu(
             encode_reg_mem(buf, &[op_rm_r], *src, &mem, ctx);
         }
         // [mem], imm
-        (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Immediate(imm)) => {
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Immediate(imm),
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             let val = *imm as i32;
             if (-128..=127).contains(&val) {
@@ -1310,7 +1386,15 @@ fn encode_test(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
             buf.push(encode_modrm(0b11, 0, reg_encoding(*dst)));
             buf.extend_from_slice(&(*imm as i32).to_le_bytes());
         }
-        (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Register(src)) => {
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Register(src),
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[0x85], *src, &mem, ctx);
         }
@@ -1339,22 +1423,28 @@ fn encode_imul(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
             encode_unary_rm(instr, buf, ctx, 0xF7, 5);
         }
         // 2 operands: IMUL r32, r/m32 (0F AF /r)
-        2 => {
-            match (&ops[0], &ops[1]) {
-                (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
-                    buf.push(0x0F);
-                    buf.push(0xAF);
-                    buf.push(encode_modrm(0b11, reg_encoding(*dst), reg_encoding(*src)));
-                }
-                (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) => {
-                    let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
-                    buf.push(0x0F);
-                    buf.push(0xAF);
-                    encode_memory(buf, reg_encoding(*dst), &mem, ctx);
-                }
-                _ => {}
+        2 => match (&ops[0], &ops[1]) {
+            (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
+                buf.push(0x0F);
+                buf.push(0xAF);
+                buf.push(encode_modrm(0b11, reg_encoding(*dst), reg_encoding(*src)));
             }
-        }
+            (
+                MachineOperand::Register(dst),
+                MachineOperand::Memory {
+                    base,
+                    offset,
+                    index,
+                    scale,
+                },
+            ) => {
+                let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+                buf.push(0x0F);
+                buf.push(0xAF);
+                encode_memory(buf, reg_encoding(*dst), &mem, ctx);
+            }
+            _ => {}
+        },
         // 3 operands: IMUL r32, r/m32, imm (69/6B)
         _ => {
             if let (
@@ -1399,7 +1489,12 @@ fn encode_unary_rm(
             buf.push(opcode);
             buf.push(encode_modrm(0b11, ext, reg_encoding(*reg)));
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[opcode], ext, &mem, ctx);
         }
@@ -1413,12 +1508,7 @@ fn encode_unary_rm(
 }
 
 /// Encode INC/DEC (short form: 40+rd / 48+rd, or long form: FF /0 or FF /1).
-fn encode_inc_dec(
-    instr: &MachineInstr,
-    buf: &mut Vec<u8>,
-    ctx: &mut EncoderContext,
-    is_inc: bool,
-) {
+fn encode_inc_dec(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext, is_inc: bool) {
     let ops = &instr.operands;
     if ops.is_empty() {
         return;
@@ -1432,7 +1522,12 @@ fn encode_inc_dec(
             let base = if is_inc { 0x40 } else { 0x48 };
             buf.push(base + reg_encoding(*reg));
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[0xFF], ext, &mem, ctx);
         }
@@ -1450,12 +1545,7 @@ fn encode_inc_dec(
 /// - Shift by CL: D3 /ext
 /// - Shift by imm8: C1 /ext ib
 /// - Shift by 1 (special): D1 /ext
-fn encode_shift(
-    instr: &MachineInstr,
-    buf: &mut Vec<u8>,
-    ctx: &mut EncoderContext,
-    ext: u8,
-) {
+fn encode_shift(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext, ext: u8) {
     let ops = &instr.operands;
     if ops.len() < 2 {
         return;
@@ -1478,7 +1568,8 @@ fn encode_shift(
         (MachineOperand::Register(dst), MachineOperand::Register(cl)) => {
             // The x86 variable-shift encoding implicitly uses CL (ECX low byte).
             debug_assert_eq!(
-                reg_encoding(*cl), ECX_ENC,
+                reg_encoding(*cl),
+                ECX_ENC,
                 "Variable shift count must use CL register (encoding {})",
                 ECX_ENC
             );
@@ -1486,7 +1577,15 @@ fn encode_shift(
             buf.push(encode_modrm(0b11, ext, reg_encoding(*dst)));
         }
         // [mem], imm
-        (MachineOperand::Memory { base, offset, index, scale }, MachineOperand::Immediate(count)) => {
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Immediate(count),
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             let c = *count as u8;
             if c == 1 {
@@ -1517,22 +1616,14 @@ fn encode_shift(
 /// - SHLD r/m32, r32, CL:   0F A5 /r
 /// - SHRD r/m32, r32, imm8: 0F AC /r ib
 /// - SHRD r/m32, r32, CL:   0F AD /r
-fn encode_double_shift(
-    instr: &MachineInstr,
-    buf: &mut Vec<u8>,
-    imm_opcode: u8,
-    cl_opcode: u8,
-) {
+fn encode_double_shift(instr: &MachineInstr, buf: &mut Vec<u8>, imm_opcode: u8, cl_opcode: u8) {
     let ops = &instr.operands;
     if ops.len() < 3 {
         return;
     }
 
-    if let (
-        MachineOperand::Register(dst),
-        MachineOperand::Register(src),
-        third,
-    ) = (&ops[0], &ops[1], &ops[2])
+    if let (MachineOperand::Register(dst), MachineOperand::Register(src), third) =
+        (&ops[0], &ops[1], &ops[2])
     {
         match third {
             MachineOperand::Immediate(count) => {
@@ -1579,7 +1670,12 @@ fn encode_jmp(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
             buf.push(0xFF);
             buf.push(encode_modrm(0b11, 4, reg_encoding(*reg)));
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             // JMP [mem] (indirect): FF /4
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[0xFF], 4, &mem, ctx);
@@ -1630,7 +1726,12 @@ fn encode_setcc(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContex
         MachineOperand::Register(dst) => {
             buf.push(encode_modrm(0b11, 0, reg_encoding(*dst)));
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_memory(buf, 0, &mem, ctx);
         }
@@ -1663,7 +1764,15 @@ fn encode_cmovcc(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderConte
         (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
             buf.push(encode_modrm(0b11, reg_encoding(*dst), reg_encoding(*src)));
         }
-        (MachineOperand::Register(dst), MachineOperand::Memory { base, offset, index, scale }) => {
+        (
+            MachineOperand::Register(dst),
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+        ) => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_memory(buf, reg_encoding(*dst), &mem, ctx);
         }
@@ -1701,7 +1810,12 @@ fn encode_call(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
             buf.push(0xFF);
             buf.push(encode_modrm(0b11, 2, reg_encoding(*reg)));
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             // CALL [mem] (indirect): FF /2
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_mem_ext(buf, &[0xFF], 2, &mem, ctx);
@@ -1770,11 +1884,15 @@ fn encode_fld(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
                 buf.push(0xC0 + st_i);
             }
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             // Check for 64-bit via optional second operand hint
-            let is_64 = ops.len() > 1
-                && matches!(&ops[1], MachineOperand::Immediate(64));
+            let is_64 = ops.len() > 1 && matches!(&ops[1], MachineOperand::Immediate(64));
             if is_64 {
                 encode_mem_ext(buf, &[0xDD], 0, &mem, ctx); // FLD mem64
             } else {
@@ -1784,8 +1902,7 @@ fn encode_fld(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
         // FLD [EBP+frame_idx] — load float from stack frame slot
         MachineOperand::FrameIndex(idx) => {
             let mem = frame_index_to_mem_operand(*idx);
-            let is_64 = ops.len() > 1
-                && matches!(&ops[1], MachineOperand::Immediate(64));
+            let is_64 = ops.len() > 1 && matches!(&ops[1], MachineOperand::Immediate(64));
             if is_64 {
                 encode_mem_ext(buf, &[0xDD], 0, &mem, ctx); // FLD mem64
             } else {
@@ -1823,10 +1940,14 @@ fn encode_fst_fstp(
                 buf.push(0xD8 + st_i);
             }
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
-            let is_64 = ops.len() > 1
-                && matches!(&ops[1], MachineOperand::Immediate(64));
+            let is_64 = ops.len() > 1 && matches!(&ops[1], MachineOperand::Immediate(64));
             if is_64 {
                 encode_mem_ext(buf, &[0xDD], ext, &mem, ctx);
             } else {
@@ -1836,8 +1957,7 @@ fn encode_fst_fstp(
         // FST/FSTP [EBP+frame_idx] — store float to stack frame slot
         MachineOperand::FrameIndex(idx) => {
             let mem = frame_index_to_mem_operand(*idx);
-            let is_64 = ops.len() > 1
-                && matches!(&ops[1], MachineOperand::Immediate(64));
+            let is_64 = ops.len() > 1 && matches!(&ops[1], MachineOperand::Immediate(64));
             if is_64 {
                 encode_mem_ext(buf, &[0xDD], ext, &mem, ctx);
             } else {
@@ -1868,14 +1988,22 @@ fn encode_fpu_arith(
     match &ops[0] {
         MachineOperand::Register(reg) => {
             // FADD ST(0), ST(i) or similar
-            let st_i = if reg.index() >= 24 { (reg.index() - 24) as u8 } else { 0 };
+            let st_i = if reg.index() >= 24 {
+                (reg.index() - 24) as u8
+            } else {
+                0
+            };
             buf.push(escape32);
             buf.push(reg_modrm_base + st_i);
         }
-        MachineOperand::Memory { base, offset, index, scale } => {
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => {
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
-            let is_64 = ops.len() > 1
-                && matches!(&ops[1], MachineOperand::Immediate(64));
+            let is_64 = ops.len() > 1 && matches!(&ops[1], MachineOperand::Immediate(64));
             if is_64 {
                 encode_mem_ext(buf, &[escape64], 0, &mem, ctx);
             } else {
@@ -1885,8 +2013,7 @@ fn encode_fpu_arith(
         // FPU arith with [EBP+frame_idx] — operate on stack frame slot
         MachineOperand::FrameIndex(idx) => {
             let mem = frame_index_to_mem_operand(*idx);
-            let is_64 = ops.len() > 1
-                && matches!(&ops[1], MachineOperand::Immediate(64));
+            let is_64 = ops.len() > 1 && matches!(&ops[1], MachineOperand::Immediate(64));
             if is_64 {
                 encode_mem_ext(buf, &[escape64], 0, &mem, ctx);
             } else {
@@ -1909,9 +2036,12 @@ fn encode_fild(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
 
     // Determine memory operand from either Memory or FrameIndex
     let mem = match &ops[0] {
-        MachineOperand::Memory { base, offset, index, scale } => {
-            machine_mem_to_mem_operand(base, *offset, index, *scale)
-        }
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => machine_mem_to_mem_operand(base, *offset, index, *scale),
         MachineOperand::FrameIndex(idx) => frame_index_to_mem_operand(*idx),
         _ => return,
     };
@@ -1936,9 +2066,12 @@ fn encode_fistp(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContex
 
     // Determine memory operand from either Memory or FrameIndex
     let mem = match &ops[0] {
-        MachineOperand::Memory { base, offset, index, scale } => {
-            machine_mem_to_mem_operand(base, *offset, index, *scale)
-        }
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => machine_mem_to_mem_operand(base, *offset, index, *scale),
         MachineOperand::FrameIndex(idx) => frame_index_to_mem_operand(*idx),
         _ => return,
     };
@@ -2211,7 +2344,10 @@ mod tests {
         assert_eq!(result.bytes[0], 0xE8);
         assert_eq!(result.relocations.len(), 1);
         assert_eq!(result.relocations[0].symbol, "printf");
-        assert!(matches!(result.relocations[0].reloc_type, I686RelocType::R386Pc32));
+        assert!(matches!(
+            result.relocations[0].reloc_type,
+            I686RelocType::R386Pc32
+        ));
     }
 
     #[test]
@@ -2234,7 +2370,10 @@ mod tests {
         let result = encode_instruction(&instr, &mut ctx);
         assert_eq!(result.bytes.len(), 5);
         assert_eq!(result.relocations.len(), 1);
-        assert!(matches!(result.relocations[0].reloc_type, I686RelocType::R386Plt32));
+        assert!(matches!(
+            result.relocations[0].reloc_type,
+            I686RelocType::R386Plt32
+        ));
     }
 
     #[test]

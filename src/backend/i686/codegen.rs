@@ -25,20 +25,16 @@
 
 use crate::backend::i686::abi::I686Abi;
 use crate::backend::i686::registers::{
-    self, EAX, EBP, EBX, ECX, EDI, EDX, ESI, ESP, ST0,
-    AL, CL, EFLAGS, CALLEE_SAVED, CALLER_SAVED,
+    self, AL, CALLEE_SAVED, CALLER_SAVED, CL, EAX, EBP, EBX, ECX, EDI, EDX, EFLAGS, ESI, ESP, ST0,
 };
 use crate::backend::traits::{
-    CodegenConfig, MachineBasicBlock, MachineFunction, MachineInstr,
-    MachineOperand, PhysReg,
+    CodegenConfig, MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand, PhysReg,
 };
 use crate::common::diagnostics::DiagnosticEngine;
 use crate::common::fx_hash::FxHashMap;
 use crate::ir::basic_block::BasicBlockId;
 use crate::ir::function::IrFunction;
-use crate::ir::instructions::{
-    BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId,
-};
+use crate::ir::instructions::{BinOp, FCmpPredicate, ICmpPredicate, Instruction, ValueId};
 use crate::ir::types::IrType;
 
 // ===========================================================================
@@ -618,10 +614,8 @@ impl<'a> I686InstrSel<'a> {
 
         // Phase 4: Generate prologue in the entry block.
         let entry_id = 0u32;
-        let mut entry_block = MachineBasicBlock::with_label(
-            entry_id,
-            format!(".L{}_{}", func.name, entry_id),
-        );
+        let mut entry_block =
+            MachineBasicBlock::with_label(entry_id, format!(".L{}_{}", func.name, entry_id));
         self.emit_prologue(&mut entry_block);
         mf.add_block(entry_block);
 
@@ -646,10 +640,8 @@ impl<'a> I686InstrSel<'a> {
                     }
                 }
             } else {
-                let mut mbb = MachineBasicBlock::with_label(
-                    mbb_id,
-                    format!(".L{}_{}", func.name, mbb_id),
-                );
+                let mut mbb =
+                    MachineBasicBlock::with_label(mbb_id, format!(".L{}_{}", func.name, mbb_id));
                 for inst in bb.instructions() {
                     if inst.is_alloca() {
                         continue;
@@ -699,9 +691,7 @@ impl<'a> I686InstrSel<'a> {
                 self.select_load(*result, *ptr, ty, mbb, func);
             }
 
-            Instruction::Store {
-                value, ptr, ..
-            } => {
+            Instruction::Store { value, ptr, .. } => {
                 self.select_store(*value, *ptr, mbb, func);
             }
 
@@ -868,10 +858,8 @@ impl<'a> I686InstrSel<'a> {
                 mbb.push_instr(nop);
                 if let Some(res) = result {
                     // Map result to EAX as a convention for inline asm output.
-                    self.value_map.insert(
-                        res.index(),
-                        MachineOperand::Register(EAX),
-                    );
+                    self.value_map
+                        .insert(res.index(), MachineOperand::Register(EAX));
                 }
             }
         }
@@ -903,10 +891,8 @@ impl<'a> I686InstrSel<'a> {
             fld.add_implicit_def(ST0);
             mbb.push_instr(fld);
             // The result is on ST(0); record it.
-            self.value_map.insert(
-                result.index(),
-                MachineOperand::Register(ST0),
-            );
+            self.value_map
+                .insert(result.index(), MachineOperand::Register(ST0));
             return;
         }
 
@@ -957,10 +943,8 @@ impl<'a> I686InstrSel<'a> {
                 // Record lo:hi pair under the original result.
                 // We use the lo register as the primary operand; the hi is
                 // accessible via the convention that vreg N+1 is the high half.
-                self.value_map.insert(
-                    result.index(),
-                    MachineOperand::VirtualReg(ValueId(lo_dst)),
-                );
+                self.value_map
+                    .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_dst)));
             }
             _ => {
                 // Pointer or other 32-bit equivalent.
@@ -1318,10 +1302,8 @@ impl<'a> I686InstrSel<'a> {
                 mbb.push_instr(mul);
 
                 // Result lo in EAX, hi in EDX.
-                self.value_map.insert(
-                    result.index(),
-                    MachineOperand::Register(EAX),
-                );
+                self.value_map
+                    .insert(result.index(), MachineOperand::Register(EAX));
                 return;
             }
 
@@ -1363,11 +1345,7 @@ impl<'a> I686InstrSel<'a> {
                 let rhs_reg = self.ensure_in_register(rhs_op, mbb);
                 let lo_result = self.alloc_vreg_raw();
 
-                self.emit_mov(
-                    MachineOperand::VirtualReg(ValueId(lo_result)),
-                    lhs_reg,
-                    mbb,
-                );
+                self.emit_mov(MachineOperand::VirtualReg(ValueId(lo_result)), lhs_reg, mbb);
 
                 let mut mov_cl = MachineInstr::new(I686Opcode::Mov.as_u32());
                 mov_cl.add_operand(MachineOperand::Register(ECX));
@@ -1427,10 +1405,8 @@ impl<'a> I686InstrSel<'a> {
                 mbb.push_instr(cleanup);
 
                 self.has_calls = true;
-                self.value_map.insert(
-                    result.index(),
-                    MachineOperand::Register(EAX),
-                );
+                self.value_map
+                    .insert(result.index(), MachineOperand::Register(EAX));
                 return;
             }
 
@@ -1491,10 +1467,8 @@ impl<'a> I686InstrSel<'a> {
         mbb.push_instr(fop);
 
         // Result is now in ST(0).
-        self.value_map.insert(
-            result.index(),
-            MachineOperand::Register(ST0),
-        );
+        self.value_map
+            .insert(result.index(), MachineOperand::Register(ST0));
     }
 
     // -----------------------------------------------------------------------
@@ -1648,16 +1622,26 @@ impl<'a> I686InstrSel<'a> {
         mbb.push_instr(test);
 
         // JNE true_target (jump if condition != 0)
-        let true_id = self.block_map.get(&true_target.index()).copied().unwrap_or(0);
+        let true_id = self
+            .block_map
+            .get(&true_target.index())
+            .copied()
+            .unwrap_or(0);
         let mut jne = MachineInstr::new(I686Opcode::Jcc.as_u32());
         jne.add_operand(MachineOperand::Label(true_id));
-        jne.add_operand(MachineOperand::Immediate(ConditionCode::Ne.encoding() as i64));
+        jne.add_operand(MachineOperand::Immediate(
+            ConditionCode::Ne.encoding() as i64
+        ));
         jne.add_implicit_use(EFLAGS);
         jne.set_terminator();
         mbb.push_instr(jne);
 
         // JMP false_target (fallthrough to false path)
-        let false_id = self.block_map.get(&false_target.index()).copied().unwrap_or(0);
+        let false_id = self
+            .block_map
+            .get(&false_target.index())
+            .copied()
+            .unwrap_or(0);
         let mut jmp = MachineInstr::new(I686Opcode::Jmp.as_u32());
         jmp.add_operand(MachineOperand::Label(false_id));
         jmp.set_terminator();
@@ -1795,10 +1779,8 @@ impl<'a> I686InstrSel<'a> {
             let res_type = self.get_value_type(res_vid, func);
             if res_type.is_floating() {
                 // Return value is in ST(0).
-                self.value_map.insert(
-                    res_vid.index(),
-                    MachineOperand::Register(ST0),
-                );
+                self.value_map
+                    .insert(res_vid.index(), MachineOperand::Register(ST0));
             } else {
                 // Integer return value in EAX.
                 let dst = self.alloc_vreg(res_vid);
@@ -2067,7 +2049,8 @@ impl<'a> I686InstrSel<'a> {
             mbb.push_instr(cdq);
 
             // Result lo=EAX, hi=EDX
-            self.value_map.insert(result.index(), MachineOperand::Register(EAX));
+            self.value_map
+                .insert(result.index(), MachineOperand::Register(EAX));
         } else {
             self.emit_mov(dst, src, mbb);
         }
@@ -2158,12 +2141,7 @@ impl<'a> I686InstrSel<'a> {
     // -----------------------------------------------------------------------
 
     /// Emits a MOV instruction from `src` to `dst`.
-    fn emit_mov(
-        &self,
-        dst: MachineOperand,
-        src: MachineOperand,
-        mbb: &mut MachineBasicBlock,
-    ) {
+    fn emit_mov(&self, dst: MachineOperand, src: MachineOperand, mbb: &mut MachineBasicBlock) {
         let mut mov = MachineInstr::new(I686Opcode::Mov.as_u32());
         mov.add_operand(dst);
         mov.add_operand(src);
@@ -2301,24 +2279,18 @@ impl<'a> I686InstrSel<'a> {
     ) -> MachineOperand {
         match &op {
             MachineOperand::Memory { .. } => op,
-            MachineOperand::Register(reg) => {
-                MachineOperand::Memory {
-                    base: *reg,
-                    offset: 0,
-                    index: None,
-                    scale: 1,
-                }
-            }
+            MachineOperand::Register(reg) => MachineOperand::Memory {
+                base: *reg,
+                offset: 0,
+                index: None,
+                scale: 1,
+            },
             MachineOperand::VirtualReg(_) => {
                 // Virtual register — keep as-is for now; register allocator
                 // will assign a physical register which can then be used as base.
                 // For the memory addressing mode, we use EAX as a temporary.
                 let tmp = self.alloc_vreg_raw();
-                self.emit_mov(
-                    MachineOperand::VirtualReg(ValueId(tmp)),
-                    op,
-                    mbb,
-                );
+                self.emit_mov(MachineOperand::VirtualReg(ValueId(tmp)), op, mbb);
                 MachineOperand::Memory {
                     base: PhysReg::NONE,
                     offset: 0,
@@ -2349,11 +2321,7 @@ impl<'a> I686InstrSel<'a> {
             _ => {
                 // Label, Immediate, FrameIndex — move to register first.
                 let tmp = self.alloc_vreg_raw();
-                self.emit_mov(
-                    MachineOperand::VirtualReg(ValueId(tmp)),
-                    op,
-                    mbb,
-                );
+                self.emit_mov(MachineOperand::VirtualReg(ValueId(tmp)), op, mbb);
                 MachineOperand::Memory {
                     base: PhysReg::NONE,
                     offset: 0,
@@ -2400,9 +2368,7 @@ impl<'a> I686InstrSel<'a> {
             IrType::F64 => 8,
             IrType::F80 => 12, // 80-bit extended, 12 bytes on i686 per SysV i386 ABI
             IrType::Ptr => 4,  // 32-bit pointers on i686
-            IrType::Array { element, count } => {
-                self.type_size_bytes(element) * (*count as u32)
-            }
+            IrType::Array { element, count } => self.type_size_bytes(element) * (*count as u32),
             IrType::Struct { fields, packed } => {
                 if *packed {
                     fields.iter().map(|f| self.type_size_bytes(f)).sum()
@@ -2448,12 +2414,12 @@ impl<'a> I686InstrSel<'a> {
             IrType::I8 => 1,
             IrType::I16 => 2,
             IrType::I32 => 4,
-            IrType::I64 => 4,  // 8-byte values are 4-byte aligned on i686
+            IrType::I64 => 4, // 8-byte values are 4-byte aligned on i686
             IrType::I128 => 4,
             IrType::F32 => 4,
-            IrType::F64 => 4,  // 4-byte aligned on i686 (not 8 like x86-64)
-            IrType::F80 => 4,  // 4-byte aligned on i686 per SysV i386 ABI
-            IrType::Ptr => 4,  // 32-bit pointers, 4-byte aligned
+            IrType::F64 => 4, // 4-byte aligned on i686 (not 8 like x86-64)
+            IrType::F80 => 4, // 4-byte aligned on i686 per SysV i386 ABI
+            IrType::Ptr => 4, // 32-bit pointers, 4-byte aligned
             IrType::Array { element, .. } => self.type_alignment(element),
             IrType::Struct { fields, packed } => {
                 if *packed {

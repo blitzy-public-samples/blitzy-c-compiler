@@ -35,11 +35,10 @@
 //! - `V0`–`V31` / `D0`–`D31` / `S0`–`S31` → 5-bit encoding 0–31
 
 use super::relocations::AArch64RelocationType;
-use crate::backend::traits::{MachineInstr, MachineOperand, PhysReg};
 use crate::backend::aarch64::registers::{
-    encoding, is_gpr, is_gpr_w, is_fp_reg,
-    XZR, WZR, SP, WSP, x_to_w, w_to_x,
+    encoding, is_fp_reg, is_gpr, is_gpr_w, w_to_x, x_to_w, SP, WSP, WZR, XZR,
 };
+use crate::backend::traits::{MachineInstr, MachineOperand, PhysReg};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -1311,7 +1310,7 @@ pub fn encode_ldp_fp(ftype: u8, rt1: u8, rt2: u8, rn: u8, imm7: i8) -> u32 {
     let opc_bits = opc << 30;
     let fixed = 0b101u32 << 27;
     let v_bit = 1u32 << 26; // V=1 for SIMD/FP
-    // idx = 10 for signed offset variant
+                            // idx = 10 for signed offset variant
     let idx = 0b10u32 << 23;
     let l_bit = 1u32 << 22; // L=1 for load
     let imm7_bits = ((imm7 as u32) & 0x7F) << 15;
@@ -1628,7 +1627,10 @@ pub fn encode_msr(sysreg: u16, rt: u8) -> u32 {
 /// Construct an [`EncodedInstruction`] with no relocation.
 #[inline(always)]
 fn encoded(bytes: u32) -> EncodedInstruction {
-    EncodedInstruction { bytes, relocation: None }
+    EncodedInstruction {
+        bytes,
+        relocation: None,
+    }
 }
 
 /// Construct an [`EncodedInstruction`] carrying a relocation.
@@ -1695,7 +1697,11 @@ fn sf_from_reg(ops: &[MachineOperand], idx: usize) -> bool {
 fn size_from_reg(ops: &[MachineOperand], idx: usize) -> u8 {
     match ops.get(idx) {
         Some(MachineOperand::Register(phys)) => {
-            if is_gpr_w(*phys) { 0b10 } else { 0b11 }
+            if is_gpr_w(*phys) {
+                0b10
+            } else {
+                0b11
+            }
         }
         _ => 0b11,
     }
@@ -1733,12 +1739,11 @@ fn extract_base_offset(ops: &[MachineOperand], base_idx: usize) -> (u8, u16) {
 /// Extract register-offset addressing operands for load/store register mode.
 ///
 /// Returns `(base_hw, index_hw, extend_type, shift_flag)`.
-fn extract_reg_offset(
-    ops: &[MachineOperand],
-    base_idx: usize,
-) -> (u8, u8, ExtendType, bool) {
+fn extract_reg_offset(ops: &[MachineOperand], base_idx: usize) -> (u8, u8, ExtendType, bool) {
     match ops.get(base_idx) {
-        Some(MachineOperand::Memory { base, index, scale, .. }) => {
+        Some(MachineOperand::Memory {
+            base, index, scale, ..
+        }) => {
             let rn = encoding(*base);
             let rm = index.map_or(0, encoding);
             (rn, rm, ExtendType::LSL, *scale > 0)
@@ -1806,7 +1811,7 @@ fn extend_type_from_u8(v: u8) -> ExtendType {
         0b011 => ExtendType::LSL,
         0b110 => ExtendType::SXTW,
         0b111 => ExtendType::SXTX,
-        _     => ExtendType::LSL,
+        _ => ExtendType::LSL,
     }
 }
 
@@ -1847,8 +1852,15 @@ pub fn encode_instruction(instr: &MachineInstr) -> EncodedInstruction {
         !instr.is_terminator
             || matches!(
                 opcode,
-                OP_B | OP_BL | OP_BR | OP_BLR | OP_RET | OP_B_COND
-                    | OP_CBZ | OP_CBNZ | OP_TBZ | OP_TBNZ
+                OP_B | OP_BL
+                    | OP_BR
+                    | OP_BLR
+                    | OP_RET
+                    | OP_B_COND
+                    | OP_CBZ
+                    | OP_CBNZ
+                    | OP_TBZ
+                    | OP_TBNZ
             ),
         "is_terminator flag set on non-branch opcode {:#06x}",
         opcode
@@ -1906,53 +1918,53 @@ fn dispatch_dp_imm(instr: &MachineInstr) -> EncodedInstruction {
             let imm12 = extract_imm(ops, 2) as u16;
             let shift = ops.len() > 3 && extract_imm(ops, 3) != 0;
             let w = match instr.opcode {
-                OP_ADD_IMM  => encode_add_imm(sf, rd, rn, imm12, shift),
-                OP_SUB_IMM  => encode_sub_imm(sf, rd, rn, imm12, shift),
+                OP_ADD_IMM => encode_add_imm(sf, rd, rn, imm12, shift),
+                OP_SUB_IMM => encode_sub_imm(sf, rd, rn, imm12, shift),
                 OP_ADDS_IMM => encode_adds_imm(sf, rd, rn, imm12, shift),
-                _           => encode_subs_imm(sf, rd, rn, imm12, shift),
+                _ => encode_subs_imm(sf, rd, rn, imm12, shift),
             };
             encoded(w)
         }
         // ----- Logical immediate -----
         OP_AND_IMM | OP_ORR_IMM | OP_EOR_IMM | OP_ANDS_IMM => {
-            let sf   = sf_from_reg(ops, 0);
-            let rd   = extract_reg(ops, 0);
-            let rn   = extract_reg(ops, 1);
-            let n    = extract_imm(ops, 2) != 0;
+            let sf = sf_from_reg(ops, 0);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let n = extract_imm(ops, 2) != 0;
             let immr = extract_imm(ops, 3) as u8;
             let imms = extract_imm(ops, 4) as u8;
             let w = match instr.opcode {
-                OP_AND_IMM  => encode_and_imm(sf, rd, rn, n, immr, imms),
-                OP_ORR_IMM  => encode_orr_imm(sf, rd, rn, n, immr, imms),
-                OP_EOR_IMM  => encode_eor_imm(sf, rd, rn, n, immr, imms),
-                _           => encode_ands_imm(sf, rd, rn, n, immr, imms),
+                OP_AND_IMM => encode_and_imm(sf, rd, rn, n, immr, imms),
+                OP_ORR_IMM => encode_orr_imm(sf, rd, rn, n, immr, imms),
+                OP_EOR_IMM => encode_eor_imm(sf, rd, rn, n, immr, imms),
+                _ => encode_ands_imm(sf, rd, rn, n, immr, imms),
             };
             encoded(w)
         }
         // ----- Move wide immediate -----
         OP_MOVZ | OP_MOVK | OP_MOVN => {
-            let sf    = sf_from_reg(ops, 0);
-            let rd    = extract_reg(ops, 0);
+            let sf = sf_from_reg(ops, 0);
+            let rd = extract_reg(ops, 0);
             let imm16 = extract_imm(ops, 1) as u16;
-            let hw    = extract_imm(ops, 2) as u8;
+            let hw = extract_imm(ops, 2) as u8;
             let w = match instr.opcode {
                 OP_MOVZ => encode_movz(sf, rd, imm16, hw),
                 OP_MOVK => encode_movk(sf, rd, imm16, hw),
-                _       => encode_movn(sf, rd, imm16, hw),
+                _ => encode_movn(sf, rd, imm16, hw),
             };
             encoded(w)
         }
         // ----- Bitfield operations -----
         OP_SBFM | OP_UBFM | OP_BFM => {
-            let sf   = sf_from_reg(ops, 0);
-            let rd   = extract_reg(ops, 0);
-            let rn   = extract_reg(ops, 1);
+            let sf = sf_from_reg(ops, 0);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
             let immr = extract_imm(ops, 2) as u8;
             let imms = extract_imm(ops, 3) as u8;
             let w = match instr.opcode {
                 OP_SBFM => encode_sbfm(sf, rd, rn, immr, imms),
                 OP_UBFM => encode_ubfm(sf, rd, rn, immr, imms),
-                _       => encode_bfm(sf, rd, rn, immr, imms),
+                _ => encode_bfm(sf, rd, rn, immr, imms),
             };
             encoded(w)
         }
@@ -1996,42 +2008,50 @@ fn dispatch_dp_reg(instr: &MachineInstr) -> EncodedInstruction {
     match instr.opcode {
         // ----- Arithmetic shifted-register -----
         OP_ADD_REG | OP_SUB_REG | OP_ADDS_REG | OP_SUBS_REG => {
-            let sf  = sf_from_reg(ops, 0);
-            let rd  = extract_reg(ops, 0);
-            let rn  = extract_reg(ops, 1);
-            let rm  = extract_reg(ops, 2);
+            let sf = sf_from_reg(ops, 0);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let rm = extract_reg(ops, 2);
             let sht = if ops.len() > 3 {
                 shift_type_from_u8(extract_imm(ops, 3) as u8)
             } else {
                 ShiftType::LSL
             };
-            let amt = if ops.len() > 4 { extract_imm(ops, 4) as u8 } else { 0 };
+            let amt = if ops.len() > 4 {
+                extract_imm(ops, 4) as u8
+            } else {
+                0
+            };
             let w = match instr.opcode {
-                OP_ADD_REG  => encode_add_reg(sf, rd, rn, rm, sht, amt),
-                OP_SUB_REG  => encode_sub_reg(sf, rd, rn, rm, sht, amt),
+                OP_ADD_REG => encode_add_reg(sf, rd, rn, rm, sht, amt),
+                OP_SUB_REG => encode_sub_reg(sf, rd, rn, rm, sht, amt),
                 OP_ADDS_REG => encode_adds_reg(sf, rd, rn, rm, sht, amt),
-                _           => encode_subs_reg(sf, rd, rn, rm, sht, amt),
+                _ => encode_subs_reg(sf, rd, rn, rm, sht, amt),
             };
             encoded(w)
         }
         // ----- Logical shifted-register -----
         OP_AND_REG | OP_ORR_REG | OP_EOR_REG | OP_ORN_REG | OP_BIC_REG => {
-            let sf  = sf_from_reg(ops, 0);
-            let rd  = extract_reg(ops, 0);
-            let rn  = extract_reg(ops, 1);
-            let rm  = extract_reg(ops, 2);
+            let sf = sf_from_reg(ops, 0);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let rm = extract_reg(ops, 2);
             let sht = if ops.len() > 3 {
                 shift_type_from_u8(extract_imm(ops, 3) as u8)
             } else {
                 ShiftType::LSL
             };
-            let amt = if ops.len() > 4 { extract_imm(ops, 4) as u8 } else { 0 };
+            let amt = if ops.len() > 4 {
+                extract_imm(ops, 4) as u8
+            } else {
+                0
+            };
             let w = match instr.opcode {
                 OP_AND_REG => encode_and_reg(sf, rd, rn, rm, sht, amt),
                 OP_ORR_REG => encode_orr_reg(sf, rd, rn, rm, sht, amt),
                 OP_EOR_REG => encode_eor_reg(sf, rd, rn, rm, sht, amt),
                 OP_ORN_REG => encode_orn_reg(sf, rd, rn, rm, sht, amt),
-                _          => encode_bic_reg(sf, rd, rn, rm, sht, amt),
+                _ => encode_bic_reg(sf, rd, rn, rm, sht, amt),
             };
             encoded(w)
         }
@@ -2042,7 +2062,11 @@ fn dispatch_dp_reg(instr: &MachineInstr) -> EncodedInstruction {
             let rn = extract_reg(ops, 1);
             let rm = extract_reg(ops, 2);
             // Fourth register is Ra; XZR encoding (31) gives MUL / MNEG aliases.
-            let ra = if ops.len() > 3 { extract_reg(ops, 3) } else { 31 };
+            let ra = if ops.len() > 3 {
+                extract_reg(ops, 3)
+            } else {
+                31
+            };
             let w = if instr.opcode == OP_MADD {
                 encode_madd(sf, rd, rn, rm, ra)
             } else {
@@ -2051,20 +2075,16 @@ fn dispatch_dp_reg(instr: &MachineInstr) -> EncodedInstruction {
             encoded(w)
         }
         // ----- 64-bit multiply-high (always 64-bit operands) -----
-        OP_SMULH => {
-            encoded(encode_smulh(
-                extract_reg(ops, 0),
-                extract_reg(ops, 1),
-                extract_reg(ops, 2),
-            ))
-        }
-        OP_UMULH => {
-            encoded(encode_umulh(
-                extract_reg(ops, 0),
-                extract_reg(ops, 1),
-                extract_reg(ops, 2),
-            ))
-        }
+        OP_SMULH => encoded(encode_smulh(
+            extract_reg(ops, 0),
+            extract_reg(ops, 1),
+            extract_reg(ops, 2),
+        )),
+        OP_UMULH => encoded(encode_umulh(
+            extract_reg(ops, 0),
+            extract_reg(ops, 1),
+            extract_reg(ops, 2),
+        )),
         // ----- Divide -----
         OP_SDIV | OP_UDIV => {
             let sf = sf_from_reg(ops, 0);
@@ -2089,7 +2109,7 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         // ----- LDR / STR with unsigned immediate offset -----
         OP_LDR_IMM | OP_STR_IMM => {
             let size = size_from_reg(ops, 0);
-            let rt   = extract_reg(ops, 0);
+            let rt = extract_reg(ops, 0);
             let (rn, imm12) = extract_base_offset(ops, 1);
             // A trailing Symbol operand signals a GOT load relocation
             // (e.g., LDR Xd, [Xn, :got_lo12:sym]).
@@ -2119,16 +2139,16 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
             encoded(w)
         }
         // ----- Byte / halfword / sign-extending loads & stores -----
-        OP_LDRB_IMM | OP_STRB_IMM | OP_LDRH_IMM | OP_STRH_IMM
-        | OP_LDRSB_IMM | OP_LDRSH_IMM | OP_LDRSW_IMM => {
+        OP_LDRB_IMM | OP_STRB_IMM | OP_LDRH_IMM | OP_STRH_IMM | OP_LDRSB_IMM | OP_LDRSH_IMM
+        | OP_LDRSW_IMM => {
             let rt = extract_reg(ops, 0);
             let (rn, imm12) = extract_base_offset(ops, 1);
             let sf = sf_from_reg(ops, 0);
             let w = match instr.opcode {
-                OP_LDRB_IMM  => encode_ldrb_imm(rt, rn, imm12),
-                OP_STRB_IMM  => encode_strb_imm(rt, rn, imm12),
-                OP_LDRH_IMM  => encode_ldrh_imm(rt, rn, imm12),
-                OP_STRH_IMM  => encode_strh_imm(rt, rn, imm12),
+                OP_LDRB_IMM => encode_ldrb_imm(rt, rn, imm12),
+                OP_STRB_IMM => encode_strb_imm(rt, rn, imm12),
+                OP_LDRH_IMM => encode_ldrh_imm(rt, rn, imm12),
+                OP_STRH_IMM => encode_strh_imm(rt, rn, imm12),
                 OP_LDRSB_IMM => encode_ldrsb_imm(sf, rt, rn, imm12),
                 OP_LDRSH_IMM => encode_ldrsh_imm(sf, rt, rn, imm12),
                 OP_LDRSW_IMM => {
@@ -2143,7 +2163,7 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         // ----- LDR / STR with register offset -----
         OP_LDR_REG | OP_STR_REG => {
             let size = size_from_reg(ops, 0);
-            let rt   = extract_reg(ops, 0);
+            let rt = extract_reg(ops, 0);
             let (rn, rm, ext, shift) = extract_reg_offset(ops, 1);
             let w = if instr.opcode == OP_LDR_REG {
                 encode_ldr_reg(size, rt, rn, rm, ext, shift)
@@ -2154,9 +2174,9 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- Pre-indexed LDR / STR -----
         OP_LDR_PRE | OP_STR_PRE => {
-            let size  = size_from_reg(ops, 0);
-            let rt    = extract_reg(ops, 0);
-            let rn    = extract_reg(ops, 1);
+            let size = size_from_reg(ops, 0);
+            let rt = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
             let simm9 = extract_imm(ops, 2) as i16;
             let w = if instr.opcode == OP_LDR_PRE {
                 encode_ldr_pre(size, rt, rn, simm9)
@@ -2167,9 +2187,9 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- Post-indexed LDR / STR -----
         OP_LDR_POST | OP_STR_POST => {
-            let size  = size_from_reg(ops, 0);
-            let rt    = extract_reg(ops, 0);
-            let rn    = extract_reg(ops, 1);
+            let size = size_from_reg(ops, 0);
+            let rt = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
             let simm9 = extract_imm(ops, 2) as i16;
             let w = if instr.opcode == OP_LDR_POST {
                 encode_ldr_post(size, rt, rn, simm9)
@@ -2180,10 +2200,10 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- LDP / STP — signed offset -----
         OP_LDP | OP_STP => {
-            let sf   = sf_from_reg(ops, 0);
-            let rt1  = extract_reg(ops, 0);
-            let rt2  = extract_reg(ops, 1);
-            let rn   = extract_reg(ops, 2);
+            let sf = sf_from_reg(ops, 0);
+            let rt1 = extract_reg(ops, 0);
+            let rt2 = extract_reg(ops, 1);
+            let rn = extract_reg(ops, 2);
             let imm7 = extract_imm(ops, 3) as i8;
             let w = if instr.opcode == OP_LDP {
                 encode_ldp(sf, rt1, rt2, rn, imm7)
@@ -2194,10 +2214,10 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- LDP / STP — pre-indexed -----
         OP_LDP_PRE | OP_STP_PRE => {
-            let sf   = sf_from_reg(ops, 0);
-            let rt1  = extract_reg(ops, 0);
-            let rt2  = extract_reg(ops, 1);
-            let rn   = extract_reg(ops, 2);
+            let sf = sf_from_reg(ops, 0);
+            let rt1 = extract_reg(ops, 0);
+            let rt2 = extract_reg(ops, 1);
+            let rn = extract_reg(ops, 2);
             let imm7 = extract_imm(ops, 3) as i8;
             let w = if instr.opcode == OP_LDP_PRE {
                 encode_ldp_pre(sf, rt1, rt2, rn, imm7)
@@ -2208,10 +2228,10 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- LDP / STP — post-indexed -----
         OP_LDP_POST | OP_STP_POST => {
-            let sf   = sf_from_reg(ops, 0);
-            let rt1  = extract_reg(ops, 0);
-            let rt2  = extract_reg(ops, 1);
-            let rn   = extract_reg(ops, 2);
+            let sf = sf_from_reg(ops, 0);
+            let rt1 = extract_reg(ops, 0);
+            let rt2 = extract_reg(ops, 1);
+            let rn = extract_reg(ops, 2);
             let imm7 = extract_imm(ops, 3) as i8;
             let w = if instr.opcode == OP_LDP_POST {
                 encode_ldp_post(sf, rt1, rt2, rn, imm7)
@@ -2222,15 +2242,15 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- LDR (literal) — PC-relative load -----
         OP_LDR_LITERAL => {
-            let sf    = sf_from_reg(ops, 0);
-            let rt    = extract_reg(ops, 0);
+            let sf = sf_from_reg(ops, 0);
+            let rt = extract_reg(ops, 0);
             let imm19 = extract_imm(ops, 1) as i32;
             encoded(encode_ldr_literal(sf, rt, imm19))
         }
         // ----- FP LDR / STR with unsigned immediate -----
         OP_LDR_FP_IMM | OP_STR_FP_IMM => {
-            let rt    = extract_reg(ops, 0);
-            let rn    = extract_reg(ops, 1);
+            let rt = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
             let imm12 = extract_imm(ops, 2) as u16;
             let ftype = extract_imm(ops, 3) as u8;
             let w = if instr.opcode == OP_LDR_FP_IMM {
@@ -2242,10 +2262,10 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- FP LDP / STP -----
         OP_LDP_FP | OP_STP_FP => {
-            let rt1   = extract_reg(ops, 0);
-            let rt2   = extract_reg(ops, 1);
-            let rn    = extract_reg(ops, 2);
-            let imm7  = extract_imm(ops, 3) as i8;
+            let rt1 = extract_reg(ops, 0);
+            let rt2 = extract_reg(ops, 1);
+            let rn = extract_reg(ops, 2);
+            let imm7 = extract_imm(ops, 3) as i8;
             let ftype = extract_imm(ops, 4) as u8;
             let w = if instr.opcode == OP_LDP_FP {
                 encode_ldp_fp(ftype, rt1, rt2, rn, imm7)
@@ -2303,53 +2323,81 @@ fn dispatch_branch(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- CBZ / CBNZ (compare and branch) -----
         OP_CBZ | OP_CBNZ => {
-            let sf    = sf_from_reg(ops, 0);
-            let rt    = extract_reg(ops, 0);
-            let is_z  = instr.opcode == OP_CBZ;
+            let sf = sf_from_reg(ops, 0);
+            let rt = extract_reg(ops, 0);
+            let is_z = instr.opcode == OP_CBZ;
             match ops.get(1) {
                 Some(MachineOperand::Symbol(sym)) => {
-                    let w = if is_z { encode_cbz(sf, rt, 0) } else { encode_cbnz(sf, rt, 0) };
+                    let w = if is_z {
+                        encode_cbz(sf, rt, 0)
+                    } else {
+                        encode_cbnz(sf, rt, 0)
+                    };
                     encoded_reloc(w, AArch64RelocationType::R_AARCH64_CONDBR19, sym.clone(), 0)
                 }
                 Some(MachineOperand::Label(_id)) => {
-                    let w = if is_z { encode_cbz(sf, rt, 0) } else { encode_cbnz(sf, rt, 0) };
+                    let w = if is_z {
+                        encode_cbz(sf, rt, 0)
+                    } else {
+                        encode_cbnz(sf, rt, 0)
+                    };
                     encoded(w)
                 }
                 _ => {
                     let imm19 = extract_imm(ops, 1) as i32;
-                    let w = if is_z { encode_cbz(sf, rt, imm19) } else { encode_cbnz(sf, rt, imm19) };
+                    let w = if is_z {
+                        encode_cbz(sf, rt, imm19)
+                    } else {
+                        encode_cbnz(sf, rt, imm19)
+                    };
                     encoded(w)
                 }
             }
         }
         // ----- TBZ / TBNZ (test and branch) -----
         OP_TBZ | OP_TBNZ => {
-            let rt     = extract_reg(ops, 0);
-            let bit    = extract_imm(ops, 1) as u8;
+            let rt = extract_reg(ops, 0);
+            let bit = extract_imm(ops, 1) as u8;
             let is_tbz = instr.opcode == OP_TBZ;
             match ops.get(2) {
                 Some(MachineOperand::Symbol(sym)) => {
-                    let w = if is_tbz { encode_tbz(rt, bit, 0) } else { encode_tbnz(rt, bit, 0) };
+                    let w = if is_tbz {
+                        encode_tbz(rt, bit, 0)
+                    } else {
+                        encode_tbnz(rt, bit, 0)
+                    };
                     encoded_reloc(w, AArch64RelocationType::R_AARCH64_TSTBR14, sym.clone(), 0)
                 }
                 Some(MachineOperand::Label(_id)) => {
-                    let w = if is_tbz { encode_tbz(rt, bit, 0) } else { encode_tbnz(rt, bit, 0) };
+                    let w = if is_tbz {
+                        encode_tbz(rt, bit, 0)
+                    } else {
+                        encode_tbnz(rt, bit, 0)
+                    };
                     encoded(w)
                 }
                 _ => {
                     let imm14 = extract_imm(ops, 2) as i16;
-                    let w = if is_tbz { encode_tbz(rt, bit, imm14) } else { encode_tbnz(rt, bit, imm14) };
+                    let w = if is_tbz {
+                        encode_tbz(rt, bit, imm14)
+                    } else {
+                        encode_tbnz(rt, bit, imm14)
+                    };
                     encoded(w)
                 }
             }
         }
         // ----- BR (indirect jump) -----
-        OP_BR  => encoded(encode_br(extract_reg(ops, 0))),
+        OP_BR => encoded(encode_br(extract_reg(ops, 0))),
         // ----- BLR (indirect call) -----
         OP_BLR => encoded(encode_blr(extract_reg(ops, 0))),
         // ----- RET (return via Xn, default X30) -----
         OP_RET => {
-            let rn = if ops.is_empty() { 30 } else { extract_reg(ops, 0) };
+            let rn = if ops.is_empty() {
+                30
+            } else {
+                extract_reg(ops, 0)
+            };
             encoded(encode_ret(rn))
         }
         _ => encoded(encode_nop()),
@@ -2361,32 +2409,32 @@ fn dispatch_cond(instr: &MachineInstr) -> EncodedInstruction {
     let ops = &instr.operands;
     match instr.opcode {
         OP_CCMP_REG => {
-            let sf   = sf_from_reg(ops, 0);
-            let rn   = extract_reg(ops, 0);
-            let rm   = extract_reg(ops, 1);
+            let sf = sf_from_reg(ops, 0);
+            let rn = extract_reg(ops, 0);
+            let rm = extract_reg(ops, 1);
             let nzcv = extract_imm(ops, 2) as u8;
             let cond = extract_imm(ops, 3) as u8;
             encoded(encode_ccmp_reg(sf, rn, rm, nzcv, cond))
         }
         OP_CCMP_IMM => {
-            let sf   = sf_from_reg(ops, 0);
-            let rn   = extract_reg(ops, 0);
+            let sf = sf_from_reg(ops, 0);
+            let rn = extract_reg(ops, 0);
             let imm5 = extract_imm(ops, 1) as u8;
             let nzcv = extract_imm(ops, 2) as u8;
             let cond = extract_imm(ops, 3) as u8;
             encoded(encode_ccmp_imm(sf, rn, imm5, nzcv, cond))
         }
         OP_CSEL | OP_CSINC | OP_CSINV | OP_CSNEG => {
-            let sf   = sf_from_reg(ops, 0);
-            let rd   = extract_reg(ops, 0);
-            let rn   = extract_reg(ops, 1);
-            let rm   = extract_reg(ops, 2);
+            let sf = sf_from_reg(ops, 0);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let rm = extract_reg(ops, 2);
             let cond = extract_imm(ops, 3) as u8;
             let w = match instr.opcode {
-                OP_CSEL  => encode_csel(sf, rd, rn, rm, cond),
+                OP_CSEL => encode_csel(sf, rd, rn, rm, cond),
                 OP_CSINC => encode_csinc(sf, rd, rn, rm, cond),
                 OP_CSINV => encode_csinv(sf, rd, rn, rm, cond),
-                _        => encode_csneg(sf, rd, rn, rm, cond),
+                _ => encode_csneg(sf, rd, rn, rm, cond),
             };
             encoded(w)
         }
@@ -2400,55 +2448,55 @@ fn dispatch_fp(instr: &MachineInstr) -> EncodedInstruction {
     match instr.opcode {
         // ----- Two-source FP arithmetic -----
         OP_FADD | OP_FSUB | OP_FMUL | OP_FDIV => {
-            let rd    = extract_reg(ops, 0);
-            let rn    = extract_reg(ops, 1);
-            let rm    = extract_reg(ops, 2);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let rm = extract_reg(ops, 2);
             let ftype = extract_imm(ops, 3) as u8;
             let w = match instr.opcode {
                 OP_FADD => encode_fadd(ftype, rd, rn, rm),
                 OP_FSUB => encode_fsub(ftype, rd, rn, rm),
                 OP_FMUL => encode_fmul(ftype, rd, rn, rm),
-                _       => encode_fdiv(ftype, rd, rn, rm),
+                _ => encode_fdiv(ftype, rd, rn, rm),
             };
             encoded(w)
         }
         // ----- One-source FP arithmetic -----
         OP_FNEG | OP_FABS | OP_FSQRT => {
-            let rd    = extract_reg(ops, 0);
-            let rn    = extract_reg(ops, 1);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
             let ftype = extract_imm(ops, 2) as u8;
             let w = match instr.opcode {
-                OP_FNEG  => encode_fneg(ftype, rd, rn),
-                OP_FABS  => encode_fabs(ftype, rd, rn),
-                _        => encode_fsqrt(ftype, rd, rn),
+                OP_FNEG => encode_fneg(ftype, rd, rn),
+                OP_FABS => encode_fabs(ftype, rd, rn),
+                _ => encode_fsqrt(ftype, rd, rn),
             };
             encoded(w)
         }
         // ----- FP comparison -----
         OP_FCMP => {
-            let rn    = extract_reg(ops, 0);
-            let rm    = extract_reg(ops, 1);
+            let rn = extract_reg(ops, 0);
+            let rm = extract_reg(ops, 1);
             let ftype = extract_imm(ops, 2) as u8;
             encoded(encode_fcmp(ftype, rn, rm))
         }
         OP_FCMP_ZERO => {
-            let rn    = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 0);
             let ftype = extract_imm(ops, 1) as u8;
             encoded(encode_fcmp_zero(ftype, rn))
         }
         // ----- FP register move -----
         OP_FMOV_REG => {
-            let rd    = extract_reg(ops, 0);
-            let rn    = extract_reg(ops, 1);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
             let ftype = extract_imm(ops, 2) as u8;
             encoded(encode_fmov_reg(ftype, rd, rn))
         }
         // ----- FP → GPR move -----
         OP_FMOV_TO_GPR => {
             let rd_phys = extract_phys(ops, 0);
-            let sf    = !is_gpr_w(rd_phys);
-            let rd    = encoding(rd_phys);
-            let rn    = extract_reg(ops, 1);
+            let sf = !is_gpr_w(rd_phys);
+            let rd = encoding(rd_phys);
+            let rn = extract_reg(ops, 1);
             let ftype = extract_imm(ops, 2) as u8;
             encoded(encode_fmov_to_gpr(sf, ftype, rd, rn))
         }
@@ -2456,25 +2504,25 @@ fn dispatch_fp(instr: &MachineInstr) -> EncodedInstruction {
         OP_FMOV_FROM_GPR => {
             let rd = extract_reg(ops, 0);
             let rn_phys = extract_phys(ops, 1);
-            let sf    = !is_gpr_w(rn_phys);
-            let rn    = encoding(rn_phys);
+            let sf = !is_gpr_w(rn_phys);
+            let rn = encoding(rn_phys);
             let ftype = extract_imm(ops, 2) as u8;
             encoded(encode_fmov_from_gpr(sf, ftype, rd, rn))
         }
         // ----- FP immediate move -----
         OP_FMOV_IMM => {
-            let rd    = extract_reg(ops, 0);
-            let imm8  = extract_imm(ops, 1) as u8;
+            let rd = extract_reg(ops, 0);
+            let imm8 = extract_imm(ops, 1) as u8;
             let ftype = extract_imm(ops, 2) as u8;
             encoded(encode_fmov_imm(ftype, rd, imm8))
         }
         // ----- Integer → FP conversion -----
         OP_SCVTF | OP_UCVTF => {
-            let rd       = extract_reg(ops, 0);
-            let rn_phys  = extract_phys(ops, 1);
-            let sf       = !is_gpr_w(rn_phys);
-            let rn       = encoding(rn_phys);
-            let ftype    = extract_imm(ops, 2) as u8;
+            let rd = extract_reg(ops, 0);
+            let rn_phys = extract_phys(ops, 1);
+            let sf = !is_gpr_w(rn_phys);
+            let rn = encoding(rn_phys);
+            let ftype = extract_imm(ops, 2) as u8;
             let w = if instr.opcode == OP_SCVTF {
                 encode_scvtf(sf, ftype, rd, rn)
             } else {
@@ -2485,10 +2533,10 @@ fn dispatch_fp(instr: &MachineInstr) -> EncodedInstruction {
         // ----- FP → integer conversion (round toward zero) -----
         OP_FCVTZS | OP_FCVTZU => {
             let rd_phys = extract_phys(ops, 0);
-            let sf      = !is_gpr_w(rd_phys);
-            let rd      = encoding(rd_phys);
-            let rn      = extract_reg(ops, 1);
-            let ftype   = extract_imm(ops, 2) as u8;
+            let sf = !is_gpr_w(rd_phys);
+            let rd = encoding(rd_phys);
+            let rn = extract_reg(ops, 1);
+            let ftype = extract_imm(ops, 2) as u8;
             let w = if instr.opcode == OP_FCVTZS {
                 encode_fcvtzs(sf, ftype, rd, rn)
             } else {
@@ -2498,8 +2546,8 @@ fn dispatch_fp(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- FP → FP conversion (between precisions) -----
         OP_FCVT => {
-            let rd        = extract_reg(ops, 0);
-            let rn        = extract_reg(ops, 1);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
             let dst_ftype = extract_imm(ops, 2) as u8;
             let src_ftype = extract_imm(ops, 3) as u8;
             encoded(encode_fcvt(dst_ftype, src_ftype, rd, rn))
@@ -2519,13 +2567,13 @@ fn dispatch_sys(instr: &MachineInstr) -> EncodedInstruction {
         OP_DSB => encoded(encode_dsb(extract_imm(ops, 0) as u8)),
         OP_ISB => encoded(encode_isb()),
         OP_MRS => {
-            let rt     = extract_reg(ops, 0);
+            let rt = extract_reg(ops, 0);
             let sysreg = extract_imm(ops, 1) as u16;
             encoded(encode_mrs(rt, sysreg))
         }
         OP_MSR => {
             let sysreg = extract_imm(ops, 0) as u16;
-            let rt     = extract_reg(ops, 1);
+            let rt = extract_reg(ops, 1);
             encoded(encode_msr(sysreg, rt))
         }
         _ => encoded(encode_nop()),
@@ -2542,7 +2590,11 @@ fn dispatch_data(instr: &MachineInstr) -> EncodedInstruction {
     match instr.opcode {
         OP_DATA64 => {
             if let Some(MachineOperand::Symbol(sym)) = ops.first() {
-                let addend = if ops.len() > 1 { extract_imm(ops, 1) } else { 0 };
+                let addend = if ops.len() > 1 {
+                    extract_imm(ops, 1)
+                } else {
+                    0
+                };
                 encoded_reloc(
                     0,
                     AArch64RelocationType::R_AARCH64_ABS64,
@@ -2555,7 +2607,11 @@ fn dispatch_data(instr: &MachineInstr) -> EncodedInstruction {
         }
         OP_DATA32 => {
             if let Some(MachineOperand::Symbol(sym)) = ops.first() {
-                let addend = if ops.len() > 1 { extract_imm(ops, 1) } else { 0 };
+                let addend = if ops.len() > 1 {
+                    extract_imm(ops, 1)
+                } else {
+                    0
+                };
                 encoded_reloc(
                     0,
                     AArch64RelocationType::R_AARCH64_ABS32,

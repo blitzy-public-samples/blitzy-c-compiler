@@ -705,9 +705,7 @@ impl AArch64Assembler {
     /// a `Label` operand, or `None` for non-branch / external-target instructions.
     fn classify_branch_ref(&self, instr: &MachineInstr) -> Option<(u32, BranchRefType)> {
         // Import opcode constants from encoder module for matching.
-        use encoder::{
-            OP_B, OP_BL, OP_B_COND, OP_CBZ, OP_CBNZ, OP_TBZ, OP_TBNZ, OP_ADR,
-        };
+        use encoder::{OP_ADR, OP_B, OP_BL, OP_B_COND, OP_CBNZ, OP_CBZ, OP_TBNZ, OP_TBZ};
 
         // Only branch-class instructions with label operands produce local
         // branch references. Instructions with Symbol operands produce

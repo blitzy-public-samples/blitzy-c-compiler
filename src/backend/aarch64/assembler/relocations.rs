@@ -53,7 +53,6 @@ use crate::backend::traits::RelocationType;
 #[allow(non_camel_case_types)]
 pub enum AArch64RelocationType {
     // ----- Absolute Data Relocations -----
-
     /// `S + A` — 64-bit absolute address.
     R_AARCH64_ABS64,
     /// `S + A` — 32-bit absolute address (truncated, overflow-checked).
@@ -62,7 +61,6 @@ pub enum AArch64RelocationType {
     R_AARCH64_ABS16,
 
     // ----- PC-Relative Data Relocations -----
-
     /// `S + A - P` — 64-bit PC-relative offset.
     R_AARCH64_PREL64,
     /// `S + A - P` — 32-bit PC-relative offset (overflow-checked).
@@ -71,7 +69,6 @@ pub enum AArch64RelocationType {
     R_AARCH64_PREL16,
 
     // ----- Group Relocations (page-relative addressing for ADRP+ADD/LDR pairs) -----
-
     /// `Page(S + A) - Page(P)` — ADRP high 21-bit page offset.
     R_AARCH64_ADR_PREL_PG_HI21,
     /// Same as [`R_AARCH64_ADR_PREL_PG_HI21`] without overflow check.
@@ -82,7 +79,6 @@ pub enum AArch64RelocationType {
     R_AARCH64_ADR_PREL_LO21,
 
     // ----- Load/Store Low-12-Bit Relocations (scaled by access size) -----
-
     /// `(S + A) & 0xFFF` — byte load/store, no scaling.
     R_AARCH64_LDST8_ABS_LO12_NC,
     /// `((S + A) & 0xFFF) >> 1` — halfword load/store, scale by 2.
@@ -95,7 +91,6 @@ pub enum AArch64RelocationType {
     R_AARCH64_LDST128_ABS_LO12_NC,
 
     // ----- Branch Relocations -----
-
     /// `S + A - P` — BL instruction, 26-bit offset (±128 MiB).
     R_AARCH64_CALL26,
     /// `S + A - P` — B instruction, 26-bit offset (±128 MiB).
@@ -106,14 +101,12 @@ pub enum AArch64RelocationType {
     R_AARCH64_TSTBR14,
 
     // ----- GOT-Relative Relocations (for PIC/shared libraries) -----
-
     /// `Page(G(S)) - Page(P)` — ADRP to GOT entry page.
     R_AARCH64_ADR_GOT_PAGE,
     /// `G(S) & 0xFFF` — LDR from GOT entry, low 12 bits scaled by 8.
     R_AARCH64_LD64_GOT_LO12_NC,
 
     // ----- TLS Relocations (Thread-Local Storage) -----
-
     /// `Page(G(TLSIDX(S))) - Page(P)` — General Dynamic TLS, ADRP.
     R_AARCH64_TLSGD_ADR_PAGE21,
     /// `G(TLSIDX(S)) & 0xFFF` — General Dynamic TLS, ADD.
@@ -128,7 +121,6 @@ pub enum AArch64RelocationType {
     R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC,
 
     // ----- Dynamic Relocations (for runtime linker) -----
-
     /// `S + A` — GOT entry filled by runtime linker.
     R_AARCH64_GLOB_DAT,
     /// `S + A` — PLT entry filled by runtime linker.
@@ -198,9 +190,7 @@ impl AArch64RelocationType {
             Self::R_AARCH64_TLSLE_ADD_TPREL_HI12 => "R_AARCH64_TLSLE_ADD_TPREL_HI12",
             Self::R_AARCH64_TLSLE_ADD_TPREL_LO12_NC => "R_AARCH64_TLSLE_ADD_TPREL_LO12_NC",
             Self::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => "R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21",
-            Self::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC => {
-                "R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC"
-            }
+            Self::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC => "R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC",
             Self::R_AARCH64_GLOB_DAT => "R_AARCH64_GLOB_DAT",
             Self::R_AARCH64_JUMP_SLOT => "R_AARCH64_JUMP_SLOT",
             Self::R_AARCH64_RELATIVE => "R_AARCH64_RELATIVE",
@@ -469,10 +459,7 @@ impl AArch64RelocationType {
     /// shared library, providing lazy or eager binding through the PLT.
     #[inline]
     pub fn needs_plt(&self) -> bool {
-        matches!(
-            self,
-            Self::R_AARCH64_CALL26 | Self::R_AARCH64_JUMP26
-        )
+        matches!(self, Self::R_AARCH64_CALL26 | Self::R_AARCH64_JUMP26)
     }
 
     /// Returns `true` if this relocation requires a GOT entry.
@@ -743,35 +730,25 @@ impl AArch64RelocationType {
             }
 
             // ±32 KiB, 4-byte aligned (14-bit signed × 4)
-            Self::R_AARCH64_TSTBR14 => {
-                (value & 0x3) == 0 && (-32_768..=32_764).contains(&value)
-            }
+            Self::R_AARCH64_TSTBR14 => (value & 0x3) == 0 && (-32_768..=32_764).contains(&value),
 
             // ±4 GiB page range (21-bit signed page offset × 4096)
-            Self::R_AARCH64_ADR_PREL_PG_HI21 => {
-                (-4_294_967_296..=4_294_963_200).contains(&value)
-            }
+            Self::R_AARCH64_ADR_PREL_PG_HI21 => (-4_294_967_296..=4_294_963_200).contains(&value),
 
             // ±1 MiB (21-bit signed, no shift)
-            Self::R_AARCH64_ADR_PREL_LO21 => {
-                (-1_048_576..=1_048_575).contains(&value)
-            }
+            Self::R_AARCH64_ADR_PREL_LO21 => (-1_048_576..=1_048_575).contains(&value),
 
             // 32-bit unsigned absolute
             Self::R_AARCH64_ABS32 => (0..=0xFFFF_FFFF).contains(&value),
 
             // 32-bit signed PC-relative
-            Self::R_AARCH64_PREL32 => {
-                value >= i32::MIN as i64 && value <= i32::MAX as i64
-            }
+            Self::R_AARCH64_PREL32 => value >= i32::MIN as i64 && value <= i32::MAX as i64,
 
             // 16-bit unsigned absolute
             Self::R_AARCH64_ABS16 => (0..=0xFFFF).contains(&value),
 
             // 16-bit signed PC-relative
-            Self::R_AARCH64_PREL16 => {
-                value >= i16::MIN as i64 && value <= i16::MAX as i64
-            }
+            Self::R_AARCH64_PREL16 => value >= i16::MIN as i64 && value <= i16::MAX as i64,
 
             // TLSLE HI12: check that upper bits beyond [23:12] are zero
             Self::R_AARCH64_TLSLE_ADD_TPREL_HI12 => {

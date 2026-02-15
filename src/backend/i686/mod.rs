@@ -103,8 +103,8 @@ pub use abi::I686Abi;
 // ---------------------------------------------------------------------------
 
 use crate::backend::traits::{
-    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr,
-    MachineOperand, ParamClass, PhysReg, RelocationType,
+    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr, MachineOperand, ParamClass, PhysReg,
+    RelocationType,
 };
 use crate::common::diagnostics::DiagnosticEngine;
 use crate::common::target::Target;
@@ -160,20 +160,90 @@ const I686_FUNCTION_ALIGNMENT: u32 = 16;
 /// Each entry maps a human-readable name to its numeric `r_type` value
 /// used in `Elf32_Rel` / `Elf32_Rela` entries.
 const I686_RELOCATION_TYPES: &[RelocationType] = &[
-    RelocationType { name: "R_386_NONE",       value:  0, is_pc_relative: false, size: 0 },
-    RelocationType { name: "R_386_32",         value:  1, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_386_PC32",       value:  2, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_386_GOT32",      value:  3, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_386_PLT32",      value:  4, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_386_COPY",       value:  5, is_pc_relative: false, size: 0 },
-    RelocationType { name: "R_386_GLOB_DAT",   value:  6, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_386_JMP_SLOT",   value:  7, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_386_RELATIVE",   value:  8, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_386_GOTOFF",     value:  9, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_386_GOTPC",      value: 10, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_386_32PLT",      value: 11, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_386_TLS_GD_32",  value: 24, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_386_TLS_LE_32",  value: 34, is_pc_relative: false, size: 4 },
+    RelocationType {
+        name: "R_386_NONE",
+        value: 0,
+        is_pc_relative: false,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_386_32",
+        value: 1,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_PC32",
+        value: 2,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_GOT32",
+        value: 3,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_PLT32",
+        value: 4,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_COPY",
+        value: 5,
+        is_pc_relative: false,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_386_GLOB_DAT",
+        value: 6,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_JMP_SLOT",
+        value: 7,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_RELATIVE",
+        value: 8,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_GOTOFF",
+        value: 9,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_GOTPC",
+        value: 10,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_32PLT",
+        value: 11,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_TLS_GD_32",
+        value: 24,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_386_TLS_LE_32",
+        value: 34,
+        is_pc_relative: false,
+        size: 4,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -290,11 +360,7 @@ impl I686Codegen {
     /// # Returns
     ///
     /// A `Vec<MachineInstr>` to be prepended to the entry basic block.
-    fn generate_prologue(
-        &self,
-        frame_size: u32,
-        callee_saved: &[PhysReg],
-    ) -> Vec<MachineInstr> {
+    fn generate_prologue(&self, frame_size: u32, callee_saved: &[PhysReg]) -> Vec<MachineInstr> {
         let mut instrs = Vec::with_capacity(4 + callee_saved.len());
 
         // Step 1: PUSH EBP — save old frame pointer
@@ -713,9 +779,7 @@ impl ArchCodegen for I686Codegen {
 
         // Replace every return instruction with the complete epilogue sequence.
         for bb in &mut mf.blocks {
-            let mut new_instrs = Vec::with_capacity(
-                bb.instructions.len() + epilogue_instrs.len(),
-            );
+            let mut new_instrs = Vec::with_capacity(bb.instructions.len() + epilogue_instrs.len());
             for instr in bb.instructions.drain(..) {
                 if instr.is_return {
                     // Replace the bare return with the complete epilogue
@@ -796,11 +860,7 @@ impl ArchCodegen for I686Codegen {
     /// # Returns
     ///
     /// A [`MachineOperand`] referencing the loaded symbol address.
-    fn generate_pic_addressing(
-        &self,
-        symbol: &str,
-        mf: &mut MachineFunction,
-    ) -> MachineOperand {
+    fn generate_pic_addressing(&self, symbol: &str, mf: &mut MachineFunction) -> MachineOperand {
         if self.config.requires_pic() {
             // PIC mode on i686: access the symbol through the GOT using
             // EBX as the GOT base register.
@@ -814,9 +874,10 @@ impl ArchCodegen for I686Codegen {
             let got_symbol = format!("{}@GOT", symbol);
 
             if !mf.blocks.is_empty() {
-                let last_bb = mf.blocks.last_mut().expect(
-                    "generate_pic_addressing: function must have at least one basic block",
-                );
+                let last_bb = mf
+                    .blocks
+                    .last_mut()
+                    .expect("generate_pic_addressing: function must have at least one basic block");
 
                 // Emit MOV EAX, [EBX + symbol@GOT]
                 // EBX is the GOT base register, established by the
@@ -1050,7 +1111,11 @@ mod tests {
         let backend = I686Codegen::new(test_config());
         let relocs = backend.get_relocation_types();
         assert!(!relocs.is_empty());
-        assert!(relocs.len() >= 12, "expected at least 12 relocation types, got {}", relocs.len());
+        assert!(
+            relocs.len() >= 12,
+            "expected at least 12 relocation types, got {}",
+            relocs.len()
+        );
     }
 
     #[test]
@@ -1099,7 +1164,10 @@ mod tests {
         let relocs = backend.get_relocation_types();
 
         let is_pc_rel = |name: &str| {
-            relocs.iter().find(|r| r.name == name).map(|r| r.is_pc_relative)
+            relocs
+                .iter()
+                .find(|r| r.name == name)
+                .map(|r| r.is_pc_relative)
         };
         assert_eq!(is_pc_rel("R_386_32"), Some(false));
         assert_eq!(is_pc_rel("R_386_PC32"), Some(true));

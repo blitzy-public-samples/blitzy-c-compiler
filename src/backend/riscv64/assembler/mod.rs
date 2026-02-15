@@ -71,11 +71,11 @@ pub use relocations::{RiscV64RelocationType, RISCV64_RELOCATION_TYPES};
 
 use std::fmt;
 
-use crate::backend::elf_writer_common::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS};
-use crate::backend::riscv64::registers::{self, ZERO, RA};
-use crate::backend::traits::{
-    MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand,
+use crate::backend::elf_writer_common::{
+    SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_NOBITS, SHT_PROGBITS,
 };
+use crate::backend::riscv64::registers::{self, RA, ZERO};
+use crate::backend::traits::{MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand};
 
 use self::encoder::{EncoderError, EncoderOperand, RvOpcode};
 use self::relocations::split_hi_lo;
@@ -411,20 +411,17 @@ impl RiscV64Assembler {
     /// The relocation is *not* marked as relaxable. Use
     /// [`add_relaxable_relocation`](Self::add_relaxable_relocation) for
     /// relocations that the linker may shorten.
-    pub fn add_relocation(
-        &mut self,
-        reloc_type: RiscV64RelocationType,
-        symbol: &str,
-        addend: i64,
-    ) {
+    pub fn add_relocation(&mut self, reloc_type: RiscV64RelocationType, symbol: &str, addend: i64) {
         let offset = self.get_current_offset();
-        self.current_section_mut().relocations.push(AssemblerRelocation {
-            offset,
-            reloc_type,
-            symbol: symbol.to_string(),
-            addend,
-            is_relaxable: false,
-        });
+        self.current_section_mut()
+            .relocations
+            .push(AssemblerRelocation {
+                offset,
+                reloc_type,
+                symbol: symbol.to_string(),
+                addend,
+                is_relaxable: false,
+            });
     }
 
     /// Records a relaxation-eligible relocation at the current offset.
@@ -471,13 +468,15 @@ impl RiscV64Assembler {
         addend: i64,
         is_relaxable: bool,
     ) {
-        self.current_section_mut().relocations.push(AssemblerRelocation {
-            offset,
-            reloc_type,
-            symbol: symbol.to_string(),
-            addend,
-            is_relaxable,
-        });
+        self.current_section_mut()
+            .relocations
+            .push(AssemblerRelocation {
+                offset,
+                reloc_type,
+                symbol: symbol.to_string(),
+                addend,
+                is_relaxable,
+            });
     }
 
     // -----------------------------------------------------------------------
@@ -496,14 +495,18 @@ impl RiscV64Assembler {
     pub fn emit_nop(&mut self) {
         // NOP = ADDI x0, x0, 0 = 0x00000013
         let nop_bytes = 0x0000_0013u32.to_le_bytes();
-        self.current_section_mut().data.extend_from_slice(&nop_bytes);
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&nop_bytes);
     }
 
     /// Emits a 2-byte compressed NOP (`C.NOP`) for 2-byte alignment.
     pub fn emit_c_nop(&mut self) {
         // C.NOP = 0x0001
         let c_nop_bytes = 0x0001u16.to_le_bytes();
-        self.current_section_mut().data.extend_from_slice(&c_nop_bytes);
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&c_nop_bytes);
     }
 
     /// Emits padding to align the current section offset to `alignment` bytes.
@@ -556,10 +559,7 @@ impl RiscV64Assembler {
     /// Iterates over all basic blocks and their instructions, encoding each
     /// one and recording relocations for unresolved symbols. Block labels
     /// are mapped to byte offsets for intra-function branch resolution.
-    pub fn assemble_function(
-        &mut self,
-        mf: &MachineFunction,
-    ) -> Result<(), AssemblerError> {
+    pub fn assemble_function(&mut self, mf: &MachineFunction) -> Result<(), AssemblerError> {
         // Ensure we are in the .text section.
         if self.current_section().name != ".text" {
             self.switch_section(".text", 4, SHF_ALLOC | SHF_EXECINSTR);
@@ -609,10 +609,7 @@ impl RiscV64Assembler {
 
     /// Assembles a single basic block, recording its label offset and
     /// encoding all contained instructions.
-    fn assemble_block(
-        &mut self,
-        block: &MachineBasicBlock,
-    ) -> Result<(), AssemblerError> {
+    fn assemble_block(&mut self, block: &MachineBasicBlock) -> Result<(), AssemblerError> {
         // Record this block's label at the current offset.
         let block_offset = self.get_current_offset();
         self.label_offsets.insert(block.id, block_offset);
@@ -640,10 +637,7 @@ impl RiscV64Assembler {
     /// The `MachineInstr`'s opcode (a `u32`) is mapped to an [`RvOpcode`]
     /// for dispatch to the encoder. Pseudo-instructions are expanded to
     /// their real instruction sequences.
-    pub fn emit_instruction(
-        &mut self,
-        instr: &MachineInstr,
-    ) -> Result<(), AssemblerError> {
+    pub fn emit_instruction(&mut self, instr: &MachineInstr) -> Result<(), AssemblerError> {
         let opcode = self.map_opcode(instr.opcode)?;
 
         // Handle pseudo-instructions that expand to multiple real instructions
@@ -712,13 +706,7 @@ impl RiscV64Assembler {
         // Add the relocation entry.
         let is_relaxable = reloc_type.is_paired_with_relax();
         if is_relaxable {
-            self.add_relocation_at(
-                emit_offset,
-                reloc_type,
-                &sym_name,
-                sym_addend,
-                true,
-            );
+            self.add_relocation_at(emit_offset, reloc_type, &sym_name, sym_addend, true);
             // Add companion R_RISCV_RELAX.
             self.add_relocation_at(
                 emit_offset,
@@ -728,13 +716,7 @@ impl RiscV64Assembler {
                 false,
             );
         } else {
-            self.add_relocation_at(
-                emit_offset,
-                reloc_type,
-                &sym_name,
-                sym_addend,
-                false,
-            );
+            self.add_relocation_at(emit_offset, reloc_type, &sym_name, sym_addend, false);
         }
 
         Ok(())
@@ -762,7 +744,9 @@ impl RiscV64Assembler {
                 EncoderOperand::Immediate(imm),
             ];
             let encoded = self.encoder.encode_instruction(RvOpcode::ADDI, &ops)?;
-            self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+            self.current_section_mut()
+                .data
+                .extend_from_slice(&encoded.to_bytes());
             return Ok(());
         }
 
@@ -776,7 +760,9 @@ impl RiscV64Assembler {
                 EncoderOperand::Immediate(hi as i64),
             ];
             let lui = self.encoder.encode_instruction(RvOpcode::LUI, &lui_ops)?;
-            self.current_section_mut().data.extend_from_slice(&lui.to_bytes());
+            self.current_section_mut()
+                .data
+                .extend_from_slice(&lui.to_bytes());
 
             // ADDI rd, rd, lo12 (only if lo != 0)
             if lo != 0 {
@@ -786,7 +772,9 @@ impl RiscV64Assembler {
                     EncoderOperand::Immediate(lo as i64),
                 ];
                 let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-                self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+                self.current_section_mut()
+                    .data
+                    .extend_from_slice(&addi.to_bytes());
             }
             return Ok(());
         }
@@ -820,7 +808,9 @@ impl RiscV64Assembler {
                 EncoderOperand::Immediate(hi_hi as i64),
             ];
             let lui = self.encoder.encode_instruction(RvOpcode::LUI, &lui_ops)?;
-            self.current_section_mut().data.extend_from_slice(&lui.to_bytes());
+            self.current_section_mut()
+                .data
+                .extend_from_slice(&lui.to_bytes());
 
             if hi_lo != 0 {
                 // ADDI rd, rd, hi_lo
@@ -830,7 +820,9 @@ impl RiscV64Assembler {
                     EncoderOperand::Immediate(hi_lo as i64),
                 ];
                 let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-                self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+                self.current_section_mut()
+                    .data
+                    .extend_from_slice(&addi.to_bytes());
             }
         } else if hi_lo != 0 {
             // Small upper — just ADDI from zero.
@@ -840,7 +832,9 @@ impl RiscV64Assembler {
                 EncoderOperand::Immediate(hi_lo as i64),
             ];
             let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-            self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+            self.current_section_mut()
+                .data
+                .extend_from_slice(&addi.to_bytes());
         } else {
             // Upper 32 bits are zero — load lower 32 bits directly.
             let (lo_hi, lo_lo) = split_hi_lo(lo32);
@@ -850,7 +844,9 @@ impl RiscV64Assembler {
                     EncoderOperand::Immediate(lo_hi as i64),
                 ];
                 let lui = self.encoder.encode_instruction(RvOpcode::LUI, &lui_ops)?;
-                self.current_section_mut().data.extend_from_slice(&lui.to_bytes());
+                self.current_section_mut()
+                    .data
+                    .extend_from_slice(&lui.to_bytes());
                 if lo_lo != 0 {
                     let addi_ops = [
                         EncoderOperand::Register(rd),
@@ -858,7 +854,9 @@ impl RiscV64Assembler {
                         EncoderOperand::Immediate(lo_lo as i64),
                     ];
                     let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-                    self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+                    self.current_section_mut()
+                        .data
+                        .extend_from_slice(&addi.to_bytes());
                 }
             } else {
                 let addi_ops = [
@@ -867,7 +865,9 @@ impl RiscV64Assembler {
                     EncoderOperand::Immediate(lo_lo as i64),
                 ];
                 let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-                self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+                self.current_section_mut()
+                    .data
+                    .extend_from_slice(&addi.to_bytes());
             }
             return Ok(());
         }
@@ -879,7 +879,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(32),
         ];
         let slli = self.encoder.encode_instruction(RvOpcode::SLLI, &slli_ops)?;
-        self.current_section_mut().data.extend_from_slice(&slli.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&slli.to_bytes());
 
         // Now add the lower 32 bits. Split into hi20+lo12.
         let (lo_hi, lo_lo) = split_hi_lo(lo32);
@@ -913,7 +915,9 @@ impl RiscV64Assembler {
                         EncoderOperand::Immediate(sign_ext),
                     ];
                     let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-                    self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+                    self.current_section_mut()
+                        .data
+                        .extend_from_slice(&addi.to_bytes());
                 }
 
                 // SLLI rd, rd, 12
@@ -922,8 +926,12 @@ impl RiscV64Assembler {
                     EncoderOperand::Register(rd),
                     EncoderOperand::Immediate(12),
                 ];
-                let slli2 = self.encoder.encode_instruction(RvOpcode::SLLI, &slli2_ops)?;
-                self.current_section_mut().data.extend_from_slice(&slli2.to_bytes());
+                let slli2 = self
+                    .encoder
+                    .encode_instruction(RvOpcode::SLLI, &slli2_ops)?;
+                self.current_section_mut()
+                    .data
+                    .extend_from_slice(&slli2.to_bytes());
 
                 // Combine mid and lower bits.
                 let combined_lo = (lo_mid_8 << 12) | lo_lower_12;
@@ -941,21 +949,31 @@ impl RiscV64Assembler {
                             EncoderOperand::Register(rd),
                             EncoderOperand::Immediate(lo_sign_ext),
                         ];
-                        let addi3 = self.encoder.encode_instruction(RvOpcode::ADDI, &addi3_ops)?;
-                        self.current_section_mut().data.extend_from_slice(&addi3.to_bytes());
+                        let addi3 = self
+                            .encoder
+                            .encode_instruction(RvOpcode::ADDI, &addi3_ops)?;
+                        self.current_section_mut()
+                            .data
+                            .extend_from_slice(&addi3.to_bytes());
                     } else {
                         // Further decompose.
                         let upper = (combined_lo >> 12) & 0xFF;
                         let lower = combined_lo & 0xFFF;
                         if upper != 0 {
-                            let sign_upper = if upper >= 0x800 { upper - 0x1000 } else { upper };
+                            let sign_upper = if upper >= 0x800 {
+                                upper - 0x1000
+                            } else {
+                                upper
+                            };
                             let a_ops = [
                                 EncoderOperand::Register(rd),
                                 EncoderOperand::Register(rd),
                                 EncoderOperand::Immediate(sign_upper),
                             ];
                             let a = self.encoder.encode_instruction(RvOpcode::ADDI, &a_ops)?;
-                            self.current_section_mut().data.extend_from_slice(&a.to_bytes());
+                            self.current_section_mut()
+                                .data
+                                .extend_from_slice(&a.to_bytes());
 
                             let s_ops = [
                                 EncoderOperand::Register(rd),
@@ -963,17 +981,25 @@ impl RiscV64Assembler {
                                 EncoderOperand::Immediate(12),
                             ];
                             let s = self.encoder.encode_instruction(RvOpcode::SLLI, &s_ops)?;
-                            self.current_section_mut().data.extend_from_slice(&s.to_bytes());
+                            self.current_section_mut()
+                                .data
+                                .extend_from_slice(&s.to_bytes());
                         }
                         if lower != 0 {
-                            let sign_lower = if lower >= 0x800 { lower - 0x1000 } else { lower };
+                            let sign_lower = if lower >= 0x800 {
+                                lower - 0x1000
+                            } else {
+                                lower
+                            };
                             let a2_ops = [
                                 EncoderOperand::Register(rd),
                                 EncoderOperand::Register(rd),
                                 EncoderOperand::Immediate(sign_lower),
                             ];
                             let a2 = self.encoder.encode_instruction(RvOpcode::ADDI, &a2_ops)?;
-                            self.current_section_mut().data.extend_from_slice(&a2.to_bytes());
+                            self.current_section_mut()
+                                .data
+                                .extend_from_slice(&a2.to_bytes());
                         }
                     }
                 }
@@ -985,7 +1011,9 @@ impl RiscV64Assembler {
                     EncoderOperand::Immediate(lo_lo as i64),
                 ];
                 let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-                self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+                self.current_section_mut()
+                    .data
+                    .extend_from_slice(&addi.to_bytes());
             }
         } else if lo_lo != 0 {
             // Only the lower 12 bits of the lower half are set.
@@ -995,7 +1023,9 @@ impl RiscV64Assembler {
                 EncoderOperand::Immediate(lo_lo as i64),
             ];
             let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-            self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+            self.current_section_mut()
+                .data
+                .extend_from_slice(&addi.to_bytes());
         }
 
         Ok(())
@@ -1012,12 +1042,13 @@ impl RiscV64Assembler {
         let offset_before = self.get_current_offset();
 
         // AUIPC rd, 0 (placeholder — linker fills the hi20 part).
-        let auipc_ops = [
-            EncoderOperand::Register(rd),
-            EncoderOperand::Immediate(0),
-        ];
-        let auipc = self.encoder.encode_instruction(RvOpcode::AUIPC, &auipc_ops)?;
-        self.current_section_mut().data.extend_from_slice(&auipc.to_bytes());
+        let auipc_ops = [EncoderOperand::Register(rd), EncoderOperand::Immediate(0)];
+        let auipc = self
+            .encoder
+            .encode_instruction(RvOpcode::AUIPC, &auipc_ops)?;
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&auipc.to_bytes());
 
         // ADDI rd, rd, 0 (placeholder — linker fills the lo12 part).
         let addi_ops = [
@@ -1026,7 +1057,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(0),
         ];
         let addi = self.encoder.encode_instruction(RvOpcode::ADDI, &addi_ops)?;
-        self.current_section_mut().data.extend_from_slice(&addi.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&addi.to_bytes());
 
         // Relocations: PCREL_HI20 on AUIPC, PCREL_LO12_I on ADDI.
         self.add_relocation_at(
@@ -1076,8 +1109,12 @@ impl RiscV64Assembler {
             EncoderOperand::Register(ra_enc),
             EncoderOperand::Immediate(0),
         ];
-        let auipc = self.encoder.encode_instruction(RvOpcode::AUIPC, &auipc_ops)?;
-        self.current_section_mut().data.extend_from_slice(&auipc.to_bytes());
+        let auipc = self
+            .encoder
+            .encode_instruction(RvOpcode::AUIPC, &auipc_ops)?;
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&auipc.to_bytes());
 
         // JALR ra, ra, 0
         let jalr_ops = [
@@ -1086,7 +1123,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(0),
         ];
         let jalr = self.encoder.encode_instruction(RvOpcode::JALR, &jalr_ops)?;
-        self.current_section_mut().data.extend_from_slice(&jalr.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&jalr.to_bytes());
 
         // R_RISCV_CALL spans the AUIPC+JALR pair (8 bytes).
         self.add_relocation_at(
@@ -1124,8 +1163,12 @@ impl RiscV64Assembler {
             EncoderOperand::Register(t1_enc),
             EncoderOperand::Immediate(0),
         ];
-        let auipc = self.encoder.encode_instruction(RvOpcode::AUIPC, &auipc_ops)?;
-        self.current_section_mut().data.extend_from_slice(&auipc.to_bytes());
+        let auipc = self
+            .encoder
+            .encode_instruction(RvOpcode::AUIPC, &auipc_ops)?;
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&auipc.to_bytes());
 
         // JALR x0, t1, 0 (x0 as link reg = no return address saved)
         let jalr_ops = [
@@ -1134,7 +1177,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(0),
         ];
         let jalr = self.encoder.encode_instruction(RvOpcode::JALR, &jalr_ops)?;
-        self.current_section_mut().data.extend_from_slice(&jalr.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&jalr.to_bytes());
 
         // R_RISCV_CALL on the pair.
         self.add_relocation_at(
@@ -1166,7 +1211,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(0),
         ];
         let encoded = self.encoder.encode_instruction(RvOpcode::JALR, &ops)?;
-        self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&encoded.to_bytes());
         Ok(())
     }
 
@@ -1181,7 +1228,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(0),
         ];
         let encoded = self.encoder.encode_instruction(RvOpcode::ADDI, &ops)?;
-        self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&encoded.to_bytes());
         Ok(())
     }
 
@@ -1196,7 +1245,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(-1),
         ];
         let encoded = self.encoder.encode_instruction(RvOpcode::XORI, &ops)?;
-        self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&encoded.to_bytes());
         Ok(())
     }
 
@@ -1212,7 +1263,9 @@ impl RiscV64Assembler {
             EncoderOperand::Register(rs),
         ];
         let encoded = self.encoder.encode_instruction(RvOpcode::SUB, &ops)?;
-        self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&encoded.to_bytes());
         Ok(())
     }
 
@@ -1227,7 +1280,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(1),
         ];
         let encoded = self.encoder.encode_instruction(RvOpcode::SLTIU, &ops)?;
-        self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&encoded.to_bytes());
         Ok(())
     }
 
@@ -1243,7 +1298,9 @@ impl RiscV64Assembler {
             EncoderOperand::Register(rs),
         ];
         let encoded = self.encoder.encode_instruction(RvOpcode::SLTU, &ops)?;
-        self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&encoded.to_bytes());
         Ok(())
     }
 
@@ -1259,7 +1316,9 @@ impl RiscV64Assembler {
                 EncoderOperand::Immediate(0),
             ];
             let encoded = self.encoder.encode_instruction(RvOpcode::JAL, &ops)?;
-            self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+            self.current_section_mut()
+                .data
+                .extend_from_slice(&encoded.to_bytes());
 
             self.add_relocation_at(
                 offset_before,
@@ -1275,7 +1334,9 @@ impl RiscV64Assembler {
                 EncoderOperand::Immediate(imm),
             ];
             let encoded = self.encoder.encode_instruction(RvOpcode::JAL, &ops)?;
-            self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+            self.current_section_mut()
+                .data
+                .extend_from_slice(&encoded.to_bytes());
         }
         Ok(())
     }
@@ -1291,7 +1352,9 @@ impl RiscV64Assembler {
             EncoderOperand::Immediate(0),
         ];
         let encoded = self.encoder.encode_instruction(RvOpcode::JALR, &ops)?;
-        self.current_section_mut().data.extend_from_slice(&encoded.to_bytes());
+        self.current_section_mut()
+            .data
+            .extend_from_slice(&encoded.to_bytes());
         Ok(())
     }
 
@@ -1308,101 +1371,226 @@ impl RiscV64Assembler {
         // We enumerate all variants in order and match by index.
         static OPCODES: &[RvOpcode] = &[
             // RV64I base integer R-type (0..9)
-            RvOpcode::ADD, RvOpcode::SUB, RvOpcode::SLL, RvOpcode::SLT,
-            RvOpcode::SLTU, RvOpcode::XOR, RvOpcode::SRL, RvOpcode::SRA,
-            RvOpcode::OR, RvOpcode::AND,
+            RvOpcode::ADD,
+            RvOpcode::SUB,
+            RvOpcode::SLL,
+            RvOpcode::SLT,
+            RvOpcode::SLTU,
+            RvOpcode::XOR,
+            RvOpcode::SRL,
+            RvOpcode::SRA,
+            RvOpcode::OR,
+            RvOpcode::AND,
             // RV64I word variants (10..14)
-            RvOpcode::ADDW, RvOpcode::SUBW, RvOpcode::SLLW, RvOpcode::SRLW,
+            RvOpcode::ADDW,
+            RvOpcode::SUBW,
+            RvOpcode::SLLW,
+            RvOpcode::SRLW,
             RvOpcode::SRAW,
             // RV64M multiply/divide (15..27)
-            RvOpcode::MUL, RvOpcode::MULH, RvOpcode::MULHSU, RvOpcode::MULHU,
-            RvOpcode::DIV, RvOpcode::DIVU, RvOpcode::REM, RvOpcode::REMU,
-            RvOpcode::MULW, RvOpcode::DIVW, RvOpcode::DIVUW,
-            RvOpcode::REMW, RvOpcode::REMUW,
+            RvOpcode::MUL,
+            RvOpcode::MULH,
+            RvOpcode::MULHSU,
+            RvOpcode::MULHU,
+            RvOpcode::DIV,
+            RvOpcode::DIVU,
+            RvOpcode::REM,
+            RvOpcode::REMU,
+            RvOpcode::MULW,
+            RvOpcode::DIVW,
+            RvOpcode::DIVUW,
+            RvOpcode::REMW,
+            RvOpcode::REMUW,
             // RV64I immediate (28..34)
-            RvOpcode::ADDI, RvOpcode::SLTI, RvOpcode::SLTIU, RvOpcode::XORI,
-            RvOpcode::ORI, RvOpcode::ANDI, RvOpcode::ADDIW,
+            RvOpcode::ADDI,
+            RvOpcode::SLTI,
+            RvOpcode::SLTIU,
+            RvOpcode::XORI,
+            RvOpcode::ORI,
+            RvOpcode::ANDI,
+            RvOpcode::ADDIW,
             // Shifts with immediate (35..40)
-            RvOpcode::SLLI, RvOpcode::SRLI, RvOpcode::SRAI,
-            RvOpcode::SLLIW, RvOpcode::SRLIW, RvOpcode::SRAIW,
+            RvOpcode::SLLI,
+            RvOpcode::SRLI,
+            RvOpcode::SRAI,
+            RvOpcode::SLLIW,
+            RvOpcode::SRLIW,
+            RvOpcode::SRAIW,
             // Loads (41..47)
-            RvOpcode::LB, RvOpcode::LH, RvOpcode::LW, RvOpcode::LD,
-            RvOpcode::LBU, RvOpcode::LHU, RvOpcode::LWU,
+            RvOpcode::LB,
+            RvOpcode::LH,
+            RvOpcode::LW,
+            RvOpcode::LD,
+            RvOpcode::LBU,
+            RvOpcode::LHU,
+            RvOpcode::LWU,
             // Stores (48..51)
-            RvOpcode::SB, RvOpcode::SH, RvOpcode::SW, RvOpcode::SD,
+            RvOpcode::SB,
+            RvOpcode::SH,
+            RvOpcode::SW,
+            RvOpcode::SD,
             // Branches (52..57)
-            RvOpcode::BEQ, RvOpcode::BNE, RvOpcode::BLT, RvOpcode::BGE,
-            RvOpcode::BLTU, RvOpcode::BGEU,
+            RvOpcode::BEQ,
+            RvOpcode::BNE,
+            RvOpcode::BLT,
+            RvOpcode::BGE,
+            RvOpcode::BLTU,
+            RvOpcode::BGEU,
             // Upper immediate (58..59)
-            RvOpcode::LUI, RvOpcode::AUIPC,
+            RvOpcode::LUI,
+            RvOpcode::AUIPC,
             // Jumps (60..61)
-            RvOpcode::JAL, RvOpcode::JALR,
+            RvOpcode::JAL,
+            RvOpcode::JALR,
             // System/fence (62..67)
-            RvOpcode::ECALL, RvOpcode::EBREAK, RvOpcode::FENCE,
-            RvOpcode::CSRRW, RvOpcode::CSRRS, RvOpcode::CSRRC,
+            RvOpcode::ECALL,
+            RvOpcode::EBREAK,
+            RvOpcode::FENCE,
+            RvOpcode::CSRRW,
+            RvOpcode::CSRRS,
+            RvOpcode::CSRRC,
             // FP loads/stores (68..71)
-            RvOpcode::FLW, RvOpcode::FSW, RvOpcode::FLD, RvOpcode::FSD,
+            RvOpcode::FLW,
+            RvOpcode::FSW,
+            RvOpcode::FLD,
+            RvOpcode::FSD,
             // RV64F single-precision FP arithmetic (72..89)
-            RvOpcode::FADD_S, RvOpcode::FSUB_S, RvOpcode::FMUL_S,
-            RvOpcode::FDIV_S, RvOpcode::FSQRT_S,
-            RvOpcode::FSGNJ_S, RvOpcode::FSGNJN_S, RvOpcode::FSGNJX_S,
-            RvOpcode::FMIN_S, RvOpcode::FMAX_S,
-            RvOpcode::FCVT_W_S, RvOpcode::FCVT_WU_S, RvOpcode::FMV_X_W,
-            RvOpcode::FEQ_S, RvOpcode::FLT_S, RvOpcode::FLE_S, RvOpcode::FCLASS_S,
-            RvOpcode::FCVT_S_W, RvOpcode::FCVT_S_WU, RvOpcode::FMV_W_X,
-            RvOpcode::FCVT_L_S, RvOpcode::FCVT_LU_S,
-            RvOpcode::FCVT_S_L, RvOpcode::FCVT_S_LU,
+            RvOpcode::FADD_S,
+            RvOpcode::FSUB_S,
+            RvOpcode::FMUL_S,
+            RvOpcode::FDIV_S,
+            RvOpcode::FSQRT_S,
+            RvOpcode::FSGNJ_S,
+            RvOpcode::FSGNJN_S,
+            RvOpcode::FSGNJX_S,
+            RvOpcode::FMIN_S,
+            RvOpcode::FMAX_S,
+            RvOpcode::FCVT_W_S,
+            RvOpcode::FCVT_WU_S,
+            RvOpcode::FMV_X_W,
+            RvOpcode::FEQ_S,
+            RvOpcode::FLT_S,
+            RvOpcode::FLE_S,
+            RvOpcode::FCLASS_S,
+            RvOpcode::FCVT_S_W,
+            RvOpcode::FCVT_S_WU,
+            RvOpcode::FMV_W_X,
+            RvOpcode::FCVT_L_S,
+            RvOpcode::FCVT_LU_S,
+            RvOpcode::FCVT_S_L,
+            RvOpcode::FCVT_S_LU,
             // RV64D double-precision FP arithmetic (96..123)
-            RvOpcode::FADD_D, RvOpcode::FSUB_D, RvOpcode::FMUL_D,
-            RvOpcode::FDIV_D, RvOpcode::FSQRT_D,
-            RvOpcode::FSGNJ_D, RvOpcode::FSGNJN_D, RvOpcode::FSGNJX_D,
-            RvOpcode::FMIN_D, RvOpcode::FMAX_D,
-            RvOpcode::FCVT_S_D, RvOpcode::FCVT_D_S,
-            RvOpcode::FEQ_D, RvOpcode::FLT_D, RvOpcode::FLE_D, RvOpcode::FCLASS_D,
-            RvOpcode::FCVT_W_D, RvOpcode::FCVT_WU_D,
-            RvOpcode::FCVT_D_W, RvOpcode::FCVT_D_WU,
-            RvOpcode::FCVT_L_D, RvOpcode::FCVT_LU_D,
-            RvOpcode::FCVT_D_L, RvOpcode::FCVT_D_LU,
-            RvOpcode::FMV_X_D, RvOpcode::FMV_D_X,
+            RvOpcode::FADD_D,
+            RvOpcode::FSUB_D,
+            RvOpcode::FMUL_D,
+            RvOpcode::FDIV_D,
+            RvOpcode::FSQRT_D,
+            RvOpcode::FSGNJ_D,
+            RvOpcode::FSGNJN_D,
+            RvOpcode::FSGNJX_D,
+            RvOpcode::FMIN_D,
+            RvOpcode::FMAX_D,
+            RvOpcode::FCVT_S_D,
+            RvOpcode::FCVT_D_S,
+            RvOpcode::FEQ_D,
+            RvOpcode::FLT_D,
+            RvOpcode::FLE_D,
+            RvOpcode::FCLASS_D,
+            RvOpcode::FCVT_W_D,
+            RvOpcode::FCVT_WU_D,
+            RvOpcode::FCVT_D_W,
+            RvOpcode::FCVT_D_WU,
+            RvOpcode::FCVT_L_D,
+            RvOpcode::FCVT_LU_D,
+            RvOpcode::FCVT_D_L,
+            RvOpcode::FCVT_D_LU,
+            RvOpcode::FMV_X_D,
+            RvOpcode::FMV_D_X,
             // FMA (124..131)
-            RvOpcode::FMADD_S, RvOpcode::FMSUB_S,
-            RvOpcode::FNMSUB_S, RvOpcode::FNMADD_S,
-            RvOpcode::FMADD_D, RvOpcode::FMSUB_D,
-            RvOpcode::FNMSUB_D, RvOpcode::FNMADD_D,
+            RvOpcode::FMADD_S,
+            RvOpcode::FMSUB_S,
+            RvOpcode::FNMSUB_S,
+            RvOpcode::FNMADD_S,
+            RvOpcode::FMADD_D,
+            RvOpcode::FMSUB_D,
+            RvOpcode::FNMSUB_D,
+            RvOpcode::FNMADD_D,
             // Atomics (132..153)
-            RvOpcode::LR_W, RvOpcode::SC_W,
-            RvOpcode::AMOSWAP_W, RvOpcode::AMOADD_W,
-            RvOpcode::AMOXOR_W, RvOpcode::AMOAND_W, RvOpcode::AMOOR_W,
-            RvOpcode::AMOMIN_W, RvOpcode::AMOMAX_W,
-            RvOpcode::AMOMINU_W, RvOpcode::AMOMAXU_W,
-            RvOpcode::LR_D, RvOpcode::SC_D,
-            RvOpcode::AMOSWAP_D, RvOpcode::AMOADD_D,
-            RvOpcode::AMOXOR_D, RvOpcode::AMOAND_D, RvOpcode::AMOOR_D,
-            RvOpcode::AMOMIN_D, RvOpcode::AMOMAX_D,
-            RvOpcode::AMOMINU_D, RvOpcode::AMOMAXU_D,
+            RvOpcode::LR_W,
+            RvOpcode::SC_W,
+            RvOpcode::AMOSWAP_W,
+            RvOpcode::AMOADD_W,
+            RvOpcode::AMOXOR_W,
+            RvOpcode::AMOAND_W,
+            RvOpcode::AMOOR_W,
+            RvOpcode::AMOMIN_W,
+            RvOpcode::AMOMAX_W,
+            RvOpcode::AMOMINU_W,
+            RvOpcode::AMOMAXU_W,
+            RvOpcode::LR_D,
+            RvOpcode::SC_D,
+            RvOpcode::AMOSWAP_D,
+            RvOpcode::AMOADD_D,
+            RvOpcode::AMOXOR_D,
+            RvOpcode::AMOAND_D,
+            RvOpcode::AMOOR_D,
+            RvOpcode::AMOMIN_D,
+            RvOpcode::AMOMAX_D,
+            RvOpcode::AMOMINU_D,
+            RvOpcode::AMOMAXU_D,
             // Compressed (154..189)
-            RvOpcode::C_NOP, RvOpcode::C_ADDI, RvOpcode::C_ADDIW,
-            RvOpcode::C_LI, RvOpcode::C_LUI, RvOpcode::C_ADDI16SP,
+            RvOpcode::C_NOP,
+            RvOpcode::C_ADDI,
+            RvOpcode::C_ADDIW,
+            RvOpcode::C_LI,
+            RvOpcode::C_LUI,
+            RvOpcode::C_ADDI16SP,
             RvOpcode::C_ADDI4SPN,
-            RvOpcode::C_SLLI, RvOpcode::C_SRLI, RvOpcode::C_SRAI,
+            RvOpcode::C_SLLI,
+            RvOpcode::C_SRLI,
+            RvOpcode::C_SRAI,
             RvOpcode::C_ANDI,
-            RvOpcode::C_MV, RvOpcode::C_ADD,
-            RvOpcode::C_AND, RvOpcode::C_OR, RvOpcode::C_XOR,
-            RvOpcode::C_SUB, RvOpcode::C_ADDW, RvOpcode::C_SUBW,
-            RvOpcode::C_LW, RvOpcode::C_LD, RvOpcode::C_SW, RvOpcode::C_SD,
-            RvOpcode::C_LWSP, RvOpcode::C_LDSP,
-            RvOpcode::C_SWSP, RvOpcode::C_SDSP,
-            RvOpcode::C_J, RvOpcode::C_JAL, RvOpcode::C_JR, RvOpcode::C_JALR,
-            RvOpcode::C_BEQZ, RvOpcode::C_BNEZ,
+            RvOpcode::C_MV,
+            RvOpcode::C_ADD,
+            RvOpcode::C_AND,
+            RvOpcode::C_OR,
+            RvOpcode::C_XOR,
+            RvOpcode::C_SUB,
+            RvOpcode::C_ADDW,
+            RvOpcode::C_SUBW,
+            RvOpcode::C_LW,
+            RvOpcode::C_LD,
+            RvOpcode::C_SW,
+            RvOpcode::C_SD,
+            RvOpcode::C_LWSP,
+            RvOpcode::C_LDSP,
+            RvOpcode::C_SWSP,
+            RvOpcode::C_SDSP,
+            RvOpcode::C_J,
+            RvOpcode::C_JAL,
+            RvOpcode::C_JR,
+            RvOpcode::C_JALR,
+            RvOpcode::C_BEQZ,
+            RvOpcode::C_BNEZ,
             RvOpcode::C_EBREAK,
-            RvOpcode::C_FLD, RvOpcode::C_FSD,
-            RvOpcode::C_FLDSP, RvOpcode::C_FSDSP,
+            RvOpcode::C_FLD,
+            RvOpcode::C_FSD,
+            RvOpcode::C_FLDSP,
+            RvOpcode::C_FSDSP,
             // Pseudo-instructions (190..201)
-            RvOpcode::NOP, RvOpcode::LI, RvOpcode::LA,
-            RvOpcode::CALL, RvOpcode::TAIL, RvOpcode::RET,
-            RvOpcode::MV, RvOpcode::NOT, RvOpcode::NEG,
-            RvOpcode::SEQZ, RvOpcode::SNEZ,
-            RvOpcode::J, RvOpcode::JR,
+            RvOpcode::NOP,
+            RvOpcode::LI,
+            RvOpcode::LA,
+            RvOpcode::CALL,
+            RvOpcode::TAIL,
+            RvOpcode::RET,
+            RvOpcode::MV,
+            RvOpcode::NOT,
+            RvOpcode::NEG,
+            RvOpcode::SEQZ,
+            RvOpcode::SNEZ,
+            RvOpcode::J,
+            RvOpcode::JR,
         ];
 
         let idx = opcode as usize;
@@ -1441,12 +1629,8 @@ impl RiscV64Assembler {
             MachineOperand::Register(reg) => {
                 Ok(EncoderOperand::Register(registers::encoding(*reg)))
             }
-            MachineOperand::Immediate(val) => {
-                Ok(EncoderOperand::Immediate(*val))
-            }
-            MachineOperand::Symbol(name) => {
-                Ok(EncoderOperand::Symbol(name.clone()))
-            }
+            MachineOperand::Immediate(val) => Ok(EncoderOperand::Immediate(*val)),
+            MachineOperand::Symbol(name) => Ok(EncoderOperand::Symbol(name.clone())),
             MachineOperand::Label(id) => {
                 // Resolve to a relative offset if we know the label position.
                 if let Some(&target_offset) = self.label_offsets.get(id) {
@@ -1458,7 +1642,9 @@ impl RiscV64Assembler {
                     Ok(EncoderOperand::Label(*id))
                 }
             }
-            MachineOperand::Memory { base, offset: _, .. } => {
+            MachineOperand::Memory {
+                base, offset: _, ..
+            } => {
                 // For RISC-V, memory operands in loads/stores decompose to
                 // base register + immediate offset. The encoder expects these
                 // as separate register + immediate operands; this is handled
@@ -1475,13 +1661,11 @@ impl RiscV64Assembler {
                     idx, self.current_function
                 )))
             }
-            MachineOperand::VirtualReg(vid) => {
-                Err(AssemblerError::InvalidOperand(format!(
-                    "unresolved virtual register {} in function '{}' — \
+            MachineOperand::VirtualReg(vid) => Err(AssemblerError::InvalidOperand(format!(
+                "unresolved virtual register {} in function '{}' — \
                      register allocation must complete before assembly",
-                    vid, self.current_function
-                )))
-            }
+                vid, self.current_function
+            ))),
         }
     }
 
@@ -1628,16 +1812,15 @@ impl RiscV64Assembler {
     ///
     /// This maps the instruction's addressing mode to the correct RISC-V
     /// relocation type for the linker.
-    fn relocation_type_for_opcode(
-        &self,
-        opcode: &RvOpcode,
-    ) -> RiscV64RelocationType {
+    fn relocation_type_for_opcode(&self, opcode: &RvOpcode) -> RiscV64RelocationType {
         match opcode {
             // Branch instructions use R_RISCV_BRANCH.
-            RvOpcode::BEQ | RvOpcode::BNE | RvOpcode::BLT
-            | RvOpcode::BGE | RvOpcode::BLTU | RvOpcode::BGEU => {
-                RiscV64RelocationType::R_RISCV_BRANCH
-            }
+            RvOpcode::BEQ
+            | RvOpcode::BNE
+            | RvOpcode::BLT
+            | RvOpcode::BGE
+            | RvOpcode::BLTU
+            | RvOpcode::BGEU => RiscV64RelocationType::R_RISCV_BRANCH,
             // JAL uses R_RISCV_JAL.
             RvOpcode::JAL => RiscV64RelocationType::R_RISCV_JAL,
             // AUIPC uses R_RISCV_PCREL_HI20 by default.
@@ -1645,28 +1828,30 @@ impl RiscV64Assembler {
             // LUI uses R_RISCV_HI20.
             RvOpcode::LUI => RiscV64RelocationType::R_RISCV_HI20,
             // Loads with symbol → R_RISCV_PCREL_LO12_I (I-type).
-            RvOpcode::LB | RvOpcode::LH | RvOpcode::LW | RvOpcode::LD
-            | RvOpcode::LBU | RvOpcode::LHU | RvOpcode::LWU
-            | RvOpcode::FLW | RvOpcode::FLD => {
-                RiscV64RelocationType::R_RISCV_PCREL_LO12_I
-            }
+            RvOpcode::LB
+            | RvOpcode::LH
+            | RvOpcode::LW
+            | RvOpcode::LD
+            | RvOpcode::LBU
+            | RvOpcode::LHU
+            | RvOpcode::LWU
+            | RvOpcode::FLW
+            | RvOpcode::FLD => RiscV64RelocationType::R_RISCV_PCREL_LO12_I,
             // I-type arithmetic with symbol → R_RISCV_LO12_I.
             RvOpcode::ADDI | RvOpcode::ADDIW | RvOpcode::JALR => {
                 RiscV64RelocationType::R_RISCV_PCREL_LO12_I
             }
             // Stores with symbol → R_RISCV_PCREL_LO12_S (S-type).
-            RvOpcode::SB | RvOpcode::SH | RvOpcode::SW | RvOpcode::SD
-            | RvOpcode::FSW | RvOpcode::FSD => {
-                RiscV64RelocationType::R_RISCV_PCREL_LO12_S
-            }
+            RvOpcode::SB
+            | RvOpcode::SH
+            | RvOpcode::SW
+            | RvOpcode::SD
+            | RvOpcode::FSW
+            | RvOpcode::FSD => RiscV64RelocationType::R_RISCV_PCREL_LO12_S,
             // Compressed branches.
-            RvOpcode::C_BEQZ | RvOpcode::C_BNEZ => {
-                RiscV64RelocationType::R_RISCV_RVC_BRANCH
-            }
+            RvOpcode::C_BEQZ | RvOpcode::C_BNEZ => RiscV64RelocationType::R_RISCV_RVC_BRANCH,
             // Compressed jumps.
-            RvOpcode::C_J | RvOpcode::C_JAL => {
-                RiscV64RelocationType::R_RISCV_RVC_JUMP
-            }
+            RvOpcode::C_J | RvOpcode::C_JAL => RiscV64RelocationType::R_RISCV_RVC_JUMP,
             // Default: use a 64-bit absolute relocation.
             _ => RiscV64RelocationType::R_RISCV_64,
         }
@@ -1772,11 +1957,7 @@ mod tests {
     fn test_add_relocation() {
         let mut asm = RiscV64Assembler::new();
         asm.emit_nop(); // 4 bytes offset
-        asm.add_relocation(
-            RiscV64RelocationType::R_RISCV_CALL,
-            "printf",
-            0,
-        );
+        asm.add_relocation(RiscV64RelocationType::R_RISCV_CALL, "printf", 0);
         assert_eq!(asm.sections[0].relocations.len(), 1);
         let reloc = &asm.sections[0].relocations[0];
         assert_eq!(reloc.offset, 4);
@@ -1788,11 +1969,7 @@ mod tests {
     #[test]
     fn test_add_relaxable_relocation() {
         let mut asm = RiscV64Assembler::new();
-        asm.add_relaxable_relocation(
-            RiscV64RelocationType::R_RISCV_CALL,
-            "target_func",
-            0,
-        );
+        asm.add_relaxable_relocation(RiscV64RelocationType::R_RISCV_CALL, "target_func", 0);
         // Should produce the primary relocation + R_RISCV_RELAX companion.
         assert_eq!(asm.sections[0].relocations.len(), 2);
         assert!(asm.sections[0].relocations[0].is_relaxable);
@@ -1853,7 +2030,10 @@ mod tests {
         assert!(result.is_ok());
 
         // Should have the function symbol.
-        assert!(asm.symbols.iter().any(|s| s.name == "simple_ret" && s.is_function));
+        assert!(asm
+            .symbols
+            .iter()
+            .any(|s| s.name == "simple_ret" && s.is_function));
 
         // RET = JALR x0, ra, 0 — should be a 4-byte instruction.
         assert!(asm.get_current_offset() >= 4);

@@ -225,8 +225,8 @@ pub const ALLOCATABLE_GPRS: &[PhysReg] = &[
 /// All 16 SSE registers are available for the register allocator. On
 /// System V AMD64, all XMM registers are caller-saved (volatile).
 pub const ALLOCATABLE_SSE: &[PhysReg] = &[
-    XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13,
-    XMM14, XMM15,
+    XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14,
+    XMM15,
 ];
 
 // ---------------------------------------------------------------------------
@@ -235,20 +235,20 @@ pub const ALLOCATABLE_SSE: &[PhysReg] = &[
 
 /// 64-bit GPR names indexed by register number 0–15.
 const GPR_NAMES_64: [&str; NUM_GPRS] = [
-    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
-    "r13", "r14", "r15",
+    "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+    "r14", "r15",
 ];
 
 /// 32-bit GPR names indexed by register number 0–15.
 const GPR_NAMES_32: [&str; NUM_GPRS] = [
-    "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d",
-    "r12d", "r13d", "r14d", "r15d",
+    "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi", "r8d", "r9d", "r10d", "r11d", "r12d",
+    "r13d", "r14d", "r15d",
 ];
 
 /// 16-bit GPR names indexed by register number 0–15.
 const GPR_NAMES_16: [&str; NUM_GPRS] = [
-    "ax", "cx", "dx", "bx", "sp", "bp", "si", "di", "r8w", "r9w", "r10w", "r11w", "r12w",
-    "r13w", "r14w", "r15w",
+    "ax", "cx", "dx", "bx", "sp", "bp", "si", "di", "r8w", "r9w", "r10w", "r11w", "r12w", "r13w",
+    "r14w", "r15w",
 ];
 
 /// 8-bit GPR names indexed by register number 0–15.

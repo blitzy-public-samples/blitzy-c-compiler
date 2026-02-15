@@ -340,12 +340,7 @@ impl RiscV64InstrSel {
     }
 
     /// Creates a simple I-type instruction: `op rd, rs1, imm`.
-    fn make_rri(
-        opcode: u32,
-        rd: MachineOperand,
-        rs1: MachineOperand,
-        imm: i64,
-    ) -> MachineInstr {
+    fn make_rri(opcode: u32, rd: MachineOperand, rs1: MachineOperand, imm: i64) -> MachineInstr {
         MachineInstr::with_operands(opcode, vec![rd, rs1, MachineOperand::Immediate(imm)])
     }
 
@@ -675,43 +670,95 @@ impl RiscV64InstrSel {
         out: &mut Vec<MachineInstr>,
     ) {
         match ir_inst {
-            Instruction::Alloca { result, ty, alignment } => {
+            Instruction::Alloca {
+                result,
+                ty,
+                alignment,
+            } => {
                 self.select_alloca(*result, ty, *alignment, out);
             }
-            Instruction::Load { result, ptr, ty, volatile: _ } => {
+            Instruction::Load {
+                result,
+                ptr,
+                ty,
+                volatile: _,
+            } => {
                 self.select_load(*result, *ptr, ty, func, out);
             }
-            Instruction::Store { value, ptr, volatile: _ } => {
+            Instruction::Store {
+                value,
+                ptr,
+                volatile: _,
+            } => {
                 self.select_store(*value, *ptr, func, out);
             }
-            Instruction::BinOp { result, op, lhs, rhs, ty } => {
+            Instruction::BinOp {
+                result,
+                op,
+                lhs,
+                rhs,
+                ty,
+            } => {
                 self.select_binary_op(*result, *op, *lhs, *rhs, ty, out);
             }
-            Instruction::ICmp { result, pred, lhs, rhs } => {
+            Instruction::ICmp {
+                result,
+                pred,
+                lhs,
+                rhs,
+            } => {
                 self.select_comparison(*result, *pred, *lhs, *rhs, func, out);
             }
-            Instruction::FCmp { result, pred, lhs, rhs } => {
+            Instruction::FCmp {
+                result,
+                pred,
+                lhs,
+                rhs,
+            } => {
                 self.select_fp_comparison(*result, *pred, *lhs, *rhs, func, out);
             }
             Instruction::Branch { target } => {
                 self.select_branch(*target, out);
             }
-            Instruction::CondBranch { condition, true_target, false_target } => {
+            Instruction::CondBranch {
+                condition,
+                true_target,
+                false_target,
+            } => {
                 self.select_cond_branch(*condition, *true_target, *false_target, out);
             }
-            Instruction::Switch { value, default, cases } => {
+            Instruction::Switch {
+                value,
+                default,
+                cases,
+            } => {
                 self.select_switch(*value, *default, cases, out);
             }
-            Instruction::Call { result, callee, args, is_tail } => {
+            Instruction::Call {
+                result,
+                callee,
+                args,
+                is_tail,
+            } => {
                 self.select_call(*result, *callee, args, *is_tail, func, out);
             }
             Instruction::Return { value } => {
                 self.select_return(*value, func, out);
             }
-            Instruction::Phi { result, ty, incoming } => {
+            Instruction::Phi {
+                result,
+                ty,
+                incoming,
+            } => {
                 self.select_phi(*result, ty, incoming, out);
             }
-            Instruction::GetElementPtr { result, base, indices, ty, in_bounds: _ } => {
+            Instruction::GetElementPtr {
+                result,
+                base,
+                indices,
+                ty,
+                in_bounds: _,
+            } => {
                 self.select_gep(*result, *base, indices, ty, func, out);
             }
             Instruction::BitCast { result, value, .. } => {
@@ -720,13 +767,25 @@ impl RiscV64InstrSel {
                 let src = self.operand_for_value(*value);
                 self.value_map.insert(*result, src);
             }
-            Instruction::Trunc { result, value, to_ty } => {
+            Instruction::Trunc {
+                result,
+                value,
+                to_ty,
+            } => {
                 self.select_cast(*result, *value, to_ty, CastKind::Trunc, func, out);
             }
-            Instruction::ZExt { result, value, to_ty } => {
+            Instruction::ZExt {
+                result,
+                value,
+                to_ty,
+            } => {
                 self.select_cast(*result, *value, to_ty, CastKind::ZExt, func, out);
             }
-            Instruction::SExt { result, value, to_ty } => {
+            Instruction::SExt {
+                result,
+                value,
+                to_ty,
+            } => {
                 self.select_cast(*result, *value, to_ty, CastKind::SExt, func, out);
             }
             Instruction::IntToPtr { result, value, .. } => {
@@ -740,8 +799,13 @@ impl RiscV64InstrSel {
                 self.value_map.insert(*result, src);
             }
             Instruction::InlineAsm {
-                result, template, constraints, operands,
-                clobbers, has_side_effects, ..
+                result,
+                template,
+                constraints,
+                operands,
+                clobbers,
+                has_side_effects,
+                ..
             } => {
                 self.select_inline_asm(
                     result.as_ref().copied(),
@@ -1190,11 +1254,13 @@ impl RiscV64InstrSel {
     /// Emits an unconditional jump to a basic block label.
     pub fn select_branch(&mut self, target: BasicBlockId, out: &mut Vec<MachineInstr>) {
         let label = self.block_label(target);
-        let mut instr =
-            MachineInstr::with_operands(RV_JAL, vec![
+        let mut instr = MachineInstr::with_operands(
+            RV_JAL,
+            vec![
                 MachineOperand::Register(registers::ZERO),
                 MachineOperand::Label(label),
-            ]);
+            ],
+        );
         instr.is_terminator = true;
         out.push(instr);
     }
@@ -1225,11 +1291,13 @@ impl RiscV64InstrSel {
             true_label,
         ));
         // JAL x0, false_label — unconditional jump to false block
-        let mut fallthrough =
-            MachineInstr::with_operands(RV_JAL, vec![
+        let mut fallthrough = MachineInstr::with_operands(
+            RV_JAL,
+            vec![
                 MachineOperand::Register(registers::ZERO),
                 MachineOperand::Label(false_label),
-            ]);
+            ],
+        );
         fallthrough.is_terminator = true;
         out.push(fallthrough);
     }
@@ -1256,9 +1324,9 @@ impl RiscV64InstrSel {
         // Check if the base operand already contains a memory offset
         // (e.g. from a stack slot). If so, use that offset directly.
         let (actual_base, offset) = match &base {
-            MachineOperand::Memory { base: b, offset: o, .. } => {
-                (MachineOperand::Register(*b), *o as i64)
-            }
+            MachineOperand::Memory {
+                base: b, offset: o, ..
+            } => (MachineOperand::Register(*b), *o as i64),
             MachineOperand::FrameIndex(idx) => {
                 // Frame index will be resolved later by the prologue emitter.
                 // For now, emit a load relative to FP.
@@ -1288,9 +1356,9 @@ impl RiscV64InstrSel {
         let ty = func.get_value_type(value);
 
         let (actual_base, offset) = match &base {
-            MachineOperand::Memory { base: b, offset: o, .. } => {
-                (MachineOperand::Register(*b), *o as i64)
-            }
+            MachineOperand::Memory {
+                base: b, offset: o, ..
+            } => (MachineOperand::Register(*b), *o as i64),
             MachineOperand::FrameIndex(idx) => {
                 let fo = self.frame_objects.get(*idx as usize);
                 let off = fo.map(|f| f.offset as i64).unwrap_or(0);
@@ -1369,7 +1437,10 @@ impl RiscV64InstrSel {
                     current_ty = (**element).clone();
                     sz
                 }
-                IrType::Struct { fields: _, packed: _ } => {
+                IrType::Struct {
+                    fields: _,
+                    packed: _,
+                } => {
                     // For structs, the index selects a specific field.
                     // This should be a constant index in well-formed IR.
                     // We handle it by computing the cumulative field offset.
@@ -1949,7 +2020,10 @@ impl RiscV64InstrSel {
         // assembler phase can extract them from the instruction.
         ops.push(MachineOperand::Symbol(template.to_string()));
         if !constraints.is_empty() {
-            ops.push(MachineOperand::Symbol(format!("constraints:{}", constraints)));
+            ops.push(MachineOperand::Symbol(format!(
+                "constraints:{}",
+                constraints
+            )));
         }
 
         let mut instr = MachineInstr::with_operands(RV_INLINE_ASM, ops);
@@ -1985,8 +2059,7 @@ impl RiscV64InstrSel {
 
         // Map the result, if any.
         if let Some(res) = result {
-            self.value_map
-                .insert(res, MachineOperand::VirtualReg(res));
+            self.value_map.insert(res, MachineOperand::VirtualReg(res));
         }
     }
 }
@@ -2158,8 +2231,7 @@ impl RiscV64InstrSel {
 
                     // Restore callee-saved registers (reverse order).
                     for (i, &reg) in self.used_callee_saved.iter().enumerate() {
-                        let off = fs - 8 - (if self.has_calls { 8 } else { 0 })
-                            - (i as i64) * 8;
+                        let off = fs - 8 - (if self.has_calls { 8 } else { 0 }) - (i as i64) * 8;
                         new_instrs.push(Self::make_load(
                             RV_LD,
                             MachineOperand::Register(reg),
@@ -2180,21 +2252,11 @@ impl RiscV64InstrSel {
 
                     // Deallocate stack frame.
                     if Self::fits_in_simm12(fs) {
-                        new_instrs.push(Self::make_rri(
-                            RV_ADDI,
-                            sp.clone(),
-                            sp.clone(),
-                            fs,
-                        ));
+                        new_instrs.push(Self::make_rri(RV_ADDI, sp.clone(), sp.clone(), fs));
                     } else {
                         let t0 = MachineOperand::Register(registers::T0);
                         Self::materialize_immediate_static(fs, t0.clone(), &mut new_instrs);
-                        new_instrs.push(Self::make_rrr(
-                            RV_ADD,
-                            sp.clone(),
-                            sp.clone(),
-                            t0,
-                        ));
+                        new_instrs.push(Self::make_rrr(RV_ADD, sp.clone(), sp.clone(), t0));
                     }
 
                     // Finally, the actual return instruction.
@@ -2225,7 +2287,11 @@ impl RiscV64InstrSel {
     /// | [-2048, 2047]                   | `ADDI rd, x0, imm`               |
     /// | Fits in upper 20 + lower 12     | `LUI rd, hi20` + `ADDI rd, lo12` |
     /// | Full 64-bit                     | Multi-step shift+add sequence     |
-    pub fn materialize_immediate(&mut self, value: i64, out: &mut Vec<MachineInstr>) -> MachineOperand {
+    pub fn materialize_immediate(
+        &mut self,
+        value: i64,
+        out: &mut Vec<MachineInstr>,
+    ) -> MachineOperand {
         let rd_id = self.alloc_vreg();
         let rd = MachineOperand::VirtualReg(rd_id);
         self.materialize_immediate_into(value, rd.clone(), out);
@@ -2245,11 +2311,7 @@ impl RiscV64InstrSel {
     /// Static version of immediate materialization (no `&mut self` needed).
     /// Used by prologue/epilogue emission which holds an immutable reference
     /// to `self`.
-    fn materialize_immediate_static(
-        value: i64,
-        rd: MachineOperand,
-        out: &mut Vec<MachineInstr>,
-    ) {
+    fn materialize_immediate_static(value: i64, rd: MachineOperand, out: &mut Vec<MachineInstr>) {
         let zero = MachineOperand::Register(registers::ZERO);
 
         // Case 1: Fits in signed 12-bit immediate.
@@ -2269,11 +2331,7 @@ impl RiscV64InstrSel {
             if lo12 >= 0x800_i32 {
                 hi20 = hi20.wrapping_add(1);
             }
-            let lo12_signed = if lo12 >= 0x800 {
-                lo12 - 0x1000
-            } else {
-                lo12
-            };
+            let lo12_signed = if lo12 >= 0x800 { lo12 - 0x1000 } else { lo12 };
 
             out.push(MachineInstr::with_operands(
                 RV_LUI,

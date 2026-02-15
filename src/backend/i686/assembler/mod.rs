@@ -74,13 +74,11 @@ pub use relocations::I686RelocType;
 // ---------------------------------------------------------------------------
 
 use crate::backend::i686::registers;
-use crate::backend::traits::{
-    MachineFunction, MachineInstr, MachineOperand, PhysReg,
-};
+use crate::backend::traits::{MachineFunction, MachineInstr, MachineOperand, PhysReg};
 use crate::common::diagnostics::{DiagnosticEngine, Span};
-use crate::common::fx_hash::{FxHashMap, fx_hash_map};
+use crate::common::fx_hash::{fx_hash_map, FxHashMap};
 
-use self::encoder::{EncoderContext, EncodedInstr};
+use self::encoder::{EncodedInstr, EncoderContext};
 
 // ---------------------------------------------------------------------------
 // SectionKind — identifies the ELF output section
@@ -505,15 +503,13 @@ impl I686Assembler {
                     ),
                 );
             }
-            self.label_offsets
-                .insert(label_name, self.current_offset);
+            self.label_offsets.insert(label_name, self.current_offset);
 
             for instr in &block.instructions {
                 // Determine if this instruction targets an internal label
                 // (e.g. a Jcc or Jmp with a Label operand). If so, we will
                 // need to create a fixup after encoding.
-                let label_target =
-                    Self::find_label_target(instr, &block_id_to_label);
+                let label_target = Self::find_label_target(instr, &block_id_to_label);
 
                 // Prepare encoder context at the current code offset.
                 let mut ctx = EncoderContext {
@@ -626,8 +622,7 @@ impl I686Assembler {
         // Reset all state for a fresh module assembly.
         self.reset();
 
-        let mut assembled_functions: Vec<AssembledFunction> =
-            Vec::with_capacity(module.len());
+        let mut assembled_functions: Vec<AssembledFunction> = Vec::with_capacity(module.len());
 
         for mf in module {
             // Record the function's start offset before assembly.
@@ -1040,7 +1035,13 @@ pub fn format_operand_debug(operand: &MachineOperand) -> String {
             "imm?".to_string()
         }
     } else if operand.is_memory() {
-        if let MachineOperand::Memory { base, offset, index, scale } = operand {
+        if let MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } = operand
+        {
             let base_str = format!("%{}", registers::reg_name(*base));
             let index_str = match index {
                 Some(r) => format!("%{}", registers::reg_name(*r)),
@@ -1521,12 +1522,7 @@ mod tests {
         asm.resolve_fixups();
 
         // displacement = target(0) - (fixup_offset(11) + 4) = 0 - 15 = -15
-        let disp = i32::from_le_bytes([
-            asm.code[11],
-            asm.code[12],
-            asm.code[13],
-            asm.code[14],
-        ]);
+        let disp = i32::from_le_bytes([asm.code[11], asm.code[12], asm.code[13], asm.code[14]]);
         assert_eq!(disp, -15);
     }
 
@@ -1829,7 +1825,7 @@ mod tests {
         let instr = MachineInstr {
             opcode: 2,
             operands: vec![MachineOperand::Memory {
-                base: PhysReg(0),         // EAX — valid
+                base: PhysReg(0), // EAX — valid
                 offset: 8,
                 index: Some(PhysReg(50)), // Out of range
                 scale: 4,
@@ -1848,10 +1844,7 @@ mod tests {
     fn test_validate_instr_registers_imm_and_label_ignored() {
         let instr = MachineInstr {
             opcode: 0,
-            operands: vec![
-                MachineOperand::Immediate(42),
-                MachineOperand::Label(7),
-            ],
+            operands: vec![MachineOperand::Immediate(42), MachineOperand::Label(7)],
             implicit_defs: vec![],
             implicit_uses: vec![],
             is_terminator: false,

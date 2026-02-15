@@ -100,8 +100,8 @@ pub mod linker;
 // ---------------------------------------------------------------------------
 
 use crate::backend::traits::{
-    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr, MachineOperand,
-    ParamClass, PhysReg, RelocationType,
+    ArchCodegen, CodegenConfig, MachineFunction, MachineInstr, MachineOperand, ParamClass, PhysReg,
+    RelocationType,
 };
 use crate::common::target::Target;
 use crate::common::types::CType;
@@ -126,7 +126,7 @@ pub use abi::{classify_type, compute_param_locations, compute_return_location};
 
 /// Re-export security configuration and the main mitigation application
 /// function for use by the Phase 10 code generation driver.
-pub use security::{SecurityConfig, apply_security_mitigations};
+pub use security::{apply_security_mitigations, SecurityConfig};
 
 // ---------------------------------------------------------------------------
 // x86-64 Machine Instruction Opcodes
@@ -359,41 +359,216 @@ pub mod opcodes {
 /// Each entry maps a human-readable name to its numeric value (the
 /// `r_type` field in `Elf64_Rela`).
 const X86_64_RELOCATION_TYPES: &[RelocationType] = &[
-    RelocationType { name: "R_X86_64_NONE",              value:  0, is_pc_relative: false, size: 0 },
-    RelocationType { name: "R_X86_64_64",                value:  1, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_PC32",              value:  2, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_GOT32",             value:  3, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_X86_64_PLT32",             value:  4, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_COPY",              value:  5, is_pc_relative: false, size: 0 },
-    RelocationType { name: "R_X86_64_GLOB_DAT",          value:  6, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_JUMP_SLOT",         value:  7, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_RELATIVE",          value:  8, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_GOTPCREL",          value:  9, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_32",                value: 10, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_X86_64_32S",               value: 11, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_X86_64_16",                value: 12, is_pc_relative: false, size: 2 },
-    RelocationType { name: "R_X86_64_PC16",              value: 13, is_pc_relative: true,  size: 2 },
-    RelocationType { name: "R_X86_64_8",                 value: 14, is_pc_relative: false, size: 1 },
-    RelocationType { name: "R_X86_64_PC8",               value: 15, is_pc_relative: true,  size: 1 },
-    RelocationType { name: "R_X86_64_DTPMOD64",          value: 16, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_DTPOFF64",          value: 17, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_TPOFF64",           value: 18, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_TLSGD",             value: 19, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_TLSLD",             value: 20, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_DTPOFF32",          value: 21, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_X86_64_GOTTPOFF",          value: 22, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_TPOFF32",           value: 23, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_X86_64_PC64",              value: 24, is_pc_relative: true,  size: 8 },
-    RelocationType { name: "R_X86_64_GOTOFF64",          value: 25, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_GOTPC32",           value: 26, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_SIZE32",            value: 32, is_pc_relative: false, size: 4 },
-    RelocationType { name: "R_X86_64_SIZE64",            value: 33, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_GOTPC32_TLSDESC",   value: 34, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_TLSDESC_CALL",      value: 35, is_pc_relative: true,  size: 0 },
-    RelocationType { name: "R_X86_64_TLSDESC",           value: 36, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_IRELATIVE",         value: 37, is_pc_relative: false, size: 8 },
-    RelocationType { name: "R_X86_64_GOTPCRELX",         value: 41, is_pc_relative: true,  size: 4 },
-    RelocationType { name: "R_X86_64_REX_GOTPCRELX",     value: 42, is_pc_relative: true,  size: 4 },
+    RelocationType {
+        name: "R_X86_64_NONE",
+        value: 0,
+        is_pc_relative: false,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_X86_64_64",
+        value: 1,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_PC32",
+        value: 2,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_GOT32",
+        value: 3,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_PLT32",
+        value: 4,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_COPY",
+        value: 5,
+        is_pc_relative: false,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_X86_64_GLOB_DAT",
+        value: 6,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_JUMP_SLOT",
+        value: 7,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_RELATIVE",
+        value: 8,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_GOTPCREL",
+        value: 9,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_32",
+        value: 10,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_32S",
+        value: 11,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_16",
+        value: 12,
+        is_pc_relative: false,
+        size: 2,
+    },
+    RelocationType {
+        name: "R_X86_64_PC16",
+        value: 13,
+        is_pc_relative: true,
+        size: 2,
+    },
+    RelocationType {
+        name: "R_X86_64_8",
+        value: 14,
+        is_pc_relative: false,
+        size: 1,
+    },
+    RelocationType {
+        name: "R_X86_64_PC8",
+        value: 15,
+        is_pc_relative: true,
+        size: 1,
+    },
+    RelocationType {
+        name: "R_X86_64_DTPMOD64",
+        value: 16,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_DTPOFF64",
+        value: 17,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_TPOFF64",
+        value: 18,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_TLSGD",
+        value: 19,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_TLSLD",
+        value: 20,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_DTPOFF32",
+        value: 21,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_GOTTPOFF",
+        value: 22,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_TPOFF32",
+        value: 23,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_PC64",
+        value: 24,
+        is_pc_relative: true,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_GOTOFF64",
+        value: 25,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_GOTPC32",
+        value: 26,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_SIZE32",
+        value: 32,
+        is_pc_relative: false,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_SIZE64",
+        value: 33,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_GOTPC32_TLSDESC",
+        value: 34,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_TLSDESC_CALL",
+        value: 35,
+        is_pc_relative: true,
+        size: 0,
+    },
+    RelocationType {
+        name: "R_X86_64_TLSDESC",
+        value: 36,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_IRELATIVE",
+        value: 37,
+        is_pc_relative: false,
+        size: 8,
+    },
+    RelocationType {
+        name: "R_X86_64_GOTPCRELX",
+        value: 41,
+        is_pc_relative: true,
+        size: 4,
+    },
+    RelocationType {
+        name: "R_X86_64_REX_GOTPCRELX",
+        value: 42,
+        is_pc_relative: true,
+        size: 4,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -536,11 +711,7 @@ impl X86_64Codegen {
     /// # Returns
     ///
     /// A `Vec<MachineInstr>` to be prepended to the entry basic block.
-    fn generate_prologue(
-        &self,
-        frame_size: u32,
-        callee_saved: &[PhysReg],
-    ) -> Vec<MachineInstr> {
+    fn generate_prologue(&self, frame_size: u32, callee_saved: &[PhysReg]) -> Vec<MachineInstr> {
         let mut instrs = Vec::with_capacity(4 + callee_saved.len());
 
         // Step 1: CET indirect branch tracking — emit ENDBR64 at function entry
@@ -596,10 +767,8 @@ impl X86_64Codegen {
 
         // Step 5: Save callee-saved registers
         for &reg in callee_saved {
-            let mut push = MachineInstr::with_operands(
-                opcodes::PUSH,
-                vec![MachineOperand::Register(reg)],
-            );
+            let mut push =
+                MachineInstr::with_operands(opcodes::PUSH, vec![MachineOperand::Register(reg)]);
             push.add_implicit_def(registers::RSP);
             push.add_implicit_use(registers::RSP);
             push.add_implicit_use(reg);
@@ -631,10 +800,8 @@ impl X86_64Codegen {
 
         // Step 1: Restore callee-saved registers in reverse push order
         for &reg in callee_saved.iter().rev() {
-            let mut pop = MachineInstr::with_operands(
-                opcodes::POP,
-                vec![MachineOperand::Register(reg)],
-            );
+            let mut pop =
+                MachineInstr::with_operands(opcodes::POP, vec![MachineOperand::Register(reg)]);
             pop.add_implicit_def(registers::RSP);
             pop.add_implicit_def(reg);
             pop.add_implicit_use(registers::RSP);
@@ -727,9 +894,10 @@ impl ArchCodegen for X86_64Codegen {
         // This affects red zone eligibility and prologue generation:
         // leaf functions (no calls) with small frames can use the 128-byte
         // red zone below RSP, skipping frame pointer setup entirely.
-        mf.has_calls = mf.blocks.iter().any(|bb| {
-            bb.instructions.iter().any(|instr| instr.is_call)
-        });
+        mf.has_calls = mf
+            .blocks
+            .iter()
+            .any(|bb| bb.instructions.iter().any(|instr| instr.is_call));
 
         // Extract function-level properties that influence code generation.
         //
@@ -782,10 +950,8 @@ impl ArchCodegen for X86_64Codegen {
         // Even noreturn functions receive mitigations since their body
         // can contain indirect calls that need protection.
         if self.config.retpoline || self.config.cf_protection {
-            let sec_config = SecurityConfig::from_flags(
-                self.config.retpoline,
-                self.config.cf_protection,
-            );
+            let sec_config =
+                SecurityConfig::from_flags(self.config.retpoline, self.config.cf_protection);
             apply_security_mitigations(&mut mf, &sec_config);
         }
 
@@ -965,9 +1131,7 @@ impl ArchCodegen for X86_64Codegen {
         // The epilogue already includes its own RET instruction, so we
         // substitute rather than insert-before.
         for bb in &mut mf.blocks {
-            let mut new_instrs = Vec::with_capacity(
-                bb.instructions.len() + epilogue_instrs.len(),
-            );
+            let mut new_instrs = Vec::with_capacity(bb.instructions.len() + epilogue_instrs.len());
             for instr in bb.instructions.drain(..) {
                 if instr.is_return {
                     // Replace the bare return with the complete epilogue
@@ -1049,11 +1213,7 @@ impl ArchCodegen for X86_64Codegen {
     /// # Returns
     ///
     /// A [`MachineOperand`] referencing the loaded symbol address.
-    fn generate_pic_addressing(
-        &self,
-        symbol: &str,
-        mf: &mut MachineFunction,
-    ) -> MachineOperand {
+    fn generate_pic_addressing(&self, symbol: &str, mf: &mut MachineFunction) -> MachineOperand {
         if self.config.requires_pic() {
             // PIC mode: emit a RIP-relative GOT load sequence.
             // LEA rax, [rip + symbol@GOTPCREL]
@@ -1063,9 +1223,10 @@ impl ArchCodegen for X86_64Codegen {
             let got_symbol = format!("{}@GOTPCREL", symbol);
 
             if !mf.blocks.is_empty() {
-                let last_bb = mf.blocks.last_mut().expect(
-                    "generate_pic_addressing: function must have at least one basic block",
-                );
+                let last_bb = mf
+                    .blocks
+                    .last_mut()
+                    .expect("generate_pic_addressing: function must have at least one basic block");
                 // Emit LEA into RAX from [RIP + symbol@GOTPCREL]
                 // RIP-relative addressing: base = RIP (implicit, encoded
                 // by the assembler when it sees a Memory operand with a
@@ -1365,7 +1526,10 @@ mod tests {
         assert!(has("R_X86_64_RELATIVE"), "missing R_X86_64_RELATIVE");
         assert!(has("R_X86_64_32S"), "missing R_X86_64_32S");
         assert!(has("R_X86_64_GOTPCRELX"), "missing R_X86_64_GOTPCRELX");
-        assert!(has("R_X86_64_REX_GOTPCRELX"), "missing R_X86_64_REX_GOTPCRELX");
+        assert!(
+            has("R_X86_64_REX_GOTPCRELX"),
+            "missing R_X86_64_REX_GOTPCRELX"
+        );
     }
 
     #[test]
@@ -1795,7 +1959,12 @@ mod tests {
             opcodes::PSEUDO_RETPOLINE,
         ];
         for op in &pseudo_ops {
-            assert!(*op >= threshold, "Pseudo-op {:#X} below {:#X}", op, threshold);
+            assert!(
+                *op >= threshold,
+                "Pseudo-op {:#X} below {:#X}",
+                op,
+                threshold
+            );
         }
     }
 }

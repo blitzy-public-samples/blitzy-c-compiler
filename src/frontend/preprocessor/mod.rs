@@ -1883,7 +1883,7 @@ fn pp_tokenize(source: &str, file_id: u32, interner: &mut Interner) -> Vec<Token
         // ── String literals ──────────────────────────────────────
         if b == b'"' {
             pos += 1;
-            let mut content = String::new();
+            let mut byte_content: Vec<u8> = Vec::new();
             while (pos as usize) < len {
                 let c = bytes[pos as usize];
                 if c == b'"' {
@@ -1891,23 +1891,80 @@ fn pp_tokenize(source: &str, file_id: u32, interner: &mut Interner) -> Vec<Token
                     break;
                 }
                 if c == b'\\' && (pos as usize) + 1 < len {
-                    // Escape sequence — include both chars in content.
-                    content.push(source[pos as usize..].chars().next().unwrap());
-                    pos += 1;
-                    content.push(source[pos as usize..].chars().next().unwrap());
-                    pos += 1;
+                    // Process C escape sequences into their byte values.
+                    pos += 1; // consume backslash
+                    let esc = bytes[pos as usize];
+                    pos += 1; // consume escape character
+                    match esc {
+                        b'n' => byte_content.push(0x0a),
+                        b't' => byte_content.push(0x09),
+                        b'r' => byte_content.push(0x0d),
+                        b'0' => {
+                            // Octal: \0 or \0NN
+                            let mut val: u8 = 0;
+                            let mut count = 0;
+                            while count < 2
+                                && (pos as usize) < len
+                                && bytes[pos as usize] >= b'0'
+                                && bytes[pos as usize] <= b'7'
+                            {
+                                val = val * 8 + (bytes[pos as usize] - b'0');
+                                pos += 1;
+                                count += 1;
+                            }
+                            byte_content.push(val);
+                        }
+                        b'x' => {
+                            // Hex escape: \xHH
+                            let mut val: u8 = 0;
+                            let mut count = 0;
+                            while count < 2 && (pos as usize) < len {
+                                let hb = bytes[pos as usize];
+                                let digit = match hb {
+                                    b'0'..=b'9' => Some(hb - b'0'),
+                                    b'a'..=b'f' => Some(hb - b'a' + 10),
+                                    b'A'..=b'F' => Some(hb - b'A' + 10),
+                                    _ => None,
+                                };
+                                if let Some(d) = digit {
+                                    val = val * 16 + d;
+                                    pos += 1;
+                                    count += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            byte_content.push(val);
+                        }
+                        b'\\' => byte_content.push(b'\\'),
+                        b'\'' => byte_content.push(b'\''),
+                        b'"' => byte_content.push(b'"'),
+                        b'a' => byte_content.push(0x07),
+                        b'b' => byte_content.push(0x08),
+                        b'f' => byte_content.push(0x0c),
+                        b'v' => byte_content.push(0x0b),
+                        b'?' => byte_content.push(b'?'),
+                        other => {
+                            // Unknown escape — preserve literally.
+                            byte_content.push(b'\\');
+                            byte_content.push(other);
+                        }
+                    }
                     continue;
                 }
                 if c == b'\n' {
                     break; // Unterminated string on this line.
                 }
                 let ch = source[pos as usize..].chars().next().unwrap();
-                content.push(ch);
-                pos += ch.len_utf8() as u32;
+                let ch_len = ch.len_utf8();
+                for i in 0..ch_len {
+                    byte_content.push(bytes[(pos as usize) + i]);
+                }
+                pos += ch_len as u32;
             }
             tokens.push(Token::new(
                 TokenKind::StringLiteral {
-                    value: content.into_bytes(),
+                    value: byte_content,
                     prefix: crate::frontend::lexer::token::StringPrefix::None,
                 },
                 Span::new(file_id, start, pos),

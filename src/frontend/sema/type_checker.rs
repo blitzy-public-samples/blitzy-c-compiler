@@ -2318,6 +2318,13 @@ fn resolve_type_name(type_name: &TypeName, ctx: &mut TypeCheckContext<'_>) -> CT
                 let inner_ty = resolve_type_name(inner_tn, ctx);
                 resolved_from_tag = Some(CType::Atomic(Box::new(inner_ty)));
             }
+            TypeSpecifier::BuiltinVaList => {
+                // __builtin_va_list is a GCC built-in type representing the
+                // variadic argument list. Internally we model it as a pointer
+                // to void — the actual runtime representation is platform-
+                // dependent and handled by the backend.
+                resolved_from_tag = Some(CType::Pointer(Box::new(CType::Void)));
+            }
         }
     }
 

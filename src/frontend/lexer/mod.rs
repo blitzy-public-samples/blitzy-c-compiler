@@ -277,6 +277,52 @@ fn keyword_table() -> &'static FxHashMap<&'static str, TokenKind> {
 }
 
 // ---------------------------------------------------------------------------
+// Keyword Classification — Phase 3 post-processing for preprocessor output
+// ---------------------------------------------------------------------------
+
+/// Classify identifier tokens as keywords in a preprocessor-produced token
+/// stream.
+///
+/// The preprocessor's internal tokenizer (`pp_tokenize`) produces a raw token
+/// stream where all identifiers — including C keywords, GCC extension
+/// keywords, and builtin names — are stored as `TokenKind::Identifier(Symbol)`.
+/// This function performs a **single O(n) pass** over the token stream,
+/// resolving each identifier's text via the [`Interner`] and looking it up in
+/// the static keyword table. Matching identifiers are replaced in-place with
+/// their corresponding `TokenKind` variant (e.g., `Int`, `Return`,
+/// `Attribute`).
+///
+/// This step bridges the gap between the preprocessor (Phase 2) and the parser
+/// (Phase 4), which expects keywords to carry their specific `TokenKind`
+/// values for correct dispatch during recursive-descent parsing.
+///
+/// Non-identifier tokens (operators, literals, whitespace, etc.) are left
+/// untouched. Identifiers that do not match any keyword remain as
+/// `TokenKind::Identifier(Symbol)`.
+///
+/// # Arguments
+///
+/// * `tokens` — mutable slice of tokens to classify in-place.
+/// * `interner` — string interner used to resolve `Symbol` handles back to
+///   the identifier text for keyword lookup.
+///
+/// # Performance
+///
+/// Single O(n) pass over the token stream with O(1) expected-time FxHashMap
+/// lookups for each identifier. No allocations are performed.
+pub fn classify_keywords(tokens: &mut [Token], interner: &crate::common::Interner) {
+    let table = keyword_table();
+    for token in tokens.iter_mut() {
+        if let TokenKind::Identifier(sym) = &token.kind {
+            let text = interner.resolve(*sym);
+            if let Some(kw_kind) = table.get(text) {
+                token.kind = kw_kind.clone();
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Lexer — the Phase 3 tokenization driver
 // ---------------------------------------------------------------------------
 

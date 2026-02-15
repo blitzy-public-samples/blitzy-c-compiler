@@ -175,6 +175,8 @@ pub fn is_type_specifier_token(kind: &TokenKind) -> bool {
             | TokenKind::Enum
             // GCC typeof (acts as type specifier)
             | TokenKind::TypeofKeyword
+            // GCC __builtin_va_list — variadic argument list type
+            | TokenKind::BuiltinVaList
             // GCC __signed__ (equivalent to signed)
             | TokenKind::SignedGcc
             // __extension__ can precede type specifiers
@@ -218,6 +220,9 @@ fn is_type_name_start(parser: &Parser<'_>) -> bool {
 
         // GCC extensions used as type specifiers
         TokenKind::TypeofKeyword | TokenKind::Attribute | TokenKind::Extension => true,
+
+        // GCC __builtin_va_list
+        TokenKind::BuiltinVaList => true,
 
         // GCC __signed__
         TokenKind::SignedGcc => true,
@@ -357,6 +362,14 @@ pub fn parse_type_specifier(parser: &mut Parser<'_>) -> ParseResult<TypeSpecifie
         TokenKind::Struct => super::declarations::parse_struct_or_union_specifier(parser, true),
         TokenKind::Union => super::declarations::parse_struct_or_union_specifier(parser, false),
         TokenKind::Enum => super::declarations::parse_enum_specifier(parser),
+
+        // ---------------------------------------------------------------
+        // __builtin_va_list — GCC built-in variadic argument list type
+        // ---------------------------------------------------------------
+        TokenKind::BuiltinVaList => {
+            parser.advance();
+            Ok(TypeSpecifier::BuiltinVaList)
+        }
 
         // ---------------------------------------------------------------
         // typeof / __typeof__ / __typeof — GCC extension
@@ -1110,6 +1123,11 @@ pub fn combine_type_specifiers(specifiers: &[TypeSpecifier]) -> ParseResult<Comb
             TypeSpecifier::Atomic(..) => {
                 // _Atomic(type-name) in a multi-specifier context is unusual;
                 // treat as if we're combining with the wrapped type
+            }
+            TypeSpecifier::BuiltinVaList => {
+                // __builtin_va_list is a standalone type (opaque pointer);
+                // treat similarly to a typedef name for combination purposes
+                flags |= SPEC_TYPEDEF_NAME;
             }
         }
     }

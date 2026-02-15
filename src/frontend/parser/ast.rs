@@ -489,6 +489,8 @@ pub enum TypeSpecifier {
         /// Source location of the typedef name token.
         span: Span,
     },
+    /// `__builtin_va_list` — GCC built-in variadic argument list type.
+    BuiltinVaList,
     /// `typeof(operand)` / `__typeof__(operand)` — GCC extension.
     Typeof {
         /// The operand — either an expression or a type name.

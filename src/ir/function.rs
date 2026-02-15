@@ -694,6 +694,22 @@ impl IrFunction {
             .unwrap_or_else(|| panic!("BasicBlock {:?} not found in function '{}'", id, self.name))
     }
 
+    /// Returns an immutable reference to the basic block with the given ID,
+    /// or `None` if no such block exists.
+    ///
+    /// This is the non-panicking variant of [`get_block`] — useful for
+    /// defensive code in optimization passes where stale block references
+    /// may exist in successor/predecessor lists.
+    pub fn try_get_block(&self, id: BasicBlockId) -> Option<&BasicBlock> {
+        self.basic_blocks.iter().find(|bb| bb.id == id)
+    }
+
+    /// Returns `true` if a basic block with the given ID exists in this
+    /// function.
+    pub fn has_block(&self, id: BasicBlockId) -> bool {
+        self.basic_blocks.iter().any(|bb| bb.id == id)
+    }
+
     /// Returns a mutable reference to the basic block with the given ID.
     ///
     /// # Panics

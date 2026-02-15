@@ -34,16 +34,17 @@ use std::path::PathBuf;
 use crate::backend::aarch64::AArch64Codegen;
 use crate::backend::dwarf::{DwarfGenerator, DwarfSections};
 use crate::backend::elf_writer_common::{
-    ElfSection, ElfSymbol, ElfWriter, ProgramHeader, ET_DYN, ET_EXEC, ET_REL, PT_GNU_STACK,
-    PT_LOAD, PT_PHDR, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHN_UNDEF, SHT_NOBITS, SHT_PROGBITS,
-    STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_NOTYPE, STT_OBJECT, STV_DEFAULT,
-    STV_HIDDEN, STV_PROTECTED,
+    ElfSection, ElfSymbol, ElfWriter, ProgramHeader, ET_DYN, ET_EXEC, ET_REL, PF_R, PF_W,
+    PT_DYNAMIC, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_PHDR, SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE,
+    SHN_UNDEF, SHT_DYNAMIC, SHT_DYNSYM, SHT_NOBITS, SHT_PROGBITS, SHT_STRTAB, STB_GLOBAL,
+    STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_NOTYPE, STT_OBJECT, STV_DEFAULT, STV_HIDDEN,
+    STV_PROTECTED,
 };
 use crate::backend::i686::I686Codegen;
 use crate::backend::linker_common::{
-    DynamicSectionBuilder, InputRelocation, InputSection, InputSymbol, LinkerScript, OutputType,
-    SectionMerger, SymbolBinding, SymbolResolver, SymbolType as LinkerSymbolType,
-    SymbolVisibility as LinkerSymbolVisibility,
+    InputRelocation, InputSection, InputSymbol, LinkError, LinkerScript,
+    OutputType, SectionMerger, SymbolBinding, SymbolResolver,
+    SymbolType as LinkerSymbolType, SymbolVisibility as LinkerSymbolVisibility,
 };
 use crate::backend::register_allocator::RegisterAllocator;
 use crate::backend::riscv64::RiscV64Codegen;
@@ -257,8 +258,10 @@ struct AssembledFunction {
     section_name: String,
     /// Function alignment in bytes.
     alignment: u32,
-    /// Relocations emitted by the assembler for this function.
+    /// Relocations emitted by the assembler for this function (linker format).
     relocations: Vec<InputRelocation>,
+    /// Raw assembler relocations preserving symbol names for dynamic linking.
+    asm_relocations: Vec<crate::backend::traits::AsmRelocation>,
     /// Offset of this function within its section (assigned during layout).
     section_offset: u64,
 }
@@ -364,8 +367,30 @@ fn compile_function(
     dwarf: &mut DwarfGenerator,
     text_offset: u64,
 ) -> io::Result<AssembledFunction> {
+    // DEBUG: dump IR function details before lowering
+    eprintln!("[DEBUG compile_function] func='{}' is_def={} blocks={} params={}",
+        ir_func.name, ir_func.is_definition,
+        ir_func.basic_blocks.len(), ir_func.params.len());
+    for (bi, bb) in ir_func.basic_blocks.iter().enumerate() {
+        let icount = bb.instructions().len();
+        eprintln!("[DEBUG]   block[{}] id={:?} instructions={}", bi, bb.id, icount);
+        for (ii, inst) in bb.instructions().iter().enumerate() {
+            eprintln!("[DEBUG]     instr[{}]: {:?}", ii, inst);
+        }
+    }
+
     // Step 1: Instruction selection — lower IR to machine instructions
     let mut mf = codegen.lower_function(ir_func);
+
+    // DEBUG: dump MachineFunction after instruction selection
+    eprintln!("[DEBUG compile_function] after isel: func='{}' blocks={}", 
+        mf.name, mf.blocks.len());
+    for (bi, mbb) in mf.blocks.iter().enumerate() {
+        eprintln!("[DEBUG]   mbb[{}] instructions={}", bi, mbb.instructions.len());
+        for (ii, mi) in mbb.instructions.iter().enumerate() {
+            eprintln!("[DEBUG]     mi[{}]: opcode={} operands={}", ii, mi.opcode, mi.operands.len());
+        }
+    }
 
     // Step 2: Prologue and epilogue emission
     codegen.emit_prologue(&mut mf);
@@ -383,8 +408,10 @@ fn compile_function(
         apply_security_mitigations(&mut mf, &sec_config);
     }
 
-    // Step 5: Assemble to machine code bytes
-    let code = codegen.emit_assembly(&mf);
+    // Step 5: Assemble to machine code bytes *with* relocations
+    let asm_output = codegen.emit_assembly_with_relocations(&mf);
+    let code = asm_output.code;
+    let asm_relocs = asm_output.relocations;
 
     // Step 6: DWARF debug info emission for this function
     if dwarf.is_enabled() {
@@ -425,6 +452,23 @@ fn compile_function(
     let is_weak = matches!(ir_func.linkage, Linkage::Weak);
     let visibility = visibility_to_elf(&ir_func.attributes.visibility);
 
+    // Convert assembler relocations to linker InputRelocations.
+    // Each relocation records the symbol name in the addend field encoding
+    // and uses a symbol_index that will be resolved later during linking.
+    // For now, we store a hash of the symbol name in symbol_index and keep
+    // the symbol name available via a side channel (the function's own
+    // relocation tracking).
+    let func_relocations: Vec<InputRelocation> = asm_relocs
+        .iter()
+        .map(|r| InputRelocation {
+            offset: r.offset as u64,
+            reloc_type: r.reloc_type,
+            symbol_index: 0, // resolved during linking
+            addend: r.addend,
+            section_index: 0,
+        })
+        .collect();
+
     Ok(AssembledFunction {
         name: ir_func.name.clone(),
         code,
@@ -434,8 +478,9 @@ fn compile_function(
         visibility,
         section_name,
         alignment: ir_func.alignment.max(1),
-        relocations: Vec::new(),
+        relocations: func_relocations,
         section_offset: text_offset,
+        asm_relocations: asm_relocs,
     })
 }
 
@@ -1032,30 +1077,107 @@ fn write_linked_output(
     let input_symbols = build_input_symbols(functions, globals, module, &retpoline_thunks);
     sym_resolver.collect_symbols(object_index, &input_symbols);
 
-    let resolved = match sym_resolver.resolve_references() {
-        Ok(resolved) => resolved,
+    // Collect the set of extern function declaration names for dynamic import
+    // detection. If symbol resolution fails, we check whether all unresolved
+    // symbols are extern function declarations — if so, they become dynamic
+    // imports from libc and we produce a dynamically-linked executable.
+    let extern_decl_names: std::collections::HashSet<String> = module
+        .declarations
+        .iter()
+        .map(|d| d.name.clone())
+        .collect();
+
+    let (resolved, dynamic_imports) = match sym_resolver.resolve_references() {
+        Ok(resolved) => (resolved, Vec::new()),
         Err(errors) => {
+            // Separate truly unresolved symbols from extern declarations
+            // that should be resolved by the dynamic linker at runtime.
+            let mut truly_unresolved = Vec::new();
+            let mut dyn_imports: Vec<String> = Vec::new();
+
             for error in &errors {
-                let msg = format!("Link error: {:?}", error);
-                diagnostics.error(Span::DUMMY, msg);
+                match error {
+                    LinkError::UndefinedSymbol {
+                        name,
+                        referenced_by: _,
+                    } => {
+                        if extern_decl_names.contains(name) {
+                            // This is an extern function declaration — resolve
+                            // via dynamic linking (libc.so.6) at runtime.
+                            dyn_imports.push(name.clone());
+                        } else {
+                            truly_unresolved.push(error.clone());
+                        }
+                    }
+                    other => truly_unresolved.push(other.clone()),
+                }
             }
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Linking failed with unresolved symbols",
-            ));
+
+            if !truly_unresolved.is_empty() {
+                for error in &truly_unresolved {
+                    let msg = format!("Link error: {:?}", error);
+                    diagnostics.error(Span::DUMMY, msg);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Linking failed with unresolved symbols",
+                ));
+            }
+
+            // All unresolved symbols are extern declarations — treat as
+            // dynamic imports. Re-run resolution with those symbols removed
+            // from the input so it succeeds.
+            let mut sym_resolver2 = SymbolResolver::new();
+            sym_resolver2.set_target(config.target);
+            sym_resolver2.register_object(object_index, &module.name);
+
+            let filtered_symbols: Vec<InputSymbol> = input_symbols
+                .into_iter()
+                .filter(|s| !dyn_imports.contains(&s.name))
+                .collect();
+            sym_resolver2.collect_symbols(object_index, &filtered_symbols);
+
+            match sym_resolver2.resolve_references() {
+                Ok(resolved) => (resolved, dyn_imports),
+                Err(errors2) => {
+                    for error in &errors2 {
+                        let msg = format!("Link error: {:?}", error);
+                        diagnostics.error(Span::DUMMY, msg);
+                    }
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Linking failed with unresolved symbols",
+                    ));
+                }
+            }
         }
     };
 
-    // --- Phase 5: Dynamic linking sections (for -shared) ---
-    let _dynamic_builder = if config.shared {
-        let builder = DynamicSectionBuilder::new();
-        // Dynamic sections are generated during the final ELF write phase
-        Some(builder)
-    } else {
-        None
-    };
+    // Determine if we need dynamic linking infrastructure.
+    let needs_dynamic = config.shared || !dynamic_imports.is_empty();
 
-    // --- Phase 6: Build the final ELF ---
+    if needs_dynamic && !config.shared {
+        // ================================================================
+        // Dynamic executable path — construct the ELF binary directly for
+        // full control over the file layout. This is needed because the
+        // ElfWriter computes its own file offsets which would conflict with
+        // the program header offsets we need to set precisely.
+        // ================================================================
+        return write_dynamic_executable(
+            functions,
+            globals,
+            string_literals,
+            &dynamic_imports,
+            &resolved,
+            module,
+            config,
+            &section_merger,
+            &retpoline_thunks,
+            dwarf_sections,
+        );
+    }
+
+    // --- Phase 6: Build the final ELF (static or shared-object path) ---
     let mut elf = ElfWriter::new(config.target);
 
     if config.shared {
@@ -1082,8 +1204,6 @@ fn write_linked_output(
         elf_section.data = section_data;
         elf_section.alignment = out_section.alignment;
         elf_section.addr = out_section.addr;
-        // Note: The ElfWriter computes file offsets internally during write(),
-        // using the section data lengths and alignment constraints.
         elf.add_section(elf_section);
     }
 
@@ -1111,9 +1231,8 @@ fn write_linked_output(
         if let Some(val) = resolved.get_symbol_value(&func.name) {
             sym.value = val;
         }
-        // Section index will be set by the ELF writer based on section lookup
         if let Some(sec_idx) = section_merger.find_section(&func.section_name) {
-            sym.section_index = (sec_idx + 1) as u16; // +1 for NULL section
+            sym.section_index = (sec_idx + 1) as u16;
         }
         elf.add_symbol(sym);
     }
@@ -1164,7 +1283,6 @@ fn write_linked_output(
     let elf_bytes = elf.write();
     std::fs::write(&config.output_path, &elf_bytes)?;
 
-    // Set executable permissions on the output file (Unix-only)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1699,8 +1817,32 @@ fn build_input_symbols(
         });
     }
 
-    // External function declarations (undefined symbols)
+    // External function declarations (undefined symbols).
+    // Only emit declarations that are actually referenced (called or address-taken)
+    // in the generated code. Declarations merely present from header parsing
+    // (e.g., all of stdio.h) but never used should NOT appear as undefined
+    // symbols — otherwise the linker fails on every libc prototype.
+    //
+    // We collect the set of referenced global names by scanning all function
+    // bodies for values whose name matches the `global.<name>` pattern
+    // produced by `IrBuilder::build_global_ref`.
+    let mut referenced_globals: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for func in &module.functions {
+        for vi in &func.local_values {
+            if let Some(ref name) = vi.name {
+                if let Some(stripped) = name.strip_prefix("global.") {
+                    referenced_globals.insert(stripped.to_string());
+                }
+            }
+        }
+    }
+
     for decl in &module.declarations {
+        // Skip declarations that are never actually referenced in the code.
+        if !referenced_globals.contains(&decl.name) {
+            continue;
+        }
         symbols.push(InputSymbol {
             name: decl.name.clone(),
             value: 0,
@@ -1756,6 +1898,1029 @@ fn generate_retpoline_thunks(codegen: &dyn ArchCodegen) -> Vec<RetpolineThunkDat
             }
         })
         .collect()
+}
+
+// ===========================================================================
+// Dynamic Executable Builder
+// ===========================================================================
+
+/// Produces a dynamically-linked ELF executable (ET_EXEC) with .interp,
+/// .dynsym, .dynstr, .gnu.hash, .rela.plt, .plt, .got.plt, and .dynamic
+/// sections. This function constructs the ELF binary directly as a byte
+/// vector for complete control over file layout, which is required because
+/// program header file offsets must exactly match section positions.
+///
+/// The layout model uses `vaddr = base_address + file_offset` so that
+/// a single PT_LOAD mapping covers the entire read-execute segment, and
+/// a second PT_LOAD covers the read-write segment (.got.plt, .dynamic, .data).
+///
+/// A synthetic `_start` stub is prepended to .text that calls `main` and
+/// then invokes the `exit` syscall with main's return value, ensuring
+/// clean process termination without requiring crt1.o.
+#[allow(clippy::too_many_arguments)]
+fn write_dynamic_executable(
+    functions: &[AssembledFunction],
+    globals: &[AssembledGlobal],
+    string_literals: &[AssembledStringLiteral],
+    dynamic_imports: &[String],
+    _resolved: &crate::backend::linker_common::ResolvedSymbols,
+    _module: &crate::ir::module::IrModule,
+    config: &CodegenConfig,
+    _section_merger: &SectionMerger,
+    retpoline_thunks: &[RetpolineThunkData],
+    _dwarf_sections: &Option<DwarfSections>,
+) -> io::Result<()> {
+    use crate::backend::linker_common::dynamic::{
+        DynamicLayout, DynamicRelocation, DynamicSectionBuilder, DynamicSymbolTable,
+        GotBuilder, GotEntry, PltBuilder, PltEntry, build_rela_plt, interp_string,
+    };
+
+    let target = &config.target;
+    let is_64bit = match target {
+        Target::X86_64 | Target::AArch64 | Target::RiscV64 => true,
+        Target::I686 => false,
+    };
+    let ptr_size: u64 = if is_64bit { 8 } else { 4 };
+    let base_address: u64 = if is_64bit { 0x400000 } else { 0x08048000 };
+    let ehdr_size: usize = if is_64bit { 64 } else { 52 };
+    let phdr_entry_size: usize = if is_64bit { 56 } else { 32 };
+
+    // We need 5 program headers:
+    // PT_PHDR, PT_INTERP, PT_LOAD (rx), PT_LOAD (rw), PT_DYNAMIC
+    let num_phdrs: usize = 5;
+    let phdr_table_size = num_phdrs * phdr_entry_size;
+    let phdrs_end = ehdr_size + phdr_table_size;
+
+    // ---- Collect section data from the compilation ----
+    // Gather .rodata from string literals and const globals.
+    // Build a name-to-offset map so that relocations referencing
+    // string literal symbols can be correctly patched.
+    let mut rodata_data = Vec::new();
+    let mut rodata_sym_offsets: Vec<(String, u64)> = Vec::new();
+    for lit in string_literals {
+        let off = rodata_data.len() as u64;
+        // Store multiple name variants so relocation matching is robust.
+        // The assembler may emit ".str.0" while the literal is labelled ".L.str.0".
+        rodata_sym_offsets.push((lit.label.clone(), off));
+        // Also store a stripped variant without leading ".L" so that both
+        // ".L.str.0" and ".str.0" resolve to the same offset.
+        if let Some(stripped) = lit.label.strip_prefix(".L") {
+            rodata_sym_offsets.push((stripped.to_string(), off));
+        }
+        rodata_data.extend_from_slice(&lit.data);
+    }
+    for global in globals.iter().filter(|g| g.is_const && !g.is_bss) {
+        let align = global.alignment as u64;
+        let pad = dyn_align_pad(rodata_data.len() as u64, align);
+        rodata_data.extend(std::iter::repeat(0u8).take(pad));
+        rodata_data.extend_from_slice(&global.data);
+    }
+
+    // Gather .data from initialized mutable globals
+    let mut data_data = Vec::new();
+    for global in globals.iter().filter(|g| !g.is_const && !g.is_bss) {
+        let align = global.alignment as u64;
+        let pad = dyn_align_pad(data_data.len() as u64, align);
+        data_data.extend(std::iter::repeat(0u8).take(pad));
+        data_data.extend_from_slice(&global.data);
+    }
+
+    // .bss size from zero-initialized globals
+    let mut bss_size: u64 = 0;
+    for global in globals.iter().filter(|g| g.is_bss) {
+        let align = global.alignment as u64;
+        bss_size = dyn_align_up(bss_size, align);
+        bss_size += global.data.len() as u64;
+    }
+
+    // ---- Build .interp section ----
+    let interp_str = interp_string(target);
+    let mut interp_data = interp_str.as_bytes().to_vec();
+    interp_data.push(0); // NUL terminator
+
+    // ---- Build .dynsym and .dynstr ----
+    // Ensure `exit` is always in the dynamic import set so that the _start
+    // stub can call libc's exit() to properly flush stdio buffers.
+    let mut all_dynamic_imports: Vec<String> = dynamic_imports.to_vec();
+    if !all_dynamic_imports.iter().any(|s| s == "exit") {
+        all_dynamic_imports.push("exit".to_string());
+    }
+    let dynamic_imports = &all_dynamic_imports;
+
+    let mut dynsym_table = DynamicSymbolTable::new();
+    if !is_64bit {
+        dynsym_table.set_32bit(true);
+    }
+    for imp in dynamic_imports {
+        // Add each dynamic import as an undefined global function symbol
+        let sym_entry = crate::backend::linker_common::SymbolEntry {
+            name: imp.clone(),
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Global,
+            sym_type: LinkerSymbolType::Func,
+            visibility: LinkerSymbolVisibility::Default,
+            section_index: 0, // SHN_UNDEF
+            is_defined: false,
+            defining_object: 0,
+        };
+        dynsym_table.add_symbol(&sym_entry);
+    }
+    // Intern the needed library name into the same .dynstr table so that
+    // the DT_NEEDED entry offset matches the actual .dynstr contents.
+    let libc_needed_offset = dynsym_table.intern_needed_string("libc.so.6");
+    let dynsym_data = dynsym_table.build_dynsym();
+    let dynstr_data = dynsym_table.build_dynstr();
+    let gnu_hash_data = dynsym_table.build_gnu_hash();
+
+    // ---- Pre-compute sizes for layout ----
+    let rela_entry_size: usize = if is_64bit { 24 } else { 12 };
+    let rela_plt_size = dynamic_imports.len() * rela_entry_size;
+
+    // PLT sizes: PLT[0] (resolver) + N per-function stubs
+    let plt0_sz: usize = match target {
+        Target::X86_64 | Target::I686 => 16,
+        Target::AArch64 | Target::RiscV64 => 32,
+    };
+    let plt_entry_sz: usize = 16;
+    let plt_total_size = plt0_sz + dynamic_imports.len() * plt_entry_sz;
+
+    // GOT.PLT: 3 reserved slots + N function slots
+    let got_plt_size = (3 + dynamic_imports.len()) as u64 * ptr_size;
+
+    // ---- Compute file layout ----
+    // Everything in the RX segment is laid out contiguously after program
+    // headers. Virtual address = base_address + file_offset.
+    let mut offset = phdrs_end;
+
+    // .interp
+    let interp_off = offset;
+    offset += interp_data.len();
+
+    // .gnu.hash (align to 8)
+    offset = dyn_align_up_usize(offset, 8);
+    let gnu_hash_off = offset;
+    offset += gnu_hash_data.len();
+
+    // .dynsym (align to 8)
+    offset = dyn_align_up_usize(offset, 8);
+    let dynsym_off = offset;
+    offset += dynsym_data.len();
+
+    // .dynstr
+    let dynstr_off = offset;
+    offset += dynstr_data.len();
+
+    // .rela.plt (align to 8)
+    offset = dyn_align_up_usize(offset, 8);
+    let rela_plt_off = offset;
+    offset += rela_plt_size;
+
+    // .plt (align to 16)
+    offset = dyn_align_up_usize(offset, 16);
+    let plt_off = offset;
+    offset += plt_total_size;
+
+    // .text (align to 16) — we'll prepend a _start stub
+    offset = dyn_align_up_usize(offset, 16);
+    let text_off = offset;
+
+    // Build _start stub + collect function code
+    // The _start stub calls main and then invokes exit syscall.
+    // We don't know main's offset yet, so we'll patch it after.
+    let start_stub = build_start_stub(target);
+    let _start_stub_len = start_stub.len();
+
+    // Collect user function code with alignment, tracking each function's
+    // offset within the combined .text
+    let mut text_data = start_stub;
+    let mut func_offsets: Vec<(usize, usize)> = Vec::new(); // (offset_in_text, code_len)
+    for func in functions {
+        let align = func.alignment as u64;
+        let pad = dyn_align_pad(text_data.len() as u64, align);
+        text_data.extend(std::iter::repeat(0x90u8).take(pad));
+        let fn_off = text_data.len();
+        text_data.extend_from_slice(&func.code);
+        func_offsets.push((fn_off, func.code.len()));
+    }
+
+    // Retpoline thunks (if any)
+    if !retpoline_thunks.is_empty() {
+        let pad = dyn_align_pad(text_data.len() as u64, 16);
+        text_data.extend(std::iter::repeat(0x90u8).take(pad));
+        for thunk in retpoline_thunks {
+            text_data.extend_from_slice(&thunk.code);
+        }
+    }
+
+    let text_size = text_data.len();
+    offset += text_size;
+
+    // .rodata (align to 8)
+    offset = dyn_align_up_usize(offset, 8);
+    let rodata_off = offset;
+    offset += rodata_data.len();
+
+    // End of RX segment — pad to page boundary for RW segment
+    let page_size: usize = 0x1000;
+    offset = dyn_align_up_usize(offset, page_size);
+
+    // RW segment starts here
+    let _rw_segment_off = offset;
+
+    // .got.plt (align to 8)
+    let got_plt_off = offset;
+    offset += got_plt_size as usize;
+
+    // .dynamic (align to 8)
+    offset = dyn_align_up_usize(offset, 8);
+    let dynamic_off = offset;
+    // We'll compute .dynamic size after building it, but we need the address
+    // now for GOT.PLT[0]. Use a placeholder and adjust.
+
+    // .data
+    // We need to know .dynamic size first. Estimate conservatively:
+    // ~20 DT entries × 16 bytes = 320 bytes (64-bit), then we'll finalize.
+    let dynamic_estimated_size = 20 * (if is_64bit { 16 } else { 8 });
+    offset += dynamic_estimated_size;
+    offset = dyn_align_up_usize(offset, 8);
+    let data_off = offset;
+    offset += data_data.len();
+
+    // .bss is NOBITS — no file space, but extends memsz
+    let bss_off = offset; // conceptual offset
+    let _ = bss_off;
+
+    // Total file size (before section/string tables)
+    let _loadable_end = offset;
+
+    // ---- Compute virtual addresses ----
+    let interp_vaddr = base_address + interp_off as u64;
+    let gnu_hash_vaddr = base_address + gnu_hash_off as u64;
+    let dynsym_vaddr = base_address + dynsym_off as u64;
+    let dynstr_vaddr = base_address + dynstr_off as u64;
+    let rela_plt_vaddr = base_address + rela_plt_off as u64;
+    let plt_vaddr = base_address + plt_off as u64;
+    let text_vaddr = base_address + text_off as u64;
+    let _rodata_vaddr = base_address + rodata_off as u64;
+    let got_plt_vaddr = base_address + got_plt_off as u64;
+    let dynamic_vaddr = base_address + dynamic_off as u64;
+    let _data_vaddr = base_address + data_off as u64;
+
+    // ---- Build PLT and GOT.PLT with known addresses ----
+    let mut plt_builder = PltBuilder::new(plt_vaddr, got_plt_vaddr, *target);
+    let mut plt_addr_map: Vec<(String, u64)> = Vec::new();
+    for (i, imp) in dynamic_imports.iter().enumerate() {
+        let got_entry_offset = (3 + i) as u64 * ptr_size;
+        let entry = PltEntry {
+            symbol_name: imp.clone(),
+            got_offset: got_entry_offset,
+            plt_index: i as u32,
+        };
+        let addr = plt_builder.add_entry(entry);
+        plt_addr_map.push((imp.clone(), addr));
+    }
+    let plt_data = plt_builder.build_plt(target);
+
+    // GOT.PLT: slot[0]=.dynamic addr, slot[1]=0 (link_map), slot[2]=0 (resolver),
+    // slot[3+]=initial value pointing to PLT push instruction (lazy binding).
+    let mut got_builder = GotBuilder::new(0, got_plt_vaddr, dynamic_vaddr, target);
+    for (i, imp) in dynamic_imports.iter().enumerate() {
+        // Initial value = address of PLT[N]'s push instruction (offset +6 in the stub)
+        let plt_push_addr = plt_vaddr
+            + plt0_sz as u64
+            + (i as u64) * plt_entry_sz as u64
+            + 6;
+        got_builder.add_plt_entry(GotEntry {
+            symbol_name: imp.clone(),
+            offset: (3 + i) as u64 * ptr_size,
+            initial_value: plt_push_addr,
+        });
+    }
+    let got_plt_data = got_builder.build_got_plt();
+
+    // ---- Build .rela.plt ----
+    let mut rela_plt_relocs: Vec<DynamicRelocation> = Vec::new();
+    for (i, _imp) in dynamic_imports.iter().enumerate() {
+        let sym_index = (i + 1) as u32; // dynsym index (0 is null)
+        let got_entry_vaddr = got_plt_vaddr + (3 + i as u64) * ptr_size;
+        let reloc_type = match target {
+            Target::X86_64 => 7,     // R_X86_64_JUMP_SLOT
+            Target::I686 => 7,       // R_386_JMP_SLOT
+            Target::AArch64 => 1026, // R_AARCH64_JUMP_SLOT
+            Target::RiscV64 => 5,    // R_RISCV_JUMP_SLOT
+        };
+        rela_plt_relocs.push(DynamicRelocation {
+            offset: got_entry_vaddr,
+            reloc_type,
+            symbol_index: sym_index,
+            addend: 0,
+        });
+    }
+    let rela_plt_data = build_rela_plt(&rela_plt_relocs);
+
+    // ---- Build .dynamic section ----
+    let layout = DynamicLayout {
+        dynamic_addr: dynamic_vaddr,
+        dynsym_addr: dynsym_vaddr,
+        dynstr_addr: dynstr_vaddr,
+        gnu_hash_addr: gnu_hash_vaddr,
+        got_addr: 0,
+        got_plt_addr: got_plt_vaddr,
+        plt_addr: plt_vaddr,
+        rela_dyn_addr: 0,
+        rela_plt_addr: rela_plt_vaddr,
+        interp_addr: interp_vaddr,
+    };
+
+    let mut dyn_builder = DynamicSectionBuilder::new();
+    dyn_builder.add_needed_precomputed(libc_needed_offset as u64);
+    dyn_builder.set_dynstr_size(dynstr_data.len() as u64);
+    dyn_builder.set_rela_plt_size(rela_plt_data.len() as u64);
+    if !is_64bit {
+        dyn_builder.set_32bit(true);
+    }
+    let dynamic_data = dyn_builder.build(&layout);
+    let dynamic_actual_size = dynamic_data.len();
+
+    // Recompute .data offset now that we know the exact .dynamic size
+    let data_off_final = dyn_align_up_usize(dynamic_off + dynamic_actual_size, 8);
+    let data_vaddr_final = base_address + data_off_final as u64;
+    let _ = data_vaddr_final;
+    let loadable_end_final = data_off_final + data_data.len();
+
+    // DEBUG: dump assembled functions info
+    for (_i, func) in functions.iter().enumerate() {
+        eprintln!("[DYNELF DEBUG] Function '{}': {} bytes of code, {} relocations",
+            func.name, func.code.len(), func.asm_relocations.len());
+        for reloc in &func.asm_relocations {
+            eprintln!("[DYNELF DEBUG]   reloc: symbol='{}' offset={} addend={}",
+                reloc.symbol, reloc.offset, reloc.addend);
+        }
+        // Dump first 32 bytes of code as hex
+        let display_len = func.code.len().min(64);
+        let hex: Vec<String> = func.code[..display_len].iter().map(|b| format!("{:02x}", b)).collect();
+        eprintln!("[DYNELF DEBUG]   code: {}", hex.join(" "));
+    }
+    eprintln!("[DYNELF DEBUG] dynamic_imports: {:?}", dynamic_imports);
+    eprintln!("[DYNELF DEBUG] string_literals: {} entries, {} total bytes",
+        string_literals.len(), string_literals.iter().map(|s| s.data.len()).sum::<usize>());
+    for lit in string_literals {
+        eprintln!("[DYNELF DEBUG]   string_lit: name='{}' len={} data={:?}",
+            lit.label, lit.data.len(), String::from_utf8_lossy(&lit.data));
+    }
+
+    // ---- Patch .text: _start stub's call to main ----
+    // Find main's offset within our .text
+    let mut main_offset_in_text: Option<usize> = None;
+    for (i, func) in functions.iter().enumerate() {
+        if func.name == "main" {
+            main_offset_in_text = Some(func_offsets[i].0);
+            break;
+        }
+    }
+    if let Some(main_off) = main_offset_in_text {
+        patch_start_stub_call(&mut text_data, main_off, target);
+    }
+
+    // ---- Patch .text: _start stub's call to exit@plt ----
+    // The exit call displacement is at byte 17 in the x86-64 _start stub.
+    if let Some((_, exit_plt_addr)) =
+        plt_addr_map.iter().find(|(name, _)| name == "exit")
+    {
+        let exit_call_disp_off: usize = match target {
+            Target::X86_64 => 17, // see build_start_stub: e8 at offset 16, disp at 17
+            Target::I686 => 12,   // similar layout
+            _ => 0,               // AArch64/RiscV use different instruction format
+        };
+        if exit_call_disp_off > 0 && exit_call_disp_off + 4 <= text_data.len() {
+            let p = text_vaddr + exit_call_disp_off as u64 + 4; // RIP after call
+            let disp = (*exit_plt_addr as i64) - (p as i64);
+            let bytes = (disp as i32).to_le_bytes();
+            text_data[exit_call_disp_off..exit_call_disp_off + 4]
+                .copy_from_slice(&bytes);
+        }
+    }
+
+    // ---- Patch .text: external calls to use PLT ----
+    for (i, func) in functions.iter().enumerate() {
+        let fn_off_in_text = func_offsets[i].0;
+        for reloc in &func.asm_relocations {
+            if let Some((_, plt_entry_addr)) =
+                plt_addr_map.iter().find(|(name, _)| name == &reloc.symbol)
+            {
+                // This relocation references a dynamic import — patch to PLT
+                let text_byte_offset = fn_off_in_text + reloc.offset;
+                if text_byte_offset + 4 <= text_data.len() {
+                    // R_X86_64_PLT32 / R_X86_64_PC32: S + A - P
+                    let p = text_vaddr + text_byte_offset as u64;
+                    let s = *plt_entry_addr;
+                    let value = (s as i64) + reloc.addend - (p as i64);
+                    let bytes = (value as i32).to_le_bytes();
+                    text_data[text_byte_offset..text_byte_offset + 4]
+                        .copy_from_slice(&bytes);
+                }
+            }
+        }
+    }
+
+    // ---- Patch .text: internal call relocations (non-dynamic) ----
+    // Also patch any local function calls that the assembler left as
+    // relocations (e.g., call from one function to another).
+    for (i, func) in functions.iter().enumerate() {
+        let fn_off_in_text = func_offsets[i].0;
+        for reloc in &func.asm_relocations {
+            // Skip dynamic imports (already patched above)
+            if plt_addr_map.iter().any(|(name, _)| name == &reloc.symbol) {
+                continue;
+            }
+            // Find the target function in our text section
+            let mut target_off_in_text: Option<usize> = None;
+            for (j, other_func) in functions.iter().enumerate() {
+                if other_func.name == reloc.symbol {
+                    target_off_in_text = Some(func_offsets[j].0);
+                    break;
+                }
+            }
+            if let Some(target_off) = target_off_in_text {
+                let text_byte_offset = fn_off_in_text + reloc.offset;
+                if text_byte_offset + 4 <= text_data.len() {
+                    let p = text_vaddr + text_byte_offset as u64;
+                    let s = text_vaddr + target_off as u64;
+                    let value = (s as i64) + reloc.addend - (p as i64);
+                    let bytes = (value as i32).to_le_bytes();
+                    text_data[text_byte_offset..text_byte_offset + 4]
+                        .copy_from_slice(&bytes);
+                }
+            }
+        }
+    }
+
+    // ---- Also patch relocations to .rodata (string literals) ----
+    // Use the `rodata_sym_offsets` map built earlier so that each symbol
+    // resolves to the correct byte offset within the .rodata section.
+    let rodata_vaddr = base_address + rodata_off as u64;
+    for (i, func) in functions.iter().enumerate() {
+        let fn_off_in_text = func_offsets[i].0;
+        for reloc in &func.asm_relocations {
+            // Skip dynamic imports — already handled above.
+            if plt_addr_map.iter().any(|(name, _)| name == &reloc.symbol) {
+                continue;
+            }
+            // Skip local function-to-function calls — already handled above.
+            if functions.iter().any(|f| f.name == reloc.symbol) {
+                continue;
+            }
+            // Look up the symbol in our rodata name map.
+            let rodata_match = rodata_sym_offsets
+                .iter()
+                .find(|(name, _)| name == &reloc.symbol);
+            if let Some((_, sym_off_in_rodata)) = rodata_match {
+                let text_byte_offset = fn_off_in_text + reloc.offset;
+                if text_byte_offset + 4 <= text_data.len() {
+                    let p = text_vaddr + text_byte_offset as u64;
+                    let s = rodata_vaddr + sym_off_in_rodata;
+                    let value = (s as i64) + reloc.addend - (p as i64);
+                    let bytes = (value as i32).to_le_bytes();
+                    text_data[text_byte_offset..text_byte_offset + 4]
+                        .copy_from_slice(&bytes);
+                }
+            }
+        }
+    }
+
+    // ---- Build the raw ELF binary ----
+    let entry_vaddr = text_vaddr; // _start is at the beginning of .text
+    let rx_segment_end = dyn_align_up_usize(rodata_off + rodata_data.len(), page_size);
+    let rw_segment_start = rx_segment_end;
+    let rw_segment_filesz = loadable_end_final - rw_segment_start;
+    let rw_segment_memsz = rw_segment_filesz + bss_size as usize;
+
+    // Construct the output buffer
+    let mut out = Vec::with_capacity(loadable_end_final + 4096);
+
+    // ---- ELF Header ----
+    write_elf_header_raw(
+        &mut out,
+        is_64bit,
+        ET_EXEC,
+        target.elf_machine(),
+        entry_vaddr,
+        ehdr_size as u64,       // e_phoff
+        0u64,                   // e_shoff (patched later)
+        phdr_entry_size as u16,
+        num_phdrs as u16,
+        0u16,                   // e_shentsize (patched later)
+        0u16,                   // e_shnum (patched later)
+        0u16,                   // e_shstrndx (patched later)
+    );
+
+    // ---- Program Headers ----
+    // PT_PHDR
+    write_phdr_raw(&mut out, is_64bit, PT_PHDR, PF_R,
+        ehdr_size as u64,
+        base_address + ehdr_size as u64,
+        phdr_table_size as u64,
+        phdr_table_size as u64,
+        8,
+    );
+
+    // PT_INTERP
+    write_phdr_raw(&mut out, is_64bit, PT_INTERP, PF_R,
+        interp_off as u64,
+        interp_vaddr,
+        interp_data.len() as u64,
+        interp_data.len() as u64,
+        1,
+    );
+
+    // PT_LOAD (RX segment): from file start to end of .rodata
+    write_phdr_raw(&mut out, is_64bit, PT_LOAD, PF_R | 0x1, // PF_R | PF_X
+        0,
+        base_address,
+        rx_segment_end as u64,
+        rx_segment_end as u64,
+        page_size as u64,
+    );
+
+    // PT_LOAD (RW segment): .got.plt, .dynamic, .data, .bss
+    write_phdr_raw(&mut out, is_64bit, PT_LOAD, PF_R | PF_W,
+        rw_segment_start as u64,
+        base_address + rw_segment_start as u64,
+        rw_segment_filesz as u64,
+        rw_segment_memsz as u64,
+        page_size as u64,
+    );
+
+    // PT_DYNAMIC
+    write_phdr_raw(&mut out, is_64bit, PT_DYNAMIC, PF_R | PF_W,
+        dynamic_off as u64,
+        dynamic_vaddr,
+        dynamic_actual_size as u64,
+        dynamic_actual_size as u64,
+        8,
+    );
+
+    // ---- Section Data ----
+    // Pad and write each section at its computed file offset
+
+    // .interp
+    pad_to_offset(&mut out, interp_off);
+    out.extend_from_slice(&interp_data);
+
+    // .gnu.hash
+    pad_to_offset(&mut out, gnu_hash_off);
+    out.extend_from_slice(&gnu_hash_data);
+
+    // .dynsym
+    pad_to_offset(&mut out, dynsym_off);
+    out.extend_from_slice(&dynsym_data);
+
+    // .dynstr
+    pad_to_offset(&mut out, dynstr_off);
+    out.extend_from_slice(&dynstr_data);
+
+    // .rela.plt
+    pad_to_offset(&mut out, rela_plt_off);
+    out.extend_from_slice(&rela_plt_data);
+
+    // .plt
+    pad_to_offset(&mut out, plt_off);
+    out.extend_from_slice(&plt_data);
+
+    // .text
+    pad_to_offset(&mut out, text_off);
+    out.extend_from_slice(&text_data);
+
+    // .rodata
+    pad_to_offset(&mut out, rodata_off);
+    out.extend_from_slice(&rodata_data);
+
+    // RW segment sections
+    // .got.plt
+    pad_to_offset(&mut out, got_plt_off);
+    out.extend_from_slice(&got_plt_data);
+
+    // .dynamic
+    pad_to_offset(&mut out, dynamic_off);
+    out.extend_from_slice(&dynamic_data);
+
+    // .data
+    pad_to_offset(&mut out, data_off_final);
+    out.extend_from_slice(&data_data);
+
+    // ---- Section Header Table ----
+    // Build a minimal section header table for debugging tools.
+    // Sections: NULL, .interp, .gnu.hash, .dynsym, .dynstr, .rela.plt,
+    //           .plt, .text, .rodata, .got.plt, .dynamic, .data, .bss,
+    //           .shstrtab
+    let shdr_entry_size: usize = if is_64bit { 64 } else { 40 };
+
+    // Build .shstrtab
+    let section_names = [
+        "", ".interp", ".gnu.hash", ".dynsym", ".dynstr", ".rela.plt",
+        ".plt", ".text", ".rodata", ".got.plt", ".dynamic", ".data",
+        ".bss", ".shstrtab",
+    ];
+    let mut shstrtab = Vec::new();
+    let mut name_offsets = Vec::new();
+    for name in &section_names {
+        let off = shstrtab.len();
+        name_offsets.push(off as u32);
+        shstrtab.extend_from_slice(name.as_bytes());
+        shstrtab.push(0);
+    }
+
+    let num_sections = section_names.len(); // 14 (including NULL)
+    let shstrtab_idx = num_sections - 1;    // last section
+
+    // Align to 8 for section header table
+    let shstrtab_off = dyn_align_up_usize(out.len(), 8);
+    pad_to_offset(&mut out, shstrtab_off);
+    out.extend_from_slice(&shstrtab);
+
+    let shdr_off = dyn_align_up_usize(out.len(), 8);
+    pad_to_offset(&mut out, shdr_off);
+
+    // Write section headers
+    // 0: NULL
+    write_shdr_raw(&mut out, is_64bit, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    // 1: .interp (SHT_PROGBITS, SHF_ALLOC)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[1], SHT_PROGBITS,
+        SHF_ALLOC as u64, interp_vaddr, interp_off as u64,
+        interp_data.len() as u64, 0, 0, 1, 0);
+    // 2: .gnu.hash (SHT_GNU_HASH=0x6ffffff6, SHF_ALLOC)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[2], 0x6ffffff6u32,
+        SHF_ALLOC as u64, gnu_hash_vaddr, gnu_hash_off as u64,
+        gnu_hash_data.len() as u64, 3, 0, 8, 0); // sh_link=.dynsym(3)
+    // 3: .dynsym (SHT_DYNSYM, SHF_ALLOC)
+    let dynsym_entsize = if is_64bit { 24u64 } else { 16u64 };
+    write_shdr_raw(&mut out, is_64bit, name_offsets[3], SHT_DYNSYM,
+        SHF_ALLOC as u64, dynsym_vaddr, dynsym_off as u64,
+        dynsym_data.len() as u64, 4, 1, 8, dynsym_entsize); // sh_link=.dynstr(4), sh_info=1 (first non-local)
+    // 4: .dynstr (SHT_STRTAB, SHF_ALLOC)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[4], SHT_STRTAB,
+        SHF_ALLOC as u64, dynstr_vaddr, dynstr_off as u64,
+        dynstr_data.len() as u64, 0, 0, 1, 0);
+    // 5: .rela.plt (SHT_RELA=4, SHF_ALLOC|SHF_INFO_LINK)
+    let rela_entsize = if is_64bit { 24u64 } else { 12u64 };
+    write_shdr_raw(&mut out, is_64bit, name_offsets[5], 4u32, // SHT_RELA
+        (SHF_ALLOC | 0x40) as u64, // SHF_ALLOC | SHF_INFO_LINK
+        rela_plt_vaddr, rela_plt_off as u64,
+        rela_plt_data.len() as u64, 3, 9, 8, rela_entsize); // sh_link=.dynsym(3), sh_info=.got.plt(9)
+    // 6: .plt (SHT_PROGBITS, SHF_ALLOC|SHF_EXECINSTR)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[6], SHT_PROGBITS,
+        (SHF_ALLOC | SHF_EXECINSTR) as u64, plt_vaddr, plt_off as u64,
+        plt_data.len() as u64, 0, 0, 16, plt_entry_sz as u64);
+    // 7: .text (SHT_PROGBITS, SHF_ALLOC|SHF_EXECINSTR)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[7], SHT_PROGBITS,
+        (SHF_ALLOC | SHF_EXECINSTR) as u64, text_vaddr, text_off as u64,
+        text_size as u64, 0, 0, 16, 0);
+    // 8: .rodata (SHT_PROGBITS, SHF_ALLOC)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[8], SHT_PROGBITS,
+        SHF_ALLOC as u64, rodata_vaddr, rodata_off as u64,
+        rodata_data.len() as u64, 0, 0, 8, 0);
+    // 9: .got.plt (SHT_PROGBITS, SHF_ALLOC|SHF_WRITE)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[9], SHT_PROGBITS,
+        (SHF_ALLOC | SHF_WRITE) as u64, got_plt_vaddr, got_plt_off as u64,
+        got_plt_data.len() as u64, 0, 0, 8, ptr_size);
+    // 10: .dynamic (SHT_DYNAMIC, SHF_ALLOC|SHF_WRITE)
+    let dyn_entsize = if is_64bit { 16u64 } else { 8u64 };
+    write_shdr_raw(&mut out, is_64bit, name_offsets[10], SHT_DYNAMIC,
+        (SHF_ALLOC | SHF_WRITE) as u64, dynamic_vaddr, dynamic_off as u64,
+        dynamic_data.len() as u64, 4, 0, 8, dyn_entsize); // sh_link=.dynstr(4)
+    // 11: .data (SHT_PROGBITS, SHF_ALLOC|SHF_WRITE)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[11], SHT_PROGBITS,
+        (SHF_ALLOC | SHF_WRITE) as u64, data_vaddr_final, data_off_final as u64,
+        data_data.len() as u64, 0, 0, 8, 0);
+    // 12: .bss (SHT_NOBITS, SHF_ALLOC|SHF_WRITE)
+    let bss_vaddr = data_vaddr_final + data_data.len() as u64;
+    write_shdr_raw(&mut out, is_64bit, name_offsets[12], SHT_NOBITS,
+        (SHF_ALLOC | SHF_WRITE) as u64, bss_vaddr, loadable_end_final as u64,
+        bss_size, 0, 0, 8, 0);
+    // 13: .shstrtab (SHT_STRTAB)
+    write_shdr_raw(&mut out, is_64bit, name_offsets[13], SHT_STRTAB,
+        0, 0, shstrtab_off as u64,
+        shstrtab.len() as u64, 0, 0, 1, 0);
+
+    // ---- Patch ELF header with section header info ----
+    // e_shoff
+    if is_64bit {
+        out[40..48].copy_from_slice(&(shdr_off as u64).to_le_bytes());
+        out[58..60].copy_from_slice(&(shdr_entry_size as u16).to_le_bytes()); // e_shentsize
+        out[60..62].copy_from_slice(&(num_sections as u16).to_le_bytes());    // e_shnum
+        out[62..64].copy_from_slice(&(shstrtab_idx as u16).to_le_bytes());    // e_shstrndx
+    } else {
+        out[32..36].copy_from_slice(&(shdr_off as u32).to_le_bytes());
+        out[46..48].copy_from_slice(&(shdr_entry_size as u16).to_le_bytes());
+        out[48..50].copy_from_slice(&(num_sections as u16).to_le_bytes());
+        out[50..52].copy_from_slice(&(shstrtab_idx as u16).to_le_bytes());
+    }
+
+    // ---- Write to file ----
+    std::fs::write(&config.output_path, &out)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&config.output_path, perms)?;
+    }
+
+    Ok(())
+}
+
+/// Builds a minimal `_start` assembly stub for the given target that:
+/// 1. Sets up the stack frame per ABI
+/// 2. Calls `main` (PC-relative, patched later)
+/// 3. Passes `main`'s return value as the argument to libc `exit()`
+/// 4. Calls `exit@plt` to properly flush stdio buffers before terminating
+///
+/// Returns the stub bytes. Both call displacements are left as 0x00000000
+/// and must be patched after function/PLT layout is finalized.
+///
+/// For x86-64, the layout is:
+///   offset  0: xor %ebp, %ebp          (2 bytes)
+///   offset  2: mov %rsp, %rdi          (3 bytes)
+///   offset  5: and $-16, %rsp          (4 bytes)
+///   offset  9: call main               (5 bytes, disp at 10)
+///   offset 14: mov %eax, %edi          (2 bytes)
+///   offset 16: call exit               (5 bytes, disp at 17)
+///   offset 21: hlt                     (1 byte, unreachable guard)
+///   Total: 22 bytes, padded to 32 for alignment.
+fn build_start_stub(target: &Target) -> Vec<u8> {
+    match target {
+        Target::X86_64 => {
+            let mut stub = vec![
+                0x31, 0xed,             // xor %ebp, %ebp
+                0x48, 0x89, 0xe7,       // mov %rsp, %rdi
+                0x48, 0x83, 0xe4, 0xf0, // and $-16, %rsp
+                0xe8, 0x00, 0x00, 0x00, 0x00, // call main (placeholder, disp at byte 10)
+                0x89, 0xc7,             // mov %eax, %edi
+                0xe8, 0x00, 0x00, 0x00, 0x00, // call exit (placeholder, disp at byte 17)
+                0xf4,                   // hlt (unreachable)
+            ];
+            // Pad to 32 bytes (16-byte aligned) for function alignment.
+            while stub.len() < 32 {
+                stub.push(0x90); // nop
+            }
+            stub
+        }
+        Target::I686 => {
+            // _start:
+            //   xor  %ebp, %ebp          ; 31 ed
+            //   and  $-16, %esp           ; 83 e4 f0
+            //   call main                 ; e8 XX XX XX XX (placeholder)
+            //   mov  %eax, %ebx           ; 89 c3
+            //   mov  $1, %eax             ; b8 01 00 00 00 (__NR_exit)
+            //   int  $0x80                ; cd 80
+            vec![
+                0x31, 0xed,             // xor %ebp, %ebp
+                0x83, 0xe4, 0xf0,       // and $-16, %esp
+                0xe8, 0x00, 0x00, 0x00, 0x00, // call main (placeholder)
+                0x89, 0xc3,             // mov %eax, %ebx
+                0xb8, 0x01, 0x00, 0x00, 0x00, // mov $1, %eax
+                0xcd, 0x80,             // int $0x80
+            ]
+        }
+        Target::AArch64 => {
+            // _start:
+            //   bl main                  ; 94 00 00 00 (placeholder)
+            //   mov x8, #93              ; exit_group syscall
+            //   svc #0
+            let mut stub = Vec::new();
+            stub.extend_from_slice(&0x94000000u32.to_le_bytes()); // bl main (placeholder)
+            stub.extend_from_slice(&0xd2800ba8u32.to_le_bytes()); // mov x8, #93
+            stub.extend_from_slice(&0xd4000001u32.to_le_bytes()); // svc #0
+            stub
+        }
+        Target::RiscV64 => {
+            // _start:
+            //   jal ra, main             ; placeholder
+            //   li a7, 93                ; exit_group syscall number
+            //   ecall
+            let mut stub = Vec::new();
+            stub.extend_from_slice(&0x000000efu32.to_le_bytes()); // jal ra, 0 (placeholder)
+            stub.extend_from_slice(&0x05d00893u32.to_le_bytes()); // li a7, 93
+            stub.extend_from_slice(&0x00000073u32.to_le_bytes()); // ecall
+            stub
+        }
+    }
+}
+
+/// Patches the `_start` stub's call instruction to target `main` at the
+/// given offset within the .text section.
+fn patch_start_stub_call(text_data: &mut [u8], main_offset: usize, target: &Target) {
+    match target {
+        Target::X86_64 => {
+            // call instruction is at offset 9 in the stub (0xe8 byte)
+            // displacement field is at offset 10, 4 bytes
+            // call displacement = target - (call_instruction_end)
+            //                   = main_offset - (10 + 4)
+            //                   = main_offset - 14
+            let call_end = 14usize; // offset 10 + 4 bytes of displacement
+            let disp = (main_offset as i64) - (call_end as i64);
+            text_data[10..14].copy_from_slice(&(disp as i32).to_le_bytes());
+        }
+        Target::I686 => {
+            // call instruction is at offset 5 in the stub (0xe8 byte)
+            // displacement field is at offset 6, 4 bytes
+            let call_end = 10usize; // 6 + 4
+            let disp = (main_offset as i64) - (call_end as i64);
+            text_data[6..10].copy_from_slice(&(disp as i32).to_le_bytes());
+        }
+        Target::AArch64 => {
+            // bl instruction is at offset 0, 4 bytes
+            // imm26 field encodes (target - pc) / 4
+            let disp = (main_offset as i64) / 4;
+            let insn = 0x94000000u32 | ((disp as u32) & 0x03FF_FFFF);
+            text_data[0..4].copy_from_slice(&insn.to_le_bytes());
+        }
+        Target::RiscV64 => {
+            // jal ra instruction is at offset 0, 4 bytes
+            // J-type encoding
+            let disp = main_offset as i32;
+            let imm20 = ((disp >> 20) & 1) as u32;
+            let imm10_1 = ((disp >> 1) & 0x3FF) as u32;
+            let imm11 = ((disp >> 11) & 1) as u32;
+            let imm19_12 = ((disp >> 12) & 0xFF) as u32;
+            let insn = (imm20 << 31)
+                | (imm10_1 << 21)
+                | (imm11 << 20)
+                | (imm19_12 << 12)
+                | (1 << 7)   // rd = ra (x1)
+                | 0x6f;      // JAL opcode
+            text_data[0..4].copy_from_slice(&insn.to_le_bytes());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Raw ELF binary construction helpers
+// ---------------------------------------------------------------------------
+
+/// Pad the output buffer to a target file offset with zero bytes.
+fn pad_to_offset(out: &mut Vec<u8>, target: usize) {
+    if out.len() < target {
+        out.resize(target, 0);
+    }
+}
+
+/// Align a `usize` value upward to the given alignment.
+fn dyn_align_up_usize(value: usize, align: usize) -> usize {
+    if align <= 1 { return value; }
+    (value + align - 1) & !(align - 1)
+}
+
+/// Align a `u64` value upward to the given alignment.
+fn dyn_align_up(value: u64, align: u64) -> u64 {
+    if align <= 1 { return value; }
+    (value + align - 1) & !(align - 1)
+}
+
+/// Compute padding bytes needed to align `current` to `align`.
+fn dyn_align_pad(current: u64, align: u64) -> usize {
+    if align <= 1 { return 0; }
+    let aligned = dyn_align_up(current, align);
+    (aligned - current) as usize
+}
+
+/// Writes an ELF header directly to the output buffer.
+#[allow(clippy::too_many_arguments)]
+fn write_elf_header_raw(
+    out: &mut Vec<u8>,
+    is_64bit: bool,
+    elf_type: u16,
+    machine: u16,
+    entry: u64,
+    phoff: u64,
+    shoff: u64,
+    phentsize: u16,
+    phnum: u16,
+    shentsize: u16,
+    shnum: u16,
+    shstrndx: u16,
+) {
+    // ELF magic
+    out.extend_from_slice(&[0x7f, b'E', b'L', b'F']);
+
+    if is_64bit {
+        out.push(2); // EI_CLASS = ELFCLASS64
+    } else {
+        out.push(1); // EI_CLASS = ELFCLASS32
+    }
+    out.push(1); // EI_DATA = ELFDATA2LSB (little-endian)
+    out.push(1); // EI_VERSION = EV_CURRENT
+    out.push(0); // EI_OSABI = ELFOSABI_NONE
+    out.extend_from_slice(&[0; 8]); // EI_ABIVERSION + padding
+
+    if is_64bit {
+        // 64-bit ELF header (total 64 bytes)
+        out.extend_from_slice(&elf_type.to_le_bytes());    // e_type
+        out.extend_from_slice(&machine.to_le_bytes());     // e_machine
+        out.extend_from_slice(&1u32.to_le_bytes());        // e_version
+        out.extend_from_slice(&entry.to_le_bytes());       // e_entry
+        out.extend_from_slice(&phoff.to_le_bytes());       // e_phoff
+        out.extend_from_slice(&shoff.to_le_bytes());       // e_shoff
+        out.extend_from_slice(&0u32.to_le_bytes());        // e_flags
+        out.extend_from_slice(&64u16.to_le_bytes());       // e_ehsize
+        out.extend_from_slice(&phentsize.to_le_bytes());   // e_phentsize
+        out.extend_from_slice(&phnum.to_le_bytes());       // e_phnum
+        out.extend_from_slice(&shentsize.to_le_bytes());   // e_shentsize
+        out.extend_from_slice(&shnum.to_le_bytes());       // e_shnum
+        out.extend_from_slice(&shstrndx.to_le_bytes());    // e_shstrndx
+    } else {
+        // 32-bit ELF header (total 52 bytes)
+        out.extend_from_slice(&elf_type.to_le_bytes());
+        out.extend_from_slice(&machine.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&(entry as u32).to_le_bytes());
+        out.extend_from_slice(&(phoff as u32).to_le_bytes());
+        out.extend_from_slice(&(shoff as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&52u16.to_le_bytes());
+        out.extend_from_slice(&phentsize.to_le_bytes());
+        out.extend_from_slice(&phnum.to_le_bytes());
+        out.extend_from_slice(&shentsize.to_le_bytes());
+        out.extend_from_slice(&shnum.to_le_bytes());
+        out.extend_from_slice(&shstrndx.to_le_bytes());
+    }
+}
+
+/// Writes a single program header to the output buffer.
+#[allow(clippy::too_many_arguments)]
+fn write_phdr_raw(
+    out: &mut Vec<u8>,
+    is_64bit: bool,
+    p_type: u32,
+    p_flags: u32,
+    p_offset: u64,
+    p_vaddr: u64,
+    p_filesz: u64,
+    p_memsz: u64,
+    p_align: u64,
+) {
+    let p_paddr = p_vaddr;
+    if is_64bit {
+        out.extend_from_slice(&p_type.to_le_bytes());
+        out.extend_from_slice(&p_flags.to_le_bytes());
+        out.extend_from_slice(&p_offset.to_le_bytes());
+        out.extend_from_slice(&p_vaddr.to_le_bytes());
+        out.extend_from_slice(&p_paddr.to_le_bytes());
+        out.extend_from_slice(&p_filesz.to_le_bytes());
+        out.extend_from_slice(&p_memsz.to_le_bytes());
+        out.extend_from_slice(&p_align.to_le_bytes());
+    } else {
+        out.extend_from_slice(&p_type.to_le_bytes());
+        out.extend_from_slice(&(p_offset as u32).to_le_bytes());
+        out.extend_from_slice(&(p_vaddr as u32).to_le_bytes());
+        out.extend_from_slice(&(p_paddr as u32).to_le_bytes());
+        out.extend_from_slice(&(p_filesz as u32).to_le_bytes());
+        out.extend_from_slice(&(p_memsz as u32).to_le_bytes());
+        out.extend_from_slice(&p_flags.to_le_bytes());
+        out.extend_from_slice(&(p_align as u32).to_le_bytes());
+    }
+}
+
+/// Writes a single section header to the output buffer.
+#[allow(clippy::too_many_arguments)]
+fn write_shdr_raw(
+    out: &mut Vec<u8>,
+    is_64bit: bool,
+    sh_name: u32,
+    sh_type: u32,
+    sh_flags: u64,
+    sh_addr: u64,
+    sh_offset: u64,
+    sh_size: u64,
+    sh_link: u32,
+    sh_info: u32,
+    sh_addralign: u64,
+    sh_entsize: u64,
+) {
+    if is_64bit {
+        out.extend_from_slice(&sh_name.to_le_bytes());
+        out.extend_from_slice(&sh_type.to_le_bytes());
+        out.extend_from_slice(&sh_flags.to_le_bytes());
+        out.extend_from_slice(&sh_addr.to_le_bytes());
+        out.extend_from_slice(&sh_offset.to_le_bytes());
+        out.extend_from_slice(&sh_size.to_le_bytes());
+        out.extend_from_slice(&sh_link.to_le_bytes());
+        out.extend_from_slice(&sh_info.to_le_bytes());
+        out.extend_from_slice(&sh_addralign.to_le_bytes());
+        out.extend_from_slice(&sh_entsize.to_le_bytes());
+    } else {
+        out.extend_from_slice(&sh_name.to_le_bytes());
+        out.extend_from_slice(&sh_type.to_le_bytes());
+        out.extend_from_slice(&(sh_flags as u32).to_le_bytes());
+        out.extend_from_slice(&(sh_addr as u32).to_le_bytes());
+        out.extend_from_slice(&(sh_offset as u32).to_le_bytes());
+        out.extend_from_slice(&(sh_size as u32).to_le_bytes());
+        out.extend_from_slice(&sh_link.to_le_bytes());
+        out.extend_from_slice(&sh_info.to_le_bytes());
+        out.extend_from_slice(&(sh_addralign as u32).to_le_bytes());
+        out.extend_from_slice(&(sh_entsize as u32).to_le_bytes());
+    }
 }
 
 /// Builds ELF program headers for the linked output.

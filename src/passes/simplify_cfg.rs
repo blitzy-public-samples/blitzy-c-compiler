@@ -75,6 +75,17 @@ pub fn run_simplify_cfg(func: &mut IrFunction) -> bool {
     let mut ever_changed = false;
 
     loop {
+        // CRITICAL: Rebuild CFG predecessor/successor lists from terminator
+        // instructions at the start of every fixpoint iteration.  The IR
+        // builder only sets terminator instructions on blocks — it does NOT
+        // maintain the explicit `successors`/`predecessors` vectors.
+        // Without this step, passes like `find_merge_candidate`,
+        // `find_empty_block`, and `thread_branches` that inspect those
+        // vectors will see empty lists and either skip valid optimizations
+        // or, worse, corrupt the CFG by removing blocks whose predecessors
+        // are unknown.
+        rebuild_cfg_edges(func);
+
         let mut changed = false;
 
         // Phase 1: Remove unreachable blocks — may expose new simplification
@@ -120,6 +131,80 @@ pub fn run_simplify_cfg(func: &mut IrFunction) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// CFG edge reconstruction
+// ---------------------------------------------------------------------------
+
+/// Rebuilds the explicit predecessor and successor lists on every block by
+/// inspecting terminator instructions.
+///
+/// The IR builder creates terminators (Branch, CondBranch, Switch, etc.) but
+/// does **not** maintain the per-block `predecessors` / `successors` vectors.
+/// Many CFG optimisation passes rely on those vectors, so this function must
+/// be called before the pass pipeline runs (and again at each fixpoint
+/// iteration, since individual passes may modify terminators without
+/// maintaining edge lists perfectly).
+///
+/// # Algorithm
+///
+/// 1. Clear every block's predecessor and successor lists.
+/// 2. For each block, extract successor IDs from the terminator instruction.
+/// 3. Populate the block's successor list and add the block as a predecessor
+///    of each successor.
+///
+/// The result is an accurate, consistent CFG representation derived solely
+/// from the terminator instructions — the authoritative source of
+/// control-flow edges.
+fn rebuild_cfg_edges(func: &mut IrFunction) {
+    // Step 1: Collect (block_id, Vec<successor_id>) from terminators.
+    // We do this with an immutable borrow first to avoid aliasing issues.
+    let edge_map: Vec<(BasicBlockId, Vec<BasicBlockId>)> = func
+        .blocks()
+        .iter()
+        .map(|block| {
+            let succs = match block.terminator() {
+                Some(term) => term.successor_blocks(),
+                None => Vec::new(),
+            };
+            (block.id, succs)
+        })
+        .collect();
+
+    // Step 2: Clear all predecessor and successor lists.
+    for block in func.blocks_mut() {
+        // We don't have a clear_successors/clear_predecessors method, so
+        // we drain them by removing one at a time (they are typically very
+        // small — 0-3 entries).
+        while !block.successors().is_empty() {
+            let s = block.successors()[0];
+            block.remove_successor(s);
+        }
+        while !block.predecessors().is_empty() {
+            let p = block.predecessors()[0];
+            block.remove_predecessor(p);
+        }
+    }
+
+    // Step 3: Populate successor lists on source blocks and predecessor
+    // lists on target blocks.
+    for (src_id, succs) in &edge_map {
+        // Add successors to the source block.
+        for &succ_id in succs {
+            if func.has_block(succ_id) {
+                let src = func.get_block_mut(*src_id);
+                src.add_successor(succ_id);
+            }
+        }
+        // Add src as a predecessor to each successor block.
+        for &succ_id in succs {
+            if func.has_block(succ_id) {
+                let dst = func.get_block_mut(succ_id);
+                dst.add_predecessor(*src_id);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Pass 1: Unreachable block removal
 // ---------------------------------------------------------------------------
 
@@ -144,9 +229,31 @@ fn remove_unreachable_blocks(func: &mut IrFunction) -> bool {
     worklist.push(entry_id);
 
     while let Some(block_id) = worklist.pop() {
-        let block = func.get_block(block_id);
+        // Defensive: skip stale block references that no longer exist.
+        let block = match func.try_get_block(block_id) {
+            Some(b) => b,
+            None => continue,
+        };
+
+        // Follow successor edges from the terminator instruction.
+        // This is the authoritative source of control-flow successors — the
+        // explicit `successors` list on the block may not be populated by
+        // all IR-construction paths (e.g. the builder only sets the
+        // terminator instruction, not the successor list).  By inspecting
+        // the terminator we guarantee correct reachability even when the
+        // explicit list is empty.
+        if let Some(term) = block.terminator() {
+            for succ_id in term.successor_blocks() {
+                if func.has_block(succ_id) && reachable.insert(succ_id) {
+                    worklist.push(succ_id);
+                }
+            }
+        }
+
+        // Also follow the explicit successor list in case it contains
+        // edges not captured by the terminator (defensive).
         for &succ_id in block.successors() {
-            if reachable.insert(succ_id) {
+            if func.has_block(succ_id) && reachable.insert(succ_id) {
                 worklist.push(succ_id);
             }
         }

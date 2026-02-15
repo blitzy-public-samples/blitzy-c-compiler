@@ -1253,6 +1253,7 @@ fn resolve_type_name_ir(
             }
             TypeSpecifier::Unsigned => return Ok(IrType::I32),
             TypeSpecifier::Signed => return Ok(IrType::I32),
+            TypeSpecifier::BuiltinVaList => return Ok(IrType::Ptr),
             _ => {}
         }
     }

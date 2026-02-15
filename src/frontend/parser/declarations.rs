@@ -87,8 +87,17 @@ fn is_specifier_qualifier_start(parser: &Parser<'_>) -> bool {
         // struct / union / enum
         TokenKind::Struct | TokenKind::Union | TokenKind::Enum => true,
 
-        // Type qualifiers
+        // Type qualifiers (standard)
         TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict | TokenKind::Atomic => true,
+
+        // Type qualifiers (GCC variants: __const__, __volatile__, __restrict__)
+        TokenKind::ConstGcc | TokenKind::VolatileGcc | TokenKind::RestrictGcc => true,
+
+        // GCC __signed__ (equivalent to signed)
+        TokenKind::SignedGcc => true,
+
+        // GCC __builtin_va_list — built-in variadic argument list type
+        TokenKind::BuiltinVaList => true,
 
         // GCC extensions used as type specifiers
         TokenKind::TypeofKeyword | TokenKind::Attribute | TokenKind::Extension => true,
@@ -206,6 +215,16 @@ pub fn parse_external_declaration(parser: &mut Parser<'_>) -> Result<Declaration
 
     // Collect post-declarator attributes
     let mut all_attrs = attrs;
+    if parser.check(TokenKind::Attribute) {
+        all_attrs.extend(super::attributes::parse_attribute_list(parser)?);
+    }
+
+    // Skip GCC asm label: __asm__("symbol_name")
+    // This is used in glibc headers to redirect symbol names, e.g.:
+    //   extern int fscanf(...) __asm__("__isoc99_fscanf");
+    skip_asm_label(parser);
+
+    // Collect any additional attributes after asm label
     if parser.check(TokenKind::Attribute) {
         all_attrs.extend(super::attributes::parse_attribute_list(parser)?);
     }
@@ -610,6 +629,15 @@ pub fn parse_declaration_specifiers(
             // -----------------------------------------------------------
             TokenKind::Extension => {
                 has_extension = true;
+                last_span = parser.advance();
+                count += 1;
+            }
+
+            // -----------------------------------------------------------
+            // __builtin_va_list — GCC's opaque variadic argument list type
+            // -----------------------------------------------------------
+            TokenKind::BuiltinVaList => {
+                type_specifiers.push(TypeSpecifier::BuiltinVaList);
                 last_span = parser.advance();
                 count += 1;
             }
@@ -1317,27 +1345,58 @@ fn parse_parameter_declaration(parser: &mut Parser<'_>) -> Result<Parameter, Par
 
     // Try to parse a declarator. The tricky part is distinguishing between
     // a named declarator and an abstract declarator (no name).
+    //
+    // In C, a parameter declaration can have:
+    //   1. No declarator at all: `int`
+    //   2. A named declarator: `int *x`, `int x`, `int (*fp)(int)`
+    //   3. An abstract declarator: `int *`, `int (*)()`, `int []`
+    //
+    // We try named declarator first (with backtracking) and fall back
+    // to abstract declarator if that fails. This correctly handles cases
+    // like `FILE *__stream` where `*` is part of a named pointer declarator.
     let declarator = if parser.check(TokenKind::Comma)
         || parser.check(TokenKind::RightParen)
         || parser.check(TokenKind::Ellipsis)
     {
         // No declarator follows — abstract declarator omitted
         None
-    } else if can_start_abstract_declarator(parser)
-        && !matches!(&parser.current().kind, TokenKind::Identifier(sym) if !parser.is_typedef_name(*sym))
+    } else if matches!(&parser.current().kind, TokenKind::Identifier(sym) if !parser.is_typedef_name(*sym))
     {
-        // Looks like an abstract declarator (starts with *, (, or [)
-        // but not a plain identifier (which would be a named declarator)
-        let abs = parse_abstract_declarator(parser)?;
-        Some(Declarator {
-            name: None,
-            derived: abs.derived,
-            attrs: vec![],
-            span: abs.span,
-        })
-    } else {
-        // Try named declarator
+        // Plain non-typedef identifier — definitely a named declarator
         parse_declarator(parser).ok()
+    } else {
+        // Could be either a named or abstract declarator (starts with *, (, [).
+        // Try named declarator first with backtracking.
+        let saved_pos = parser.save_position();
+        let saved_diag_count = parser.diagnostics.error_count();
+        match parse_declarator(parser) {
+            Ok(decl) if decl.name.is_some() => {
+                // Successfully parsed a named declarator
+                Some(decl)
+            }
+            Ok(decl) => {
+                // Parsed successfully but got no name — this is effectively
+                // an abstract declarator. Use it as-is.
+                Some(decl)
+            }
+            Err(_) => {
+                // Named declarator failed — backtrack and try abstract
+                parser.restore_position(saved_pos);
+                // Trim any diagnostics that were emitted during the failed attempt
+                parser.diagnostics.truncate_errors(saved_diag_count);
+                if can_start_abstract_declarator(parser) {
+                    let abs = parse_abstract_declarator(parser)?;
+                    Some(Declarator {
+                        name: None,
+                        derived: abs.derived,
+                        attrs: vec![],
+                        span: abs.span,
+                    })
+                } else {
+                    None
+                }
+            }
+        }
     };
 
     let end_span = declarator
@@ -2084,7 +2143,7 @@ fn parse_declaration_rest(
     parser: &mut Parser<'_>,
     specifiers: DeclarationSpecifiers,
     first_declarator: Declarator,
-    attrs: Vec<Attribute>,
+    mut attrs: Vec<Attribute>,
     has_grouping: bool,
     start: Span,
 ) -> Result<Declaration, ParseError> {
@@ -2122,6 +2181,14 @@ fn parse_declaration_rest(
 
     // Check if this is a function declaration (prototype)
     if is_function_declaration(&first_declarator.derived, has_grouping) {
+        // Skip GCC asm label: __asm__("symbol") — used for symbol renaming
+        skip_asm_label(parser);
+
+        // Collect any additional post-asm-label attributes
+        if parser.check(TokenKind::Attribute) {
+            attrs.extend(super::attributes::parse_attribute_list(parser)?);
+        }
+
         // A function prototype — no initializer expected, just semicolon
         // But first check for additional declarators (unusual but valid):
         // e.g., `int f(void), g(int);`
@@ -2228,15 +2295,15 @@ fn parse_type_qualifier_list(parser: &mut Parser<'_>) -> TypeQualifiers {
     let mut quals = TypeQualifiers::default();
     loop {
         match parser.current().kind {
-            TokenKind::Const => {
+            TokenKind::Const | TokenKind::ConstGcc => {
                 quals.is_const = true;
                 parser.advance();
             }
-            TokenKind::Volatile => {
+            TokenKind::Volatile | TokenKind::VolatileGcc => {
                 quals.is_volatile = true;
                 parser.advance();
             }
-            TokenKind::Restrict => {
+            TokenKind::Restrict | TokenKind::RestrictGcc => {
                 quals.is_restrict = true;
                 parser.advance();
             }
@@ -2244,8 +2311,56 @@ fn parse_type_qualifier_list(parser: &mut Parser<'_>) -> TypeQualifiers {
                 quals.is_atomic = true;
                 parser.advance();
             }
+            // Skip __attribute__((..)) on pointer qualifiers
+            TokenKind::Attribute => {
+                let _ = super::attributes::parse_attribute_list(parser);
+            }
             _ => break,
         }
     }
     quals
+}
+
+// =============================================================================
+// §13: GCC Asm Label Helper
+// =============================================================================
+
+/// Skips a GCC asm label after a declarator: `__asm__("symbol_name")`.
+///
+/// This construct is used in glibc headers to redirect symbol names at link
+/// time. For example:
+/// ```c
+/// extern int fscanf(FILE *__restrict, const char *__restrict, ...)
+///     __asm__("__isoc99_fscanf") __attribute__((__nonnull__(1)));
+/// ```
+///
+/// We consume the `__asm__` / `asm` keyword and the parenthesized string(s)
+/// without producing an AST node — the information is relevant only for the
+/// linker, which we do not need during parsing.
+fn skip_asm_label(parser: &mut Parser<'_>) {
+    if !parser.check(TokenKind::AsmKeyword) {
+        return;
+    }
+    parser.advance(); // consume `asm` / `__asm__`
+
+    // Expect '(' ... ')'
+    if parser.check(TokenKind::LeftParen) {
+        parser.advance(); // consume '('
+        let mut depth: u32 = 1;
+        while depth > 0 && !parser.check(TokenKind::Eof) {
+            match parser.current().kind {
+                TokenKind::LeftParen => {
+                    depth += 1;
+                    parser.advance();
+                }
+                TokenKind::RightParen => {
+                    depth -= 1;
+                    parser.advance();
+                }
+                _ => {
+                    parser.advance();
+                }
+            }
+        }
+    }
 }

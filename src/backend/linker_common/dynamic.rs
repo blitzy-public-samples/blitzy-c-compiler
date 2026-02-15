@@ -458,6 +458,12 @@ impl DynamicSymbolTable {
         &self.symbols
     }
 
+    /// Public interface for interning an arbitrary string (such as a DT_NEEDED
+    /// library name) in the `.dynstr` table, returning its byte offset.
+    pub fn intern_needed_string(&mut self, s: &str) -> u32 {
+        self.intern_string(s)
+    }
+
     /// Interns a string in the `.dynstr` table and returns its byte offset.
     /// Duplicate strings are deduplicated via `FxHashMap`.
     fn intern_string(&mut self, s: &str) -> u32 {
@@ -665,6 +671,10 @@ pub struct DynamicSectionBuilder {
     entries: Vec<DynamicEntry>,
     /// Library names required at runtime (DT_NEEDED strings).
     needed_libs: Vec<String>,
+    /// Pre-computed `.dynstr` offsets for DT_NEEDED entries, used when the
+    /// `.dynstr` table is built externally and library names are interned
+    /// at known offsets.
+    precomputed_needed: Vec<u64>,
     /// The SONAME of this shared object, if set.
     soname: Option<String>,
     /// Address of the `.init` function, if any.
@@ -685,6 +695,7 @@ impl DynamicSectionBuilder {
         Self {
             entries: Vec::with_capacity(32),
             needed_libs: Vec::new(),
+            precomputed_needed: Vec::new(),
             soname: None,
             init_addr: None,
             fini_addr: None,
@@ -699,6 +710,14 @@ impl DynamicSectionBuilder {
     /// string is the library's SONAME (e.g., `"libc.so.6"`).
     pub fn add_needed(&mut self, lib: &str) {
         self.needed_libs.push(lib.to_owned());
+    }
+
+    /// Adds a pre-computed DT_NEEDED entry with an explicit `.dynstr` offset.
+    /// Use this when the `.dynstr` table is built externally (e.g., by
+    /// [`DynamicSymbolTable`]) and the NEEDED library name has already been
+    /// interned at a known offset.
+    pub fn add_needed_precomputed(&mut self, offset: u64) {
+        self.precomputed_needed.push(offset);
     }
 
     /// Sets the SONAME of the shared object being linked (DT_SONAME).
@@ -773,6 +792,10 @@ impl DynamicSectionBuilder {
         for lib in &self.needed_libs {
             let str_offset = dynstr_map.get(lib).copied().unwrap_or(0);
             self.entries.push(DynamicEntry::new(DT_NEEDED, str_offset));
+        }
+        // Also emit pre-computed NEEDED entries (for externally-built .dynstr).
+        for &off in &self.precomputed_needed {
+            self.entries.push(DynamicEntry::new(DT_NEEDED, off));
         }
 
         // 2. DT_SONAME.

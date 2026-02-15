@@ -318,10 +318,14 @@ fn remove_unreachable_blocks(func: &mut IrFunction) -> bool {
     // that are reachable (i.e., still alive).
     for &dead_id in &unreachable_ids {
         // Get successors of the dead block before removal.
-        let successors: Vec<BasicBlockId> = func.get_block(dead_id).successors().to_vec();
+        // Defensive: skip if the dead block somehow doesn't exist.
+        let successors: Vec<BasicBlockId> = match func.try_get_block(dead_id) {
+            Some(b) => b.successors().to_vec(),
+            None => continue,
+        };
 
         for &succ_id in &successors {
-            if reachable.contains(&succ_id) {
+            if reachable.contains(&succ_id) && func.has_block(succ_id) {
                 // Remove dead block from successor's predecessor list.
                 let succ = func.get_block_mut(succ_id);
                 succ.remove_predecessor(dead_id);
@@ -349,6 +353,11 @@ fn remove_unreachable_blocks(func: &mut IrFunction) -> bool {
 }
 
 /// Computes the set of basic blocks reachable from the entry block via BFS.
+///
+/// This function is defensive against stale block references: successor IDs
+/// that do not correspond to an existing block in the function are silently
+/// skipped. This can occur when the IR was built with optimistic block
+/// references that were later pruned by earlier passes.
 fn compute_reachable_blocks(func: &IrFunction) -> FxHashSet<BasicBlockId> {
     let mut reachable = FxHashSet::default();
     let mut worklist: Vec<BasicBlockId> = Vec::new();
@@ -358,12 +367,17 @@ fn compute_reachable_blocks(func: &IrFunction) -> FxHashSet<BasicBlockId> {
     worklist.push(entry_id);
 
     while let Some(block_id) = worklist.pop() {
-        let block = func.get_block(block_id);
+        // Defensively skip block IDs that don't exist in the function.
+        let block = match func.try_get_block(block_id) {
+            Some(b) => b,
+            None => continue,
+        };
 
         // Follow successor edges from the terminator.
         if let Some(term) = block.terminator() {
             for succ in term.successor_blocks() {
-                if reachable.insert(succ) {
+                // Only follow successors that actually exist in the function.
+                if func.has_block(succ) && reachable.insert(succ) {
                     worklist.push(succ);
                 }
             }
@@ -372,7 +386,7 @@ fn compute_reachable_blocks(func: &IrFunction) -> FxHashSet<BasicBlockId> {
         // Also follow explicit successor list in case it diverges from
         // the terminator (defensive).
         for &succ in block.successors() {
-            if reachable.insert(succ) {
+            if func.has_block(succ) && reachable.insert(succ) {
                 worklist.push(succ);
             }
         }

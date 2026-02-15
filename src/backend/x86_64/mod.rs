@@ -325,6 +325,9 @@ pub mod opcodes {
     pub const LFENCE: u32 = 0x00A1;
     /// PAUSE — spin-wait hint for busy-wait loops.
     pub const PAUSE: u32 = 0x00A2;
+    /// LEA with a symbol operand — encodes `lea reg, [rip + symbol]`
+    /// (RIP-relative addressing for loading the address of a global symbol).
+    pub const LEA_SYM: u32 = 0x00A3;
 
     // -- Inline assembly placeholder ----------------------------------------
     /// Placeholder for inline assembly blocks. The actual bytes are
@@ -730,8 +733,10 @@ impl X86_64Codegen {
         instrs.push(push_rbp);
 
         // Step 3: Establish new frame pointer: MOV RBP, RSP
+        // Must use SIZE_QWORD (bits 24-25 = 01) to emit REX.W for 64-bit
+        // stack/frame pointer operations.
         let mov_rbp_rsp = MachineInstr::with_operands(
-            opcodes::MOV_RR,
+            opcodes::MOV_RR | (1u32 << 24),
             vec![
                 MachineOperand::Register(registers::RBP),
                 MachineOperand::Register(registers::RSP),
@@ -752,9 +757,10 @@ impl X86_64Codegen {
             instrs.push(probe);
         } else if frame_size > 0 {
             // Small frame: direct SUB RSP, aligned_size
+            // Must use SIZE_QWORD for 64-bit stack pointer adjustment.
             let aligned_size = align_to(frame_size, X86_64_STACK_ALIGNMENT);
             let mut sub_rsp = MachineInstr::with_operands(
-                opcodes::SUB_RI,
+                opcodes::SUB_RI | (1u32 << 24),
                 vec![
                     MachineOperand::Register(registers::RSP),
                     MachineOperand::Immediate(aligned_size as i64),
@@ -809,8 +815,9 @@ impl X86_64Codegen {
         }
 
         // Step 2: Restore stack pointer from frame pointer: MOV RSP, RBP
+        // Must use SIZE_QWORD for 64-bit stack pointer restoration.
         let mov_rsp_rbp = MachineInstr::with_operands(
-            opcodes::MOV_RR,
+            opcodes::MOV_RR | (1u32 << 24),
             vec![
                 MachineOperand::Register(registers::RSP),
                 MachineOperand::Register(registers::RBP),
@@ -974,11 +981,33 @@ impl ArchCodegen for X86_64Codegen {
     /// - ModR/M and SIB byte construction for complex addressing modes
     /// - Relocation record emission for symbolic references
     fn emit_assembly(&self, mf: &MachineFunction) -> Vec<u8> {
-        // Delegate to the built-in assembler which returns an AssembledFunction
-        // containing the raw machine code bytes, relocation records, and total
-        // size. We extract the code field (Vec<u8>) for the caller, which
-        // passes it to the ELF writer or linker as section content.
         assembler::encode_function(mf).code
+    }
+
+    /// Assembles a machine function returning code bytes **and** relocations.
+    ///
+    /// This override preserves the relocation records produced by the x86-64
+    /// assembler (e.g., `R_X86_64_PC32` for `call` instructions targeting
+    /// external symbols).  The generation driver uses these to patch call
+    /// sites when building dynamically-linked executables.
+    fn emit_assembly_with_relocations(
+        &self,
+        mf: &MachineFunction,
+    ) -> crate::backend::traits::AssemblyOutput {
+        let asm_func = assembler::encode_function(mf);
+        crate::backend::traits::AssemblyOutput {
+            code: asm_func.code,
+            relocations: asm_func
+                .relocations
+                .into_iter()
+                .map(|r| crate::backend::traits::AsmRelocation {
+                    offset: r.offset,
+                    symbol: r.symbol,
+                    reloc_type: r.reloc_type.elf_value(),
+                    addend: r.addend,
+                })
+                .collect(),
+        }
     }
 
     /// Returns the complete table of x86-64 ELF relocation types.
@@ -1303,6 +1332,12 @@ mod tests {
     use super::*;
     use crate::backend::traits::MachineBasicBlock;
 
+    /// SIZE_QWORD flag (bit 24) that marks 64-bit (REX.W) operations.
+    /// Prologue/epilogue instructions (MOV RBP,RSP / SUB RSP / MOV RSP,RBP)
+    /// must use this flag on x86-64 so the assembler emits REX.W prefixed
+    /// encodings that operate on the full 64-bit registers.
+    const SIZE_QWORD: u32 = 1 << 24;
+
     /// Creates a minimal [`CodegenConfig`] targeting x86-64 with all
     /// optional features disabled. Used as a baseline for tests.
     fn test_config() -> CodegenConfig {
@@ -1586,9 +1621,10 @@ mod tests {
         let backend = X86_64Codegen::new(test_config());
         let prologue = backend.generate_prologue(0, &[]);
         // Expected: PUSH RBP, MOV RBP RSP (no SUB for zero frame)
+        // MOV RBP,RSP uses SIZE_QWORD for 64-bit register-width operation.
         assert_eq!(prologue.len(), 2);
         assert_eq!(prologue[0].opcode, opcodes::PUSH);
-        assert_eq!(prologue[1].opcode, opcodes::MOV_RR);
+        assert_eq!(prologue[1].opcode, opcodes::MOV_RR | SIZE_QWORD);
     }
 
     #[test]
@@ -1597,22 +1633,22 @@ mod tests {
         cfg.cf_protection = true;
         let backend = X86_64Codegen::new(cfg);
         let prologue = backend.generate_prologue(0, &[]);
-        // Expected: ENDBR64, PUSH RBP, MOV RBP RSP
+        // Expected: ENDBR64, PUSH RBP, MOV RBP RSP (64-bit)
         assert_eq!(prologue.len(), 3);
         assert_eq!(prologue[0].opcode, opcodes::ENDBR64);
         assert_eq!(prologue[1].opcode, opcodes::PUSH);
-        assert_eq!(prologue[2].opcode, opcodes::MOV_RR);
+        assert_eq!(prologue[2].opcode, opcodes::MOV_RR | SIZE_QWORD);
     }
 
     #[test]
     fn prologue_with_small_frame() {
         let backend = X86_64Codegen::new(test_config());
         let prologue = backend.generate_prologue(64, &[]);
-        // Expected: PUSH RBP, MOV RBP RSP, SUB RSP 64
+        // Expected: PUSH RBP, MOV RBP RSP (64-bit), SUB RSP 64 (64-bit)
         assert_eq!(prologue.len(), 3);
         assert_eq!(prologue[0].opcode, opcodes::PUSH);
-        assert_eq!(prologue[1].opcode, opcodes::MOV_RR);
-        assert_eq!(prologue[2].opcode, opcodes::SUB_RI);
+        assert_eq!(prologue[1].opcode, opcodes::MOV_RR | SIZE_QWORD);
+        assert_eq!(prologue[2].opcode, opcodes::SUB_RI | SIZE_QWORD);
         // Verify the frame size operand is 16-byte aligned
         if let MachineOperand::Immediate(size) = &prologue[2].operands[1] {
             assert_eq!(*size, 64); // 64 is already 16-byte aligned
@@ -1656,7 +1692,7 @@ mod tests {
         // Exactly 4096 should NOT trigger probe (threshold is >, not >=)
         let prologue = backend.generate_prologue(4096, &[]);
         assert_eq!(prologue.len(), 3);
-        assert_eq!(prologue[2].opcode, opcodes::SUB_RI);
+        assert_eq!(prologue[2].opcode, opcodes::SUB_RI | SIZE_QWORD);
     }
 
     #[test]
@@ -1672,11 +1708,12 @@ mod tests {
         let backend = X86_64Codegen::new(test_config());
         let callee_saved = vec![registers::RBX, registers::R12, registers::R14];
         let prologue = backend.generate_prologue(32, &callee_saved);
-        // Expected: PUSH RBP, MOV RBP RSP, SUB RSP 32, PUSH RBX, PUSH R12, PUSH R14
+        // Expected: PUSH RBP, MOV RBP RSP (64-bit), SUB RSP 32 (64-bit),
+        //           PUSH RBX, PUSH R12, PUSH R14
         assert_eq!(prologue.len(), 6);
         assert_eq!(prologue[0].opcode, opcodes::PUSH); // RBP
-        assert_eq!(prologue[1].opcode, opcodes::MOV_RR);
-        assert_eq!(prologue[2].opcode, opcodes::SUB_RI);
+        assert_eq!(prologue[1].opcode, opcodes::MOV_RR | SIZE_QWORD);
+        assert_eq!(prologue[2].opcode, opcodes::SUB_RI | SIZE_QWORD);
         assert_eq!(prologue[3].opcode, opcodes::PUSH); // RBX
         assert_eq!(prologue[4].opcode, opcodes::PUSH); // R12
         assert_eq!(prologue[5].opcode, opcodes::PUSH); // R14
@@ -1701,9 +1738,9 @@ mod tests {
     fn epilogue_minimal() {
         let backend = X86_64Codegen::new(test_config());
         let epilogue = backend.generate_epilogue(&[]);
-        // Expected: MOV RSP RBP, POP RBP, RET
+        // Expected: MOV RSP RBP (64-bit), POP RBP, RET
         assert_eq!(epilogue.len(), 3);
-        assert_eq!(epilogue[0].opcode, opcodes::MOV_RR);
+        assert_eq!(epilogue[0].opcode, opcodes::MOV_RR | SIZE_QWORD);
         assert_eq!(epilogue[1].opcode, opcodes::POP);
         assert_eq!(epilogue[2].opcode, opcodes::RET);
         assert!(epilogue[2].is_terminator);
@@ -1715,12 +1752,12 @@ mod tests {
         let backend = X86_64Codegen::new(test_config());
         let callee_saved = vec![registers::RBX, registers::R12];
         let epilogue = backend.generate_epilogue(&callee_saved);
-        // Expected: POP R12, POP RBX, MOV RSP RBP, POP RBP, RET
+        // Expected: POP R12, POP RBX, MOV RSP RBP (64-bit), POP RBP, RET
         assert_eq!(epilogue.len(), 5);
         // Callee saved restored in reverse order
         assert_eq!(epilogue[0].opcode, opcodes::POP); // R12 (last pushed)
         assert_eq!(epilogue[1].opcode, opcodes::POP); // RBX (first pushed)
-        assert_eq!(epilogue[2].opcode, opcodes::MOV_RR);
+        assert_eq!(epilogue[2].opcode, opcodes::MOV_RR | SIZE_QWORD);
         assert_eq!(epilogue[3].opcode, opcodes::POP); // RBP
         assert_eq!(epilogue[4].opcode, opcodes::RET);
     }
@@ -1847,13 +1884,13 @@ mod tests {
 
         backend.emit_prologue(&mut mf);
 
-        // Prologue: PUSH RBP, MOV RBP RSP, SUB RSP 32, PUSH RBX
+        // Prologue: PUSH RBP, MOV RBP RSP (64-bit), SUB RSP 32 (64-bit), PUSH RBX
         // Then the original RET instruction
         let instrs = &mf.blocks[0].instructions;
         assert_eq!(instrs.len(), 5);
         assert_eq!(instrs[0].opcode, opcodes::PUSH); // RBP
-        assert_eq!(instrs[1].opcode, opcodes::MOV_RR);
-        assert_eq!(instrs[2].opcode, opcodes::SUB_RI);
+        assert_eq!(instrs[1].opcode, opcodes::MOV_RR | SIZE_QWORD);
+        assert_eq!(instrs[2].opcode, opcodes::SUB_RI | SIZE_QWORD);
         assert_eq!(instrs[3].opcode, opcodes::PUSH); // RBX
         assert_eq!(instrs[4].opcode, opcodes::RET); // original
     }
@@ -1876,12 +1913,12 @@ mod tests {
 
         backend.emit_epilogue(&mut mf);
 
-        // Expected: NOP, POP RBX, MOV RSP RBP, POP RBP, RET (from epilogue)
+        // Expected: NOP, POP RBX, MOV RSP RBP (64-bit), POP RBP, RET (from epilogue)
         let instrs = &mf.blocks[0].instructions;
         assert_eq!(instrs.len(), 5);
         assert_eq!(instrs[0].opcode, opcodes::NOP); // preserved
         assert_eq!(instrs[1].opcode, opcodes::POP); // RBX
-        assert_eq!(instrs[2].opcode, opcodes::MOV_RR);
+        assert_eq!(instrs[2].opcode, opcodes::MOV_RR | SIZE_QWORD);
         assert_eq!(instrs[3].opcode, opcodes::POP); // RBP
         assert_eq!(instrs[4].opcode, opcodes::RET); // from epilogue
         assert!(instrs[4].is_return);

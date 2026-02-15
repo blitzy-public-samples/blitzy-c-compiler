@@ -39,6 +39,7 @@ use bcc::common::encoding::read_source_file;
 use bcc::common::{DiagnosticEngine, Interner, SourceMap, Target as LibTarget, TempDir, TempFile};
 
 // Library imports — frontend pipeline (Phases 1–5).
+use bcc::frontend::lexer::classify_keywords;
 use bcc::frontend::lexer::token::{Token as LexToken, TokenKind};
 use bcc::frontend::parser::Parser;
 use bcc::frontend::preprocessor::Preprocessor;
@@ -1024,6 +1025,7 @@ fn compile_frontend_and_middleend(
     let mut pp = Preprocessor::new(source_map, diagnostics, lib_target, interner);
     configure_preprocessor(&mut pp, ctx);
 
+    eprintln!("[DEBUG] Starting preprocessing for {:?}", input_path);
     let tokens = match pp.preprocess(input_path) {
         Ok(tokens) => tokens,
         Err(()) => {
@@ -1037,11 +1039,31 @@ fn compile_frontend_and_middleend(
         return Err(());
     }
 
+    eprintln!("[DEBUG] Preprocessing done, {} tokens produced", tokens.len());
+
     // ══════════════════════════════════════════════════════════════════
-    // Phase 3: Lexing (integrated with preprocessing)
+    // Phase 3: Lexing — Keyword Classification
     // ══════════════════════════════════════════════════════════════════
-    // The preprocessor already produces a fully-tokenised stream. No
-    // separate lexer pass is needed — tokens are ready for the parser.
+    // The preprocessor produces a raw token stream where all identifiers
+    // (including C keywords) are `TokenKind::Identifier(Symbol)`. The
+    // parser expects keywords to carry their specific `TokenKind` values
+    // (e.g., `Int`, `Return`, `Void`). This classification step bridges
+    // the gap by resolving each identifier's text and converting matches
+    // against the keyword table to their proper variants. This is a
+    // single O(n) pass with O(1) expected-time lookups per identifier.
+    let mut tokens = tokens;
+    classify_keywords(&mut tokens, &pp.interner);
+
+    // Strip whitespace and newline tokens — the parser operates on
+    // syntactically significant tokens only. The preprocessor preserves
+    // these for directive-boundary detection, but they must be removed
+    // before the parser sees the stream.
+    tokens.retain(|t| {
+        !matches!(
+            t.kind,
+            TokenKind::Newline | TokenKind::Whitespace
+        )
+    });
 
     // ══════════════════════════════════════════════════════════════════
     // Phase 4: Parsing
@@ -1079,6 +1101,7 @@ fn compile_frontend_and_middleend(
     // ══════════════════════════════════════════════════════════════════
     // The semantic analyzer borrows the same shared state from pp.
     // Again scoped to release borrows before error handling.
+    eprintln!("[DEBUG] Starting Phase 5: Semantic Analysis");
     let sema_result = {
         let mut sema = SemanticAnalyzer::new(
             &mut pp.diagnostics,
@@ -1129,6 +1152,7 @@ fn compile_frontend_and_middleend(
     // Every local variable is initially emitted as an `alloca` instruction
     // in the function entry block — the "alloca" half of the mandated
     // alloca-then-promote SSA construction architecture.
+    eprintln!("[DEBUG] Starting Phase 6: IR Lowering");
     let lowering_ctx = match lower_translation_unit(
         &checked_tu,
         lib_target,
@@ -1158,6 +1182,19 @@ fn compile_frontend_and_middleend(
     let diagnostics = lowering_ctx.diagnostics;
     let source_map_for_diag = lowering_ctx.source_map;
 
+    // DEBUG: dump IR after lowering
+    for func in &ir_module.functions {
+        if func.is_definition {
+            eprintln!("[DEBUG after Phase6] func='{}' blocks={}", func.name, func.basic_blocks.len());
+            for (bi, bb) in func.basic_blocks.iter().enumerate() {
+                eprintln!("[DEBUG after Phase6]   block[{}] id={:?} instructions={}", bi, bb.id, bb.instructions().len());
+                for (ii, inst) in bb.instructions().iter().enumerate() {
+                    eprintln!("[DEBUG after Phase6]     instr[{}]: {:?}", ii, inst);
+                }
+            }
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // Phase 7: mem2reg (SSA Construction)
     // ══════════════════════════════════════════════════════════════════
@@ -1165,8 +1202,22 @@ fn compile_frontend_and_middleend(
     // dominance-frontier computation. This is the "promote" half of the
     // alloca-then-promote architecture. Only scalar, non-address-taken
     // allocas are promoted; complex aggregates remain in memory.
+    eprintln!("[DEBUG] Starting Phase 7: mem2reg ({} functions)", ir_module.functions.len());
     for func in ir_module.functions.iter_mut() {
         promote_allocas_to_registers(func);
+    }
+
+    // DEBUG: dump IR after mem2reg
+    for func in &ir_module.functions {
+        if func.is_definition {
+            eprintln!("[DEBUG after Phase7] func='{}' blocks={}", func.name, func.basic_blocks.len());
+            for (bi, bb) in func.basic_blocks.iter().enumerate() {
+                eprintln!("[DEBUG after Phase7]   block[{}] id={:?} instructions={}", bi, bb.id, bb.instructions().len());
+                for (ii, inst) in bb.instructions().iter().enumerate() {
+                    eprintln!("[DEBUG after Phase7]     instr[{}]: {:?}", ii, inst);
+                }
+            }
+        }
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1175,8 +1226,22 @@ fn compile_frontend_and_middleend(
     // Run the fixed optimization pipeline: constant folding → dead code
     // elimination → CFG simplification, iterated to a fixpoint. The pass
     // manager operates on all functions in the module.
+    eprintln!("[DEBUG] Starting Phase 8: Optimization Passes");
     let mut pass_manager = PassManager::default_pipeline();
     let _opt_stats = pass_manager.run_on_module(&mut ir_module);
+
+    // DEBUG: dump IR after optimization
+    for func in &ir_module.functions {
+        if func.is_definition {
+            eprintln!("[DEBUG after Phase8] func='{}' blocks={}", func.name, func.basic_blocks.len());
+            for (bi, bb) in func.basic_blocks.iter().enumerate() {
+                eprintln!("[DEBUG after Phase8]   block[{}] id={:?} instructions={}", bi, bb.id, bb.instructions().len());
+                for (ii, inst) in bb.instructions().iter().enumerate() {
+                    eprintln!("[DEBUG after Phase8]     instr[{}]: {:?}", ii, inst);
+                }
+            }
+        }
+    }
 
     // ══════════════════════════════════════════════════════════════════
     // Phase 9: Phi Elimination
@@ -1184,9 +1249,11 @@ fn compile_frontend_and_middleend(
     // Convert SSA phi nodes to parallel copies placed before predecessor
     // block terminators, then sequentialise copies. This produces a form
     // suitable for register allocation in the backend.
+    eprintln!("[DEBUG] Starting Phase 9: Phi Elimination");
     for func in ir_module.functions.iter_mut() {
         eliminate_phis(func);
     }
+    eprintln!("[DEBUG] Pipeline Phases 1-9 complete");
 
     Ok(PipelineResult {
         ir_module,

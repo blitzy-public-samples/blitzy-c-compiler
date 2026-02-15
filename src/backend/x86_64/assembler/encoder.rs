@@ -969,6 +969,27 @@ fn encode_lea(ctx: &mut EncodingContext, dst: PhysReg, mem: &MemoryOperand) {
     emit_memory_operand(ctx, registers::gpr_encoding(dst), mem);
 }
 
+/// LEA reg, [rip + symbol] — RIP-relative symbol address loading.
+/// Emits REX.W + 0x8D with ModRM = 00 reg 101 (RIP-relative) and a 32-bit
+/// displacement of 0, followed by a PC32 relocation against the symbol.
+/// This is how position-independent code loads the address of a global.
+fn encode_lea_symbol(ctx: &mut EncodingContext, dst: PhysReg, symbol: &str) {
+    // REX.W prefix for 64-bit result (always needed for address loading)
+    let rex_r = registers::needs_rex(dst);
+    ctx.emit_byte(encode_rex(true, rex_r, false, false));
+    // LEA opcode
+    ctx.emit_byte(0x8D);
+    // ModRM: mod=00, reg=dst, r/m=101 (RIP-relative)
+    ctx.emit_byte(encode_modrm(0b00, registers::gpr_encoding(dst), 0b101));
+    // 32-bit displacement (placeholder, patched by relocation)
+    emit_disp32(ctx, 0);
+    ctx.record_relocation(
+        symbol.to_string(),
+        X86_64RelocationType::R_X86_64_PC32,
+        -4,
+    );
+}
+
 /// MOVZX reg, r/m8 (0F B6) or r/m16 (0F B7).
 fn encode_movzx(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg, src_size: OperandSize) {
     if let Some(rex) = compute_rex(OperandSize::DWord, Some(dst), Some(src), None) {
@@ -2031,6 +2052,16 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
                 ops.get(1).and_then(extract_mem),
             ) {
                 encode_lea(ctx, dst, &mem);
+            }
+        }
+        // LEA_SYM — load address of a global symbol via RIP-relative LEA.
+        // Operands: [dst_reg, Symbol(name)]
+        opcodes::LEA_SYM => {
+            if let (Some(dst), Some(sym)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_symbol),
+            ) {
+                encode_lea_symbol(ctx, dst, sym);
             }
         }
 

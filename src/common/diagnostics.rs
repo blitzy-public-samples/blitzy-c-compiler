@@ -416,6 +416,28 @@ impl DiagnosticEngine {
         self.warning_count
     }
 
+    /// Truncates the error count back to a previously saved count.
+    /// Used for speculative (tentative) parsing where diagnostics emitted
+    /// during a failed parse attempt should be discarded.
+    ///
+    /// This removes any diagnostics beyond the saved count and adjusts
+    /// the running error/warning tallies accordingly.
+    pub fn truncate_errors(&mut self, saved_error_count: usize) {
+        // Walk backwards through diagnostics, removing ones that were
+        // added after the save point and adjusting counts.
+        while self.error_count > saved_error_count {
+            if let Some(diag) = self.diagnostics.pop() {
+                match diag.severity {
+                    Severity::Error => self.error_count -= 1,
+                    Severity::Warning => self.warning_count -= 1,
+                    Severity::Note | Severity::Help => {}
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     /// Returns a slice of all collected diagnostics.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics

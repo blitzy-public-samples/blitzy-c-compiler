@@ -109,7 +109,7 @@ use attribute_handler::{
     propagate_to_symbol, propagate_to_type, validate_attributes, AttributeTargetKind,
 };
 use builtin_eval::evaluate_builtin;
-use constant_eval::{evaluate_constant_expression, evaluate_static_assert};
+use constant_eval::{evaluate_constant_expression_with_resolver, evaluate_static_assert};
 use initializer::analyze_initializer;
 use scope::{ScopeLevel, TagEntry, TagKind};
 use type_checker::check_expression;
@@ -753,27 +753,30 @@ impl<'a> SemanticAnalyzer<'a> {
                     );
                 }
                 // Evaluate case value as integer constant expression.
-                match evaluate_constant_expression(value, self.diagnostics, self.target) {
-                    Ok(const_val) => {
-                        if let Some(int_val) = const_val.as_integer() {
-                            // Check for duplicate case values.
-                            if let Some(case_set) = self.switch_case_values.last_mut() {
-                                if !case_set.insert(int_val) {
-                                    self.diagnostics.warning(
-                                        *span,
-                                        format!("duplicate case value '{}'", int_val),
-                                    );
+                {
+                    let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
+                    match evaluate_constant_expression_with_resolver(value, self.diagnostics, self.target, &resolver) {
+                        Ok(const_val) => {
+                            if let Some(int_val) = const_val.as_integer() {
+                                // Check for duplicate case values.
+                                if let Some(case_set) = self.switch_case_values.last_mut() {
+                                    if !case_set.insert(int_val) {
+                                        self.diagnostics.warning(
+                                            *span,
+                                            format!("duplicate case value '{}'", int_val),
+                                        );
+                                    }
                                 }
+                            } else {
+                                self.diagnostics.error(
+                                    *span,
+                                    "case value must be an integer constant expression".to_string(),
+                                );
                             }
-                        } else {
-                            self.diagnostics.error(
-                                *span,
-                                "case value must be an integer constant expression".to_string(),
-                            );
                         }
-                    }
-                    Err(()) => {
-                        // Error already reported by evaluate_constant_expression.
+                        Err(()) => {
+                            // Error already reported by evaluate_constant_expression.
+                        }
                     }
                 }
                 self.analyze_statement(body)?;
@@ -947,28 +950,31 @@ impl<'a> SemanticAnalyzer<'a> {
                     );
                 }
                 // Evaluate both range bounds.
-                if let Ok(low_val) =
-                    evaluate_constant_expression(low, self.diagnostics, self.target)
                 {
-                    if let Ok(high_val) =
-                        evaluate_constant_expression(high, self.diagnostics, self.target)
+                    let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
+                    if let Ok(low_val) =
+                        evaluate_constant_expression_with_resolver(low, self.diagnostics, self.target, &resolver)
                     {
-                        if let (Some(lo), Some(hi)) = (low_val.as_integer(), high_val.as_integer())
+                        if let Ok(high_val) =
+                            evaluate_constant_expression_with_resolver(high, self.diagnostics, self.target, &resolver)
                         {
-                            if lo > hi {
-                                self.diagnostics
-                                    .error(*span, format!("empty case range ({} ... {})", lo, hi));
-                            }
-                            // Insert all values in range for duplicate detection.
-                            if let Some(case_set) = self.switch_case_values.last_mut() {
-                                let range_size = (hi - lo + 1).min(1024);
-                                for v in lo..=(lo + range_size - 1) {
-                                    if !case_set.insert(v) {
-                                        self.diagnostics.warning(
-                                            *span,
-                                            format!("duplicate case value '{}' in range", v),
-                                        );
-                                        break;
+                            if let (Some(lo), Some(hi)) = (low_val.as_integer(), high_val.as_integer())
+                            {
+                                if lo > hi {
+                                    self.diagnostics
+                                        .error(*span, format!("empty case range ({} ... {})", lo, hi));
+                                }
+                                // Insert all values in range for duplicate detection.
+                                if let Some(case_set) = self.switch_case_values.last_mut() {
+                                    let range_size = (hi - lo + 1).min(1024);
+                                    for v in lo..=(lo + range_size - 1) {
+                                        if !case_set.insert(v) {
+                                            self.diagnostics.warning(
+                                                *span,
+                                                format!("duplicate case value '{}' in range", v),
+                                            );
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -1162,6 +1168,11 @@ impl<'a> SemanticAnalyzer<'a> {
                 }
                 TypeofOperand::TypeName(tn) => self.resolve_type_name(tn),
             },
+            TypeSpecifier::BuiltinVaList => {
+                // __builtin_va_list is an opaque pointer-sized type used for va_list.
+                // Represent it as a void pointer internally.
+                CType::Pointer(Box::new(CType::Void))
+            }
         }
     }
 
@@ -1291,7 +1302,8 @@ impl<'a> SemanticAnalyzer<'a> {
             let mut next_value: i64 = 0;
             for e in enum_list {
                 let value = if let Some(val_expr) = &e.value {
-                    match evaluate_constant_expression(val_expr, self.diagnostics, self.target) {
+                    let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
+                    match evaluate_constant_expression_with_resolver(val_expr, self.diagnostics, self.target, &resolver) {
                         Ok(cv) => {
                             if let Some(iv) = cv.as_integer() {
                                 iv as i64
@@ -1378,7 +1390,8 @@ impl<'a> SemanticAnalyzer<'a> {
                     (None, base_ty.clone())
                 };
                 let bit_width = fd.bit_width.as_ref().and_then(|bw| {
-                    match evaluate_constant_expression(bw, self.diagnostics, self.target) {
+                    let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
+                    match evaluate_constant_expression_with_resolver(bw, self.diagnostics, self.target, &resolver) {
                         Ok(cv) => cv.as_integer().map(|v| v as u32),
                         Err(()) => None,
                     }
@@ -1450,7 +1463,8 @@ impl<'a> SemanticAnalyzer<'a> {
                     qualifiers: _,
                 } => {
                     let arr_size = size.as_ref().and_then(|s| {
-                        match evaluate_constant_expression(s, self.diagnostics, self.target) {
+                        let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
+                        match evaluate_constant_expression_with_resolver(s, self.diagnostics, self.target, &resolver) {
                             Ok(cv) => cv.as_integer().map(|v| v as usize),
                             Err(()) => None,
                         }
@@ -1635,6 +1649,27 @@ impl<'a> SemanticAnalyzer<'a> {
             }
         }
 
+        // If we have no declarators at all, this might be a forward struct/union/enum
+        // reference (e.g., `struct _IO_FILE;`), which is valid C and simply introduces
+        // or references the tag in the current scope.
+        if first_result.is_none() {
+            // Check if the specifiers contain a struct/union/enum tag
+            let has_tag = specifiers.type_specifiers.iter().any(|ts| {
+                matches!(
+                    ts,
+                    TypeSpecifier::Struct { .. }
+                        | TypeSpecifier::Union { .. }
+                        | TypeSpecifier::Enum { .. }
+                )
+            });
+            if has_tag {
+                // This is a forward declaration or standalone tag reference.
+                // Resolve the type (which registers the tag) and return a
+                // placeholder declaration.
+                let _tag_ty = base_ty; // already resolved above
+                return Ok(CheckedDeclaration::Empty { span });
+            }
+        }
         first_result.ok_or_else(|| {
             self.diagnostics
                 .error(span, "empty variable declaration".to_string());
@@ -2082,7 +2117,8 @@ impl<'a> SemanticAnalyzer<'a> {
 
         for e in enumerators {
             let value = if let Some(ref val_expr) = e.value {
-                match evaluate_constant_expression(val_expr, self.diagnostics, self.target) {
+                let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
+                match evaluate_constant_expression_with_resolver(val_expr, self.diagnostics, self.target, &resolver) {
                     Ok(cv) => {
                         if let Some(iv) = cv.as_integer() {
                             iv as i64
@@ -2174,3 +2210,29 @@ impl<'a> SemanticAnalyzer<'a> {
         (Vec::new(), false)
     }
 } // end impl SemanticAnalyzer
+
+// ========================================================================
+// Typedef-resolution helper for constant evaluation
+// ========================================================================
+
+/// Creates a typedef-resolving closure for use with
+/// [`evaluate_constant_expression_with_resolver`].
+///
+/// This is a free function (rather than a method on `SemanticAnalyzer`) so
+/// that the borrow-checker can see the disjoint borrows: the closure
+/// captures `scope_stack` and `symbol_table` immutably while the caller
+/// retains mutable access to the `diagnostics` field.
+fn make_typedef_resolver<'a>(
+    scope_stack: &'a ScopeStack,
+    symbol_table: &'a SymbolTable,
+) -> impl Fn(Symbol) -> Option<CType> + 'a {
+    move |sym: Symbol| {
+        let id = scope_stack.lookup(sym)?;
+        let entry = symbol_table.get(id);
+        if entry.is_typedef() {
+            Some(entry.ty.clone())
+        } else {
+            None
+        }
+    }
+}

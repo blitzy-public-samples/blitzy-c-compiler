@@ -56,6 +56,31 @@ use super::asm_lowering::lower_asm_statement;
 use super::expr_lowering::lower_expression;
 use super::{check_recursion_depth, ensure_not_terminated, LoweringContext, LoweringError};
 
+/// Debug helper: returns the variant name of a Statement for tracing.
+fn stmt_variant_name(stmt: &Statement) -> &'static str {
+    match stmt {
+        Statement::Compound { .. } => "Compound",
+        Statement::If { .. } => "If",
+        Statement::While { .. } => "While",
+        Statement::DoWhile { .. } => "DoWhile",
+        Statement::For { .. } => "For",
+        Statement::Switch { .. } => "Switch",
+        Statement::Case { .. } => "Case",
+        Statement::CaseRange { .. } => "CaseRange",
+        Statement::Default { .. } => "Default",
+        Statement::Goto { .. } => "Goto",
+        Statement::ComputedGoto { .. } => "ComputedGoto",
+        Statement::Break { .. } => "Break",
+        Statement::Continue { .. } => "Continue",
+        Statement::Return { .. } => "Return",
+        Statement::Labeled { .. } => "Labeled",
+        Statement::Expression { .. } => "Expression",
+        Statement::Null { .. } => "Null",
+        Statement::Asm(_) => "Asm",
+        Statement::Error { .. } => "Error",
+    }
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -109,8 +134,14 @@ fn lower_statement_inner(
         ctx.builder.set_insert_point(dead_bb);
     }
 
+    // DEBUG: trace statement lowering
+    eprintln!("[DEBUG stmt_lower] lowering statement variant: {}", stmt_variant_name(stmt));
+
     match stmt {
-        Statement::Compound { items, span } => lower_compound_stmt(ctx, items, *span),
+        Statement::Compound { items, span } => {
+            eprintln!("[DEBUG stmt_lower] Compound with {} items", items.len());
+            lower_compound_stmt(ctx, items, *span)
+        }
 
         Statement::If {
             condition,
@@ -200,12 +231,14 @@ fn lower_compound_stmt(
     items: &[BlockItem],
     _span: Span,
 ) -> Result<(), LoweringError> {
-    for item in items {
+    for (idx, item) in items.iter().enumerate() {
         match item {
             BlockItem::Statement(stmt) => {
+                eprintln!("[DEBUG compound] item[{}] = Statement({})", idx, stmt_variant_name(stmt));
                 lower_statement(ctx, stmt)?;
             }
             BlockItem::Declaration(decl) => {
+                eprintln!("[DEBUG compound] item[{}] = Declaration({:?})", idx, std::mem::discriminant(decl));
                 lower_block_declaration(ctx, decl)?;
             }
         }

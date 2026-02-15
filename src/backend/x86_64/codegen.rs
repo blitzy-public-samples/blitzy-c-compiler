@@ -43,6 +43,22 @@ use crate::ir::instructions::{BinOp, FCmpPredicate, ICmpPredicate, Instruction};
 use crate::ir::types::IrType;
 
 // ---------------------------------------------------------------------------
+// Operand-size modifier flags for opcode bits 24-25
+// ---------------------------------------------------------------------------
+//
+// The encoder interprets bits 24-25 of MachineInstr.opcode to select the
+// operand size:  00 → DWord (32-bit, default), 01 → QWord (64-bit, REX.W),
+// 10 → Byte (8-bit), 11 → Word (16-bit, 0x66 prefix).
+//
+// These constants are OR'd onto the base opcode when 64-bit (or other
+// non-default) sizing is required.  Every stack-pointer and frame-pointer
+// operation on x86-64 MUST use SIZE_QWORD to emit REX.W.
+
+/// Operand-size flag that selects 64-bit (QWord) encoding (bits 24-25 = 01).
+/// OR this with any base opcode to emit REX.W, e.g. `opcodes::MOV_RR | SIZE_QWORD`.
+const SIZE_QWORD: u32 = 1 << 24;
+
+// ---------------------------------------------------------------------------
 // X86_64Opcode — high-level opcode enum for display/debug
 // ---------------------------------------------------------------------------
 
@@ -640,6 +656,53 @@ impl<'a> X86_64InstrSelector<'a> {
         for bb in func.basic_blocks.iter() {
             let mbb_id = mfunc.create_block();
             self.bb_map.insert(bb.id.0, mbb_id);
+        }
+
+        // Step 1b: Pre-populate value_map for special IR values.
+        //
+        // The IR builder encodes certain value kinds (global references,
+        // integer constants, float constants, null pointers) purely by
+        // naming convention in the ValueInfo table rather than emitting
+        // dedicated instructions.  The codegen must recognize these names
+        // and map them to the appropriate MachineOperand *before*
+        // instruction selection begins — otherwise get_operand() returns
+        // a VirtualReg which produces incorrect code.
+        //
+        // Naming conventions (see ir::builder):
+        //   "global.<name>"        → Symbol("<name>")  — external function / global var
+        //   "const.int.<value>"    → Immediate(<value>) — integer constant
+        //   "const.float.<value>"  → Immediate(f64 bits) — float constant (stored as bits)
+        //   "const.null"           → Immediate(0)        — null pointer
+        for vi in &func.local_values {
+            if let Some(ref n) = vi.name {
+                if let Some(sym_name) = n.strip_prefix("global.") {
+                    self.value_map.insert(
+                        vi.id.0,
+                        MachineOperand::Symbol(sym_name.to_string()),
+                    );
+                } else if let Some(int_str) = n.strip_prefix("const.int.") {
+                    if let Ok(val) = int_str.parse::<i64>() {
+                        self.value_map.insert(
+                            vi.id.0,
+                            MachineOperand::Immediate(val),
+                        );
+                    }
+                } else if let Some(flt_str) = n.strip_prefix("const.float.") {
+                    if let Ok(val) = flt_str.parse::<f64>() {
+                        // Store float constant as raw bits for later
+                        // materialization via SSE immediate patterns
+                        self.value_map.insert(
+                            vi.id.0,
+                            MachineOperand::Immediate(val.to_bits() as i64),
+                        );
+                    }
+                } else if n == "const.null" {
+                    self.value_map.insert(
+                        vi.id.0,
+                        MachineOperand::Immediate(0),
+                    );
+                }
+            }
         }
 
         // Step 2: Lower parameters — copy from physical ABI registers to
@@ -1643,27 +1706,46 @@ impl<'a> X86_64InstrSelector<'a> {
             }
         }
 
-        // Align stack to 16 bytes for the call
+        // Align stack to 16 bytes for the call — MUST use 64-bit (REX.W) for RSP
         let aligned_stack = ((stack_space + 15) / 16) * 16;
         if aligned_stack > 0 {
-            let mut sub_rsp = MachineInstr::new(opcodes::SUB_RI);
+            let mut sub_rsp = MachineInstr::new(opcodes::SUB_RI | SIZE_QWORD);
             sub_rsp.add_operand(MachineOperand::Register(RSP));
             sub_rsp.add_operand(MachineOperand::Immediate(aligned_stack as i64));
             instrs.push(sub_rsp);
         }
 
-        // Move arguments to their ABI-designated locations
+        // Move arguments to their ABI-designated locations.
+        // When an argument is a Symbol (global function pointer or string
+        // literal address), we must use LEA_SYM (RIP-relative LEA) to load
+        // the address into the target register instead of MOV_RR.
         for (i, arg_val) in args.iter().enumerate() {
             if i >= locations.len() {
                 break;
             }
             let arg_op = self.get_operand(*arg_val);
+            let is_symbol = matches!(arg_op, MachineOperand::Symbol(_));
+            let is_imm = matches!(arg_op, MachineOperand::Immediate(_));
             match &locations[i] {
                 ParamLocation::Register(phys) => {
-                    let mut mi = MachineInstr::new(opcodes::MOV_RR);
-                    mi.add_operand(MachineOperand::Register(*phys));
-                    mi.add_operand(arg_op);
-                    instrs.push(mi);
+                    if is_symbol {
+                        // LEA <phys>, [rip + symbol]
+                        let mut mi = MachineInstr::new(opcodes::LEA_SYM | SIZE_QWORD);
+                        mi.add_operand(MachineOperand::Register(*phys));
+                        mi.add_operand(arg_op);
+                        instrs.push(mi);
+                    } else if is_imm {
+                        // MOV <phys>, imm
+                        let mut mi = MachineInstr::new(opcodes::MOV_RI);
+                        mi.add_operand(MachineOperand::Register(*phys));
+                        mi.add_operand(arg_op);
+                        instrs.push(mi);
+                    } else {
+                        let mut mi = MachineInstr::new(opcodes::MOV_RR);
+                        mi.add_operand(MachineOperand::Register(*phys));
+                        mi.add_operand(arg_op);
+                        instrs.push(mi);
+                    }
                 }
                 ParamLocation::RegisterPair(lo, _hi) => {
                     let mut mi_lo = MachineInstr::new(opcodes::MOV_RR);
@@ -1672,21 +1754,47 @@ impl<'a> X86_64InstrSelector<'a> {
                     instrs.push(mi_lo);
                 }
                 ParamLocation::Stack { offset } => {
-                    let mut mi = MachineInstr::new(opcodes::MOV_MR);
-                    mi.add_operand(MachineOperand::Memory {
-                        base: RSP,
-                        offset: *offset,
-                        index: None,
-                        scale: 1,
-                    });
-                    mi.add_operand(arg_op);
-                    instrs.push(mi);
+                    if is_symbol {
+                        // Load symbol address into a scratch register, then
+                        // move to the stack slot.
+                        let scratch = self.alloc_vreg();
+                        let mut lea = MachineInstr::new(opcodes::LEA_SYM | SIZE_QWORD);
+                        lea.add_operand(scratch.clone());
+                        lea.add_operand(arg_op);
+                        instrs.push(lea);
+                        let mut mi = MachineInstr::new(opcodes::MOV_MR);
+                        mi.add_operand(MachineOperand::Memory {
+                            base: RSP,
+                            offset: *offset,
+                            index: None,
+                            scale: 1,
+                        });
+                        mi.add_operand(scratch);
+                        instrs.push(mi);
+                    } else {
+                        let mut mi = MachineInstr::new(opcodes::MOV_MR);
+                        mi.add_operand(MachineOperand::Memory {
+                            base: RSP,
+                            offset: *offset,
+                            index: None,
+                            scale: 1,
+                        });
+                        mi.add_operand(arg_op);
+                        instrs.push(mi);
+                    }
                 }
                 ParamLocation::HiddenPointer(reg) => {
-                    let mut mi = MachineInstr::new(opcodes::MOV_RR);
-                    mi.add_operand(MachineOperand::Register(*reg));
-                    mi.add_operand(arg_op);
-                    instrs.push(mi);
+                    if is_symbol {
+                        let mut mi = MachineInstr::new(opcodes::LEA_SYM | SIZE_QWORD);
+                        mi.add_operand(MachineOperand::Register(*reg));
+                        mi.add_operand(arg_op);
+                        instrs.push(mi);
+                    } else {
+                        let mut mi = MachineInstr::new(opcodes::MOV_RR);
+                        mi.add_operand(MachineOperand::Register(*reg));
+                        mi.add_operand(arg_op);
+                        instrs.push(mi);
+                    }
                 }
             }
         }
@@ -1710,9 +1818,9 @@ impl<'a> X86_64InstrSelector<'a> {
 
         instrs.push(call_mi);
 
-        // Deallocate stack space for arguments
+        // Deallocate stack space for arguments — MUST use 64-bit (REX.W) for RSP
         if aligned_stack > 0 {
-            let mut add_rsp = MachineInstr::new(opcodes::ADD_RI);
+            let mut add_rsp = MachineInstr::new(opcodes::ADD_RI | SIZE_QWORD);
             add_rsp.add_operand(MachineOperand::Register(RSP));
             add_rsp.add_operand(MachineOperand::Immediate(aligned_stack as i64));
             instrs.push(add_rsp);
@@ -1765,7 +1873,15 @@ impl<'a> X86_64InstrSelector<'a> {
                 mi.add_operand(val_op);
                 instrs.push(mi);
             } else {
-                let mut mi = MachineInstr::new(opcodes::MOV_RR);
+                // Select MOV_RI for immediates, MOV_RM for memory, MOV_RR otherwise
+                let mov_op = match &val_op {
+                    MachineOperand::Immediate(_) => opcodes::MOV_RI,
+                    MachineOperand::Memory { .. } | MachineOperand::FrameIndex(_) => {
+                        opcodes::MOV_RM
+                    }
+                    _ => opcodes::MOV_RR,
+                };
+                let mut mi = MachineInstr::new(mov_op);
                 mi.add_operand(MachineOperand::Register(RAX));
                 mi.add_operand(val_op);
                 instrs.push(mi);
@@ -2226,8 +2342,8 @@ impl<'a> X86_64InstrSelector<'a> {
             push_rbp.add_operand(MachineOperand::Register(RBP));
             instrs.push(push_rbp);
 
-            // mov %rsp, %rbp
-            let mut mov_rbp = MachineInstr::new(opcodes::MOV_RR);
+            // mov %rsp, %rbp  — MUST use 64-bit (REX.W) for stack pointer
+            let mut mov_rbp = MachineInstr::new(opcodes::MOV_RR | SIZE_QWORD);
             mov_rbp.add_operand(MachineOperand::Register(RBP));
             mov_rbp.add_operand(MachineOperand::Register(RSP));
             instrs.push(mov_rbp);
@@ -2240,9 +2356,9 @@ impl<'a> X86_64InstrSelector<'a> {
             instrs.push(push);
         }
 
-        // Allocate stack frame
+        // Allocate stack frame — MUST use 64-bit (REX.W) for stack pointer
         if frame_size > 0 {
-            let mut sub = MachineInstr::new(opcodes::SUB_RI);
+            let mut sub = MachineInstr::new(opcodes::SUB_RI | SIZE_QWORD);
             sub.add_operand(MachineOperand::Register(RSP));
             sub.add_operand(MachineOperand::Immediate(frame_size as i64));
             instrs.push(sub);
@@ -2276,9 +2392,9 @@ impl<'a> X86_64InstrSelector<'a> {
             return instrs;
         }
 
-        // Deallocate stack frame
+        // Deallocate stack frame — MUST use 64-bit (REX.W) for stack pointer
         if frame_size > 0 && !use_frame_pointer {
-            let mut add = MachineInstr::new(opcodes::ADD_RI);
+            let mut add = MachineInstr::new(opcodes::ADD_RI | SIZE_QWORD);
             add.add_operand(MachineOperand::Register(RSP));
             add.add_operand(MachineOperand::Immediate(frame_size as i64));
             instrs.push(add);
@@ -2292,9 +2408,9 @@ impl<'a> X86_64InstrSelector<'a> {
         }
 
         if use_frame_pointer {
-            // mov %rbp, %rsp (if frame pointer was used)
+            // mov %rbp, %rsp — MUST use 64-bit (REX.W) for stack pointer
             if frame_size > 0 {
-                let mut mov_rsp = MachineInstr::new(opcodes::MOV_RR);
+                let mut mov_rsp = MachineInstr::new(opcodes::MOV_RR | SIZE_QWORD);
                 mov_rsp.add_operand(MachineOperand::Register(RSP));
                 mov_rsp.add_operand(MachineOperand::Register(RBP));
                 instrs.push(mov_rsp);

@@ -238,6 +238,21 @@ impl<'a> Parser<'a> {
         span
     }
 
+    /// Saves the current parser position for tentative (speculative) parsing.
+    /// Returns a snapshot that can be passed to [`restore`] to rewind the
+    /// cursor on failure.
+    #[inline]
+    pub fn save_position(&self) -> usize {
+        self.pos
+    }
+
+    /// Restores the parser position to a previously saved snapshot,
+    /// effectively rewinding the token cursor.
+    #[inline]
+    pub fn restore_position(&mut self, saved: usize) {
+        self.pos = saved;
+    }
+
     /// Consumes the current token if it matches `kind`. Returns `Ok(span)`
     /// on success, or `Err(ParseError)` with a diagnostic describing the
     /// mismatch.
@@ -409,6 +424,9 @@ impl<'a> Parser<'a> {
 
             // GCC extensions
             TokenKind::TypeofKeyword | TokenKind::Attribute | TokenKind::Extension => true,
+
+            // __builtin_va_list — GCC's opaque variadic-argument list type
+            TokenKind::BuiltinVaList => true,
 
             // _Static_assert
             TokenKind::StaticAssert => true,

@@ -1442,7 +1442,7 @@ fn lower_global_variable_decl(
 /// initializers are recursively converted to `Constant::Struct` or
 /// `Constant::Array` values. Zero-initialized aggregates produce
 /// `Constant::Zero`.
-fn lower_initializer_to_constant(
+pub(crate) fn lower_initializer_to_constant(
     init: &sema::CheckedInitializer,
     ty: &CType,
     module_ctx: &mut ModuleLoweringContext,
@@ -1554,7 +1554,7 @@ fn lower_scalar_init_to_constant(
 /// - `External` → `External`
 /// - `Internal` → `Internal`
 /// - `None` → `Internal` (block-scope is file-local in IR)
-fn map_sema_linkage_to_ir(
+pub(crate) fn map_sema_linkage_to_ir(
     linkage: SemaLinkage,
     is_weak: bool,
     is_tentative: bool,
@@ -1575,7 +1575,7 @@ fn map_sema_linkage_to_ir(
 }
 
 /// Maps a frontend [`VisibilityKind`] to an IR [`IrVisibility`].
-fn map_visibility_kind_to_ir(vis: VisibilityKind) -> IrVisibility {
+pub(crate) fn map_visibility_kind_to_ir(vis: VisibilityKind) -> IrVisibility {
     match vis {
         VisibilityKind::Default => IrVisibility::Default,
         VisibilityKind::Hidden => IrVisibility::Hidden,
@@ -1585,7 +1585,7 @@ fn map_visibility_kind_to_ir(vis: VisibilityKind) -> IrVisibility {
 }
 
 /// Builds [`FunctionAttributes`] from a slice of validated GCC attributes.
-fn build_function_attributes(attrs: &[ValidatedAttribute]) -> FunctionAttributes {
+pub(crate) fn build_function_attributes(attrs: &[ValidatedAttribute]) -> FunctionAttributes {
     let mut func_attrs = FunctionAttributes::default();
 
     for attr in attrs {
@@ -1616,12 +1616,12 @@ fn build_function_attributes(attrs: &[ValidatedAttribute]) -> FunctionAttributes
 }
 
 /// Returns `true` if any of the validated attributes is `Weak`.
-fn has_weak_attr(attrs: &[ValidatedAttribute]) -> bool {
+pub(crate) fn has_weak_attr(attrs: &[ValidatedAttribute]) -> bool {
     attrs.iter().any(|a| matches!(a, ValidatedAttribute::Weak))
 }
 
 /// Extracts the section name from a `Section` attribute, if present.
-fn get_section_attr(attrs: &[ValidatedAttribute]) -> Option<String> {
+pub(crate) fn get_section_attr(attrs: &[ValidatedAttribute]) -> Option<String> {
     attrs.iter().find_map(|a| match a {
         ValidatedAttribute::Section(name) => Some(name.clone()),
         _ => None,
@@ -1630,7 +1630,7 @@ fn get_section_attr(attrs: &[ValidatedAttribute]) -> Option<String> {
 
 /// Extracts the visibility from a `Visibility` attribute, if present,
 /// or returns [`IrVisibility::Default`].
-fn get_visibility_attr(attrs: &[ValidatedAttribute]) -> IrVisibility {
+pub(crate) fn get_visibility_attr(attrs: &[ValidatedAttribute]) -> IrVisibility {
     attrs
         .iter()
         .find_map(|a| match a {
@@ -1641,7 +1641,7 @@ fn get_visibility_attr(attrs: &[ValidatedAttribute]) -> IrVisibility {
 }
 
 /// Extracts the alignment override from an `Aligned` attribute, if present.
-fn get_alignment_attr(attrs: &[ValidatedAttribute]) -> Option<u64> {
+pub(crate) fn get_alignment_attr(attrs: &[ValidatedAttribute]) -> Option<u64> {
     attrs.iter().find_map(|a| match a {
         ValidatedAttribute::Aligned(Some(n)) => Some(*n),
         _ => None,

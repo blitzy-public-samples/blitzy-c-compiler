@@ -384,7 +384,7 @@ pub fn parse_type_specifier(parser: &mut Parser<'_>) -> ParseResult<TypeSpecifie
                 Ok(TypeSpecifier::TypedefName { name: sym, span })
             } else {
                 let span = tok.span;
-                let msg = format!("expected type specifier, found identifier");
+                let msg = "expected type specifier, found identifier".to_string();
                 parser.diagnostics.error(span, &msg);
                 Err(ParseError {
                     span,

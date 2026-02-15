@@ -708,7 +708,7 @@ impl ArchCodegen for X86_64Codegen {
         // The selector creates a MachineFunction internally, walking each IR
         // basic block and translating IR instructions into x86-64 machine
         // instructions with complex addressing modes, CMOV, SSE2 FP ops, etc.
-        let selector = X86_64InstrSelector::new(&self.config);
+        let mut selector = X86_64InstrSelector::new(&self.config);
         let mut mf = selector.select_instructions(func);
 
         // Copy the function name into the MachineFunction for ELF symbol

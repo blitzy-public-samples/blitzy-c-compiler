@@ -255,6 +255,19 @@ impl RiscV64Codegen {
              expected Target::RiscV64, got {}",
             config.target
         );
+
+        // Validate ELF machine constant matches the target's canonical value.
+        // This is a consistency check: if the target module and this backend
+        // disagree on the EM_RISCV value, something is fundamentally wrong.
+        debug_assert_eq!(
+            config.target.elf_machine(),
+            ELF_MACHINE,
+            "ELF machine constant mismatch: target reports {} but \
+             riscv64 backend defines {}",
+            config.target.elf_machine(),
+            ELF_MACHINE
+        );
+
         Self { config }
     }
 
@@ -871,8 +884,17 @@ impl ArchCodegen for RiscV64Codegen {
             return ParamClass::SSE;
         }
 
-        // For aggregate types and other complex cases, delegate to the
-        // full LP64D ABI classifier.
+        // Aggregate types (structs, unions, arrays) require full LP64D ABI
+        // classification. Small aggregates (≤ 2×XLEN = 16 bytes) may be
+        // split across integer and FP registers; large aggregates are
+        // passed by reference (Memory class).
+        if ty.is_aggregate() {
+            let abi = RiscV64Abi::new();
+            return abi.classify_type(ty, &Target::RiscV64);
+        }
+
+        // For all other complex cases (enums, typedefs, atomic, etc.),
+        // delegate to the full LP64D ABI classifier.
         let abi = RiscV64Abi::new();
         abi.classify_type(ty, &Target::RiscV64)
     }

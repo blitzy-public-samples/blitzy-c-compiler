@@ -23,11 +23,9 @@
 //! Zero external dependencies — all encoding is implemented internally.
 
 use crate::backend::traits::{MachineFunction, MachineInstr, MachineOperand, PhysReg};
-use crate::backend::x86_64::registers::{
-    self, RAX, RBP, RSP,
-};
 use crate::backend::x86_64::assembler::relocations::X86_64RelocationType;
 use crate::backend::x86_64::opcodes;
+use crate::backend::x86_64::registers::{self, RAX, RBP, RSP};
 
 // ============================================================================
 // Public Enums
@@ -73,35 +71,66 @@ impl OperandSize {
 /// Each variant maps to a 4-bit encoding per Intel SDM Vol 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConditionCode {
-    O, NO, B, AE, E, NE, BE, A, S, NS, P, NP, L, GE, LE, G,
+    O,
+    NO,
+    B,
+    AE,
+    E,
+    NE,
+    BE,
+    A,
+    S,
+    NS,
+    P,
+    NP,
+    L,
+    GE,
+    LE,
+    G,
 }
 
 impl ConditionCode {
     /// Returns the 4-bit condition encoding (0x0–0xF).
     pub fn encoding(self) -> u8 {
         match self {
-            ConditionCode::O  => 0x0,  ConditionCode::NO => 0x1,
-            ConditionCode::B  => 0x2,  ConditionCode::AE => 0x3,
-            ConditionCode::E  => 0x4,  ConditionCode::NE => 0x5,
-            ConditionCode::BE => 0x6,  ConditionCode::A  => 0x7,
-            ConditionCode::S  => 0x8,  ConditionCode::NS => 0x9,
-            ConditionCode::P  => 0xA,  ConditionCode::NP => 0xB,
-            ConditionCode::L  => 0xC,  ConditionCode::GE => 0xD,
-            ConditionCode::LE => 0xE,  ConditionCode::G  => 0xF,
+            ConditionCode::O => 0x0,
+            ConditionCode::NO => 0x1,
+            ConditionCode::B => 0x2,
+            ConditionCode::AE => 0x3,
+            ConditionCode::E => 0x4,
+            ConditionCode::NE => 0x5,
+            ConditionCode::BE => 0x6,
+            ConditionCode::A => 0x7,
+            ConditionCode::S => 0x8,
+            ConditionCode::NS => 0x9,
+            ConditionCode::P => 0xA,
+            ConditionCode::NP => 0xB,
+            ConditionCode::L => 0xC,
+            ConditionCode::GE => 0xD,
+            ConditionCode::LE => 0xE,
+            ConditionCode::G => 0xF,
         }
     }
 
     /// Builds from 4-bit encoding. Returns `None` if `val > 0xF`.
     pub fn from_encoding(val: u8) -> Option<Self> {
         Some(match val & 0xF {
-            0x0 => ConditionCode::O,   0x1 => ConditionCode::NO,
-            0x2 => ConditionCode::B,   0x3 => ConditionCode::AE,
-            0x4 => ConditionCode::E,   0x5 => ConditionCode::NE,
-            0x6 => ConditionCode::BE,  0x7 => ConditionCode::A,
-            0x8 => ConditionCode::S,   0x9 => ConditionCode::NS,
-            0xA => ConditionCode::P,   0xB => ConditionCode::NP,
-            0xC => ConditionCode::L,   0xD => ConditionCode::GE,
-            0xE => ConditionCode::LE,  0xF => ConditionCode::G,
+            0x0 => ConditionCode::O,
+            0x1 => ConditionCode::NO,
+            0x2 => ConditionCode::B,
+            0x3 => ConditionCode::AE,
+            0x4 => ConditionCode::E,
+            0x5 => ConditionCode::NE,
+            0x6 => ConditionCode::BE,
+            0x7 => ConditionCode::A,
+            0x8 => ConditionCode::S,
+            0x9 => ConditionCode::NS,
+            0xA => ConditionCode::P,
+            0xB => ConditionCode::NP,
+            0xC => ConditionCode::L,
+            0xD => ConditionCode::GE,
+            0xE => ConditionCode::LE,
+            0xF => ConditionCode::G,
             _ => return None,
         })
     }
@@ -109,14 +138,22 @@ impl ConditionCode {
     /// Inverts the condition (E→NE, L→GE, etc.).
     pub fn invert(self) -> Self {
         match self {
-            ConditionCode::O  => ConditionCode::NO,  ConditionCode::NO => ConditionCode::O,
-            ConditionCode::B  => ConditionCode::AE,  ConditionCode::AE => ConditionCode::B,
-            ConditionCode::E  => ConditionCode::NE,  ConditionCode::NE => ConditionCode::E,
-            ConditionCode::BE => ConditionCode::A,   ConditionCode::A  => ConditionCode::BE,
-            ConditionCode::S  => ConditionCode::NS,  ConditionCode::NS => ConditionCode::S,
-            ConditionCode::P  => ConditionCode::NP,  ConditionCode::NP => ConditionCode::P,
-            ConditionCode::L  => ConditionCode::GE,  ConditionCode::GE => ConditionCode::L,
-            ConditionCode::LE => ConditionCode::G,   ConditionCode::G  => ConditionCode::LE,
+            ConditionCode::O => ConditionCode::NO,
+            ConditionCode::NO => ConditionCode::O,
+            ConditionCode::B => ConditionCode::AE,
+            ConditionCode::AE => ConditionCode::B,
+            ConditionCode::E => ConditionCode::NE,
+            ConditionCode::NE => ConditionCode::E,
+            ConditionCode::BE => ConditionCode::A,
+            ConditionCode::A => ConditionCode::BE,
+            ConditionCode::S => ConditionCode::NS,
+            ConditionCode::NS => ConditionCode::S,
+            ConditionCode::P => ConditionCode::NP,
+            ConditionCode::NP => ConditionCode::P,
+            ConditionCode::L => ConditionCode::GE,
+            ConditionCode::GE => ConditionCode::L,
+            ConditionCode::LE => ConditionCode::G,
+            ConditionCode::G => ConditionCode::LE,
         }
     }
 }
@@ -139,22 +176,52 @@ pub struct MemoryOperand {
 impl MemoryOperand {
     /// `[base + displacement]`
     pub fn base_disp(base: PhysReg, displacement: i32) -> Self {
-        Self { base: Some(base), index: None, scale: 1, displacement }
+        Self {
+            base: Some(base),
+            index: None,
+            scale: 1,
+            displacement,
+        }
     }
 
     /// `[base + index*scale + displacement]`
-    pub fn base_index_scale_disp(base: PhysReg, index: PhysReg, scale: u8, displacement: i32) -> Self {
-        Self { base: Some(base), index: Some(index), scale, displacement }
+    pub fn base_index_scale_disp(
+        base: PhysReg,
+        index: PhysReg,
+        scale: u8,
+        displacement: i32,
+    ) -> Self {
+        Self {
+            base: Some(base),
+            index: Some(index),
+            scale,
+            displacement,
+        }
     }
 
     /// `[disp32]` — absolute address.
     pub fn disp_only(displacement: i32) -> Self {
-        Self { base: None, index: None, scale: 1, displacement }
+        Self {
+            base: None,
+            index: None,
+            scale: 1,
+            displacement,
+        }
     }
 
     /// Construct from `MachineOperand::Memory` fields.
-    pub fn from_machine_operand(base: PhysReg, offset: i32, index: Option<PhysReg>, scale: u8) -> Self {
-        Self { base: Some(base), index, scale, displacement: offset }
+    pub fn from_machine_operand(
+        base: PhysReg,
+        offset: i32,
+        index: Option<PhysReg>,
+        scale: u8,
+    ) -> Self {
+        Self {
+            base: Some(base),
+            index,
+            scale,
+            displacement: offset,
+        }
     }
 }
 
@@ -239,13 +306,28 @@ impl EncodingContext {
     /// Record a fixup; caller should have already written placeholder bytes of `size`.
     pub fn record_fixup(&mut self, label: u32, size: u8) {
         let offset = self.current_offset - size as usize;
-        self.fixups.push(Fixup { offset, label, size, pc_offset: self.current_offset });
+        self.fixups.push(Fixup {
+            offset,
+            label,
+            size,
+            pc_offset: self.current_offset,
+        });
     }
 
     /// Record a relocation (the 4-byte field just written is the relocation site).
-    pub fn record_relocation(&mut self, symbol: String, reloc_type: X86_64RelocationType, addend: i64) {
+    pub fn record_relocation(
+        &mut self,
+        symbol: String,
+        reloc_type: X86_64RelocationType,
+        addend: i64,
+    ) {
         let offset = self.current_offset - 4;
-        self.relocations.push(Relocation { offset, symbol, reloc_type, addend });
+        self.relocations.push(Relocation {
+            offset,
+            symbol,
+            reloc_type,
+            addend,
+        });
     }
 
     pub fn bind_label(&mut self, label: u32) {
@@ -270,7 +352,9 @@ impl EncodingContext {
                         let b = (rel as i32).to_le_bytes();
                         self.buffer[fixup.offset..fixup.offset + 4].copy_from_slice(&b);
                     }
-                    _ => { unresolved += 1; }
+                    _ => {
+                        unresolved += 1;
+                    }
                 }
             } else {
                 unresolved += 1;
@@ -293,10 +377,10 @@ impl EncodingContext {
 // ============================================================================
 
 const REX_BASE: u8 = 0x40;
-const REX_W: u8    = 0x08;
-const REX_R: u8    = 0x04;
-const REX_X: u8    = 0x02;
-const REX_B: u8    = 0x01;
+const REX_W: u8 = 0x08;
+const REX_R: u8 = 0x04;
+const REX_X: u8 = 0x02;
+const REX_B: u8 = 0x01;
 
 /// Construct a REX byte from individual flag bits.
 #[inline]
@@ -315,10 +399,24 @@ fn needs_rex_prefix(
     rm: Option<PhysReg>,
     index: Option<PhysReg>,
 ) -> bool {
-    if size == OperandSize::QWord { return true; }
-    if let Some(r) = reg { if registers::needs_rex(r) { return true; } }
-    if let Some(r) = rm  { if registers::needs_rex(r) { return true; } }
-    if let Some(r) = index { if registers::needs_rex(r) { return true; } }
+    if size == OperandSize::QWord {
+        return true;
+    }
+    if let Some(r) = reg {
+        if registers::needs_rex(r) {
+            return true;
+        }
+    }
+    if let Some(r) = rm {
+        if registers::needs_rex(r) {
+            return true;
+        }
+    }
+    if let Some(r) = index {
+        if registers::needs_rex(r) {
+            return true;
+        }
+    }
     // Byte-size ops on SPL/BPL/SIL/DIL need REX to disambiguate from AH/CH/DH/BH.
     if size == OperandSize::Byte {
         for r in [reg, rm, index].iter().copied().flatten() {
@@ -505,7 +603,11 @@ fn emit_memory_operand(ctx: &mut EncodingContext, reg_field: u8, mem: &MemoryOpe
 }
 
 #[derive(Clone, Copy)]
-enum DispKind { None, Disp8, Disp32 }
+enum DispKind {
+    None,
+    Disp8,
+    Disp32,
+}
 
 // ============================================================================
 // VEX prefix encoding (for SSE/AVX)
@@ -524,8 +626,14 @@ fn emit_vex2(ctx: &mut EncodingContext, r: bool, vvvv: u8, l: bool, pp: u8) {
 /// Emit a 3-byte VEX prefix: `C4 [RXB mmmmm] [W vvvv L pp]`.
 fn emit_vex3(
     ctx: &mut EncodingContext,
-    r: bool, x: bool, b: bool,
-    mmmmm: u8, w: bool, vvvv: u8, l: bool, pp: u8,
+    r: bool,
+    x: bool,
+    b: bool,
+    mmmmm: u8,
+    w: bool,
+    vvvv: u8,
+    l: bool,
+    pp: u8,
 ) {
     ctx.emit_byte(0xC4);
     let byte1 = (if r { 0 } else { 0x80 })
@@ -547,23 +655,41 @@ fn emit_vex3(
 /// The `/digit` extension for ALU operations in the 0x81/0x83 group.
 #[derive(Debug, Clone, Copy)]
 enum AluOp {
-    Add, Or, Adc, Sbb, And, Sub, Xor, Cmp,
+    Add,
+    Or,
+    Adc,
+    Sbb,
+    And,
+    Sub,
+    Xor,
+    Cmp,
 }
 
 impl AluOp {
     fn extension(self) -> u8 {
         match self {
-            AluOp::Add => 0, AluOp::Or  => 1, AluOp::Adc => 2, AluOp::Sbb => 3,
-            AluOp::And => 4, AluOp::Sub => 5, AluOp::Xor => 6, AluOp::Cmp => 7,
+            AluOp::Add => 0,
+            AluOp::Or => 1,
+            AluOp::Adc => 2,
+            AluOp::Sbb => 3,
+            AluOp::And => 4,
+            AluOp::Sub => 5,
+            AluOp::Xor => 6,
+            AluOp::Cmp => 7,
         }
     }
 
     /// Base opcode for `r/m, r` form (e.g. ADD r/m64, r64).
     fn opcode_rm_r(self) -> u8 {
         match self {
-            AluOp::Add => 0x01, AluOp::Or  => 0x09, AluOp::Adc => 0x11,
-            AluOp::Sbb => 0x19, AluOp::And => 0x21, AluOp::Sub => 0x29,
-            AluOp::Xor => 0x31, AluOp::Cmp => 0x39,
+            AluOp::Add => 0x01,
+            AluOp::Or => 0x09,
+            AluOp::Adc => 0x11,
+            AluOp::Sbb => 0x19,
+            AluOp::And => 0x21,
+            AluOp::Sub => 0x29,
+            AluOp::Xor => 0x31,
+            AluOp::Cmp => 0x39,
         }
     }
 
@@ -578,8 +704,16 @@ impl AluOp {
 // ============================================================================
 
 /// Encode ALU reg, reg.
-fn encode_alu_reg_reg(ctx: &mut EncodingContext, op: AluOp, dst: PhysReg, src: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_alu_reg_reg(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    dst: PhysReg,
+    src: PhysReg,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(src), Some(dst), None) {
         ctx.emit_byte(rex);
     }
@@ -588,30 +722,58 @@ fn encode_alu_reg_reg(ctx: &mut EncodingContext, op: AluOp, dst: PhysReg, src: P
 }
 
 /// Encode ALU reg, imm.
-fn encode_alu_reg_imm(ctx: &mut EncodingContext, op: AluOp, dst: PhysReg, imm: i64, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_alu_reg_imm(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    dst: PhysReg,
+    imm: i64,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, Some(dst), None) {
         ctx.emit_byte(rex);
     }
     // Use short imm8 form (0x83) when possible, else imm32 form (0x81).
     if size != OperandSize::Byte && fits_in_i8(imm) {
         ctx.emit_byte(0x83);
-        ctx.emit_byte(encode_modrm(0b11, op.extension(), registers::gpr_encoding(dst)));
+        ctx.emit_byte(encode_modrm(
+            0b11,
+            op.extension(),
+            registers::gpr_encoding(dst),
+        ));
         emit_imm8(ctx, imm);
     } else if size == OperandSize::Byte {
         ctx.emit_byte(0x80);
-        ctx.emit_byte(encode_modrm(0b11, op.extension(), registers::gpr_encoding(dst)));
+        ctx.emit_byte(encode_modrm(
+            0b11,
+            op.extension(),
+            registers::gpr_encoding(dst),
+        ));
         emit_imm8(ctx, imm);
     } else {
         ctx.emit_byte(0x81);
-        ctx.emit_byte(encode_modrm(0b11, op.extension(), registers::gpr_encoding(dst)));
+        ctx.emit_byte(encode_modrm(
+            0b11,
+            op.extension(),
+            registers::gpr_encoding(dst),
+        ));
         emit_imm32(ctx, imm);
     }
 }
 
 /// Encode ALU reg, mem.
-fn encode_alu_reg_mem(ctx: &mut EncodingContext, op: AluOp, dst: PhysReg, mem: &MemoryOperand, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_alu_reg_mem(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    dst: PhysReg,
+    mem: &MemoryOperand,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(dst), mem.base, mem.index) {
         ctx.emit_byte(rex);
     }
@@ -620,8 +782,16 @@ fn encode_alu_reg_mem(ctx: &mut EncodingContext, op: AluOp, dst: PhysReg, mem: &
 }
 
 /// Encode ALU mem, reg.
-fn encode_alu_mem_reg(ctx: &mut EncodingContext, op: AluOp, mem: &MemoryOperand, src: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_alu_mem_reg(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    mem: &MemoryOperand,
+    src: PhysReg,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(src), mem.base, mem.index) {
         ctx.emit_byte(rex);
     }
@@ -630,8 +800,16 @@ fn encode_alu_mem_reg(ctx: &mut EncodingContext, op: AluOp, mem: &MemoryOperand,
 }
 
 /// Encode ALU mem, imm.
-fn encode_alu_mem_imm(ctx: &mut EncodingContext, op: AluOp, mem: &MemoryOperand, imm: i64, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_alu_mem_imm(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    mem: &MemoryOperand,
+    imm: i64,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, mem.base, mem.index) {
         ctx.emit_byte(rex);
     }
@@ -652,18 +830,26 @@ fn encode_alu_mem_imm(ctx: &mut EncodingContext, op: AluOp, mem: &MemoryOperand,
 
 /// MOV reg, reg.
 fn encode_mov_reg_reg(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(src), Some(dst), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0x88u8 } else { 0x89u8 };
+    let opc = if size == OperandSize::Byte {
+        0x88u8
+    } else {
+        0x89u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(modrm_reg_reg(src, dst));
 }
 
 /// MOV reg, imm.
 fn encode_mov_reg_imm(ctx: &mut EncodingContext, dst: PhysReg, imm: i64, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     match size {
         OperandSize::QWord => {
             if fits_in_i32(imm) {
@@ -707,34 +893,62 @@ fn encode_mov_reg_imm(ctx: &mut EncodingContext, dst: PhysReg, imm: i64, size: O
 }
 
 /// MOV reg, [mem].
-fn encode_mov_reg_mem(ctx: &mut EncodingContext, dst: PhysReg, mem: &MemoryOperand, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_mov_reg_mem(
+    ctx: &mut EncodingContext,
+    dst: PhysReg,
+    mem: &MemoryOperand,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(dst), mem.base, mem.index) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0x8Au8 } else { 0x8Bu8 };
+    let opc = if size == OperandSize::Byte {
+        0x8Au8
+    } else {
+        0x8Bu8
+    };
     ctx.emit_byte(opc);
     emit_memory_operand(ctx, registers::gpr_encoding(dst), mem);
 }
 
 /// MOV [mem], reg.
-fn encode_mov_mem_reg(ctx: &mut EncodingContext, mem: &MemoryOperand, src: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_mov_mem_reg(
+    ctx: &mut EncodingContext,
+    mem: &MemoryOperand,
+    src: PhysReg,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(src), mem.base, mem.index) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0x88u8 } else { 0x89u8 };
+    let opc = if size == OperandSize::Byte {
+        0x88u8
+    } else {
+        0x89u8
+    };
     ctx.emit_byte(opc);
     emit_memory_operand(ctx, registers::gpr_encoding(src), mem);
 }
 
 /// MOV [mem], imm.
 fn encode_mov_mem_imm(ctx: &mut EncodingContext, mem: &MemoryOperand, imm: i64, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, mem.base, mem.index) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0xC6u8 } else { 0xC7u8 };
+    let opc = if size == OperandSize::Byte {
+        0xC6u8
+    } else {
+        0xC7u8
+    };
     ctx.emit_byte(opc);
     emit_memory_operand(ctx, 0, mem);
     if size == OperandSize::Byte {
@@ -761,18 +975,32 @@ fn encode_movzx(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg, src_size:
         ctx.emit_byte(rex);
     }
     ctx.emit_byte(0x0F);
-    let opc2 = if src_size == OperandSize::Byte { 0xB6u8 } else { 0xB7u8 };
+    let opc2 = if src_size == OperandSize::Byte {
+        0xB6u8
+    } else {
+        0xB7u8
+    };
     ctx.emit_byte(opc2);
     ctx.emit_byte(modrm_reg_reg(dst, src));
 }
 
 /// MOVSX reg, r/m8 (0F BE) or r/m16 (0F BF).
-fn encode_movsx(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg, src_size: OperandSize, dst_size: OperandSize) {
+fn encode_movsx(
+    ctx: &mut EncodingContext,
+    dst: PhysReg,
+    src: PhysReg,
+    src_size: OperandSize,
+    dst_size: OperandSize,
+) {
     if let Some(rex) = compute_rex(dst_size, Some(dst), Some(src), None) {
         ctx.emit_byte(rex);
     }
     ctx.emit_byte(0x0F);
-    let opc2 = if src_size == OperandSize::Byte { 0xBEu8 } else { 0xBFu8 };
+    let opc2 = if src_size == OperandSize::Byte {
+        0xBEu8
+    } else {
+        0xBFu8
+    };
     ctx.emit_byte(opc2);
     ctx.emit_byte(modrm_reg_reg(dst, src));
 }
@@ -901,22 +1129,34 @@ fn encode_cmp_reg_imm(ctx: &mut EncodingContext, reg: PhysReg, imm: i64, size: O
 
 /// TEST reg, reg (85 /r or 84 /r for byte).
 fn encode_test_reg_reg(ctx: &mut EncodingContext, a: PhysReg, b: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(a), Some(b), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0x84u8 } else { 0x85u8 };
+    let opc = if size == OperandSize::Byte {
+        0x84u8
+    } else {
+        0x85u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(modrm_reg_reg(a, b));
 }
 
 /// TEST reg, imm (F7 /0 for 16/32/64; F6 /0 for byte).
 fn encode_test_reg_imm(ctx: &mut EncodingContext, reg: PhysReg, imm: i64, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, Some(reg), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0xF6u8 } else { 0xF7u8 };
+    let opc = if size == OperandSize::Byte {
+        0xF6u8
+    } else {
+        0xF7u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(encode_modrm(0b11, 0, registers::gpr_encoding(reg)));
     if size == OperandSize::Byte {
@@ -941,8 +1181,16 @@ fn encode_setcc(ctx: &mut EncodingContext, cc: ConditionCode, dst: PhysReg) {
 }
 
 /// CMOVcc r, r/m (0F 4x /r).
-fn encode_cmovcc(ctx: &mut EncodingContext, cc: ConditionCode, dst: PhysReg, src: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_cmovcc(
+    ctx: &mut EncodingContext,
+    cc: ConditionCode,
+    dst: PhysReg,
+    src: PhysReg,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(dst), Some(src), None) {
         ctx.emit_byte(rex);
     }
@@ -953,29 +1201,43 @@ fn encode_cmovcc(ctx: &mut EncodingContext, cc: ConditionCode, dst: PhysReg, src
 
 /// NOT r/m (F7 /2).
 fn encode_not(ctx: &mut EncodingContext, reg: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, Some(reg), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0xF6u8 } else { 0xF7u8 };
+    let opc = if size == OperandSize::Byte {
+        0xF6u8
+    } else {
+        0xF7u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(encode_modrm(0b11, 2, registers::gpr_encoding(reg)));
 }
 
 /// NEG r/m (F7 /3).
 fn encode_neg(ctx: &mut EncodingContext, reg: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, Some(reg), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0xF6u8 } else { 0xF7u8 };
+    let opc = if size == OperandSize::Byte {
+        0xF6u8
+    } else {
+        0xF7u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(encode_modrm(0b11, 3, registers::gpr_encoding(reg)));
 }
 
 /// IMUL r, r/m (two-operand: 0F AF /r).
 fn encode_imul_reg_reg(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(dst), Some(src), None) {
         ctx.emit_byte(rex);
     }
@@ -985,8 +1247,16 @@ fn encode_imul_reg_reg(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg, si
 }
 
 /// IMUL r, r/m, imm (three-operand: 69 /r id or 6B /r ib).
-fn encode_imul_reg_reg_imm(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg, imm: i64, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_imul_reg_reg_imm(
+    ctx: &mut EncodingContext,
+    dst: PhysReg,
+    src: PhysReg,
+    imm: i64,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(dst), Some(src), None) {
         ctx.emit_byte(rex);
     }
@@ -1003,22 +1273,34 @@ fn encode_imul_reg_reg_imm(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg
 
 /// IDIV r/m (F7 /7) — single-operand, divides RDX:RAX.
 fn encode_idiv(ctx: &mut EncodingContext, src: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, Some(src), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0xF6u8 } else { 0xF7u8 };
+    let opc = if size == OperandSize::Byte {
+        0xF6u8
+    } else {
+        0xF7u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(encode_modrm(0b11, 7, registers::gpr_encoding(src)));
 }
 
 /// DIV r/m (F7 /6) — unsigned single-operand divide.
 fn encode_div(ctx: &mut EncodingContext, src: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, Some(src), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0xF6u8 } else { 0xF7u8 };
+    let opc = if size == OperandSize::Byte {
+        0xF6u8
+    } else {
+        0xF7u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(encode_modrm(0b11, 6, registers::gpr_encoding(src)));
 }
@@ -1035,17 +1317,33 @@ fn encode_cqo(ctx: &mut EncodingContext) {
 }
 
 /// Shift reg, imm8 (C1 /digit ib) or shift reg, 1 (D1 /digit).
-fn encode_shift_reg_imm(ctx: &mut EncodingContext, ext: u8, dst: PhysReg, imm: u8, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+fn encode_shift_reg_imm(
+    ctx: &mut EncodingContext,
+    ext: u8,
+    dst: PhysReg,
+    imm: u8,
+    size: OperandSize,
+) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, Some(dst), None) {
         ctx.emit_byte(rex);
     }
     if imm == 1 {
-        let opc = if size == OperandSize::Byte { 0xD0u8 } else { 0xD1u8 };
+        let opc = if size == OperandSize::Byte {
+            0xD0u8
+        } else {
+            0xD1u8
+        };
         ctx.emit_byte(opc);
         ctx.emit_byte(encode_modrm(0b11, ext, registers::gpr_encoding(dst)));
     } else {
-        let opc = if size == OperandSize::Byte { 0xC0u8 } else { 0xC1u8 };
+        let opc = if size == OperandSize::Byte {
+            0xC0u8
+        } else {
+            0xC1u8
+        };
         ctx.emit_byte(opc);
         ctx.emit_byte(encode_modrm(0b11, ext, registers::gpr_encoding(dst)));
         ctx.emit_byte(imm);
@@ -1054,11 +1352,17 @@ fn encode_shift_reg_imm(ctx: &mut EncodingContext, ext: u8, dst: PhysReg, imm: u
 
 /// Shift reg, CL (D3 /digit or D2 for byte).
 fn encode_shift_reg_cl(ctx: &mut EncodingContext, ext: u8, dst: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, None, Some(dst), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0xD2u8 } else { 0xD3u8 };
+    let opc = if size == OperandSize::Byte {
+        0xD2u8
+    } else {
+        0xD3u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(encode_modrm(0b11, ext, registers::gpr_encoding(dst)));
 }
@@ -1073,14 +1377,38 @@ fn encode_nop_n(ctx: &mut EncodingContext, n: usize) {
     let mut remaining = n;
     while remaining > 0 {
         match remaining {
-            1 => { ctx.emit_byte(0x90); remaining -= 1; }
-            2 => { ctx.emit_bytes(&[0x66, 0x90]); remaining -= 2; }
-            3 => { ctx.emit_bytes(&[0x0F, 0x1F, 0x00]); remaining -= 3; }
-            4 => { ctx.emit_bytes(&[0x0F, 0x1F, 0x40, 0x00]); remaining -= 4; }
-            5 => { ctx.emit_bytes(&[0x0F, 0x1F, 0x44, 0x00, 0x00]); remaining -= 5; }
-            6 => { ctx.emit_bytes(&[0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00]); remaining -= 6; }
-            7 => { ctx.emit_bytes(&[0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00]); remaining -= 7; }
-            8 => { ctx.emit_bytes(&[0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00]); remaining -= 8; }
+            1 => {
+                ctx.emit_byte(0x90);
+                remaining -= 1;
+            }
+            2 => {
+                ctx.emit_bytes(&[0x66, 0x90]);
+                remaining -= 2;
+            }
+            3 => {
+                ctx.emit_bytes(&[0x0F, 0x1F, 0x00]);
+                remaining -= 3;
+            }
+            4 => {
+                ctx.emit_bytes(&[0x0F, 0x1F, 0x40, 0x00]);
+                remaining -= 4;
+            }
+            5 => {
+                ctx.emit_bytes(&[0x0F, 0x1F, 0x44, 0x00, 0x00]);
+                remaining -= 5;
+            }
+            6 => {
+                ctx.emit_bytes(&[0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00]);
+                remaining -= 6;
+            }
+            7 => {
+                ctx.emit_bytes(&[0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00]);
+                remaining -= 7;
+            }
+            8 => {
+                ctx.emit_bytes(&[0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00]);
+                remaining -= 8;
+            }
             _ => {
                 // 9-byte NOP: 66 0F 1F 84 00 00 00 00 00
                 ctx.emit_bytes(&[0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00]);
@@ -1112,11 +1440,17 @@ fn encode_ud2(ctx: &mut EncodingContext) {
 
 /// XCHG r, r/m (87 /r; 86 /r for byte).
 fn encode_xchg(ctx: &mut EncodingContext, a: PhysReg, b: PhysReg, size: OperandSize) {
-    if size == OperandSize::Word { ctx.emit_byte(0x66); }
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
     if let Some(rex) = compute_rex(size, Some(a), Some(b), None) {
         ctx.emit_byte(rex);
     }
-    let opc = if size == OperandSize::Byte { 0x86u8 } else { 0x87u8 };
+    let opc = if size == OperandSize::Byte {
+        0x86u8
+    } else {
+        0x87u8
+    };
     ctx.emit_byte(opc);
     ctx.emit_byte(modrm_reg_reg(a, b));
 }
@@ -1235,7 +1569,13 @@ fn encode_sse_rr(ctx: &mut EncodingContext, prefix: u8, opcode: u8, dst: PhysReg
 }
 
 /// Encode SSE reg, [mem].
-fn encode_sse_rm(ctx: &mut EncodingContext, prefix: u8, opcode: u8, dst: PhysReg, mem: &MemoryOperand) {
+fn encode_sse_rm(
+    ctx: &mut EncodingContext,
+    prefix: u8,
+    opcode: u8,
+    dst: PhysReg,
+    mem: &MemoryOperand,
+) {
     ctx.emit_byte(prefix);
     let r = registers::needs_rex(dst);
     let b = mem.base.is_some_and(registers::needs_rex);
@@ -1249,7 +1589,13 @@ fn encode_sse_rm(ctx: &mut EncodingContext, prefix: u8, opcode: u8, dst: PhysReg
 }
 
 /// Encode SSE [mem], reg (store form).
-fn encode_sse_mr(ctx: &mut EncodingContext, prefix: u8, opcode: u8, mem: &MemoryOperand, src: PhysReg) {
+fn encode_sse_mr(
+    ctx: &mut EncodingContext,
+    prefix: u8,
+    opcode: u8,
+    mem: &MemoryOperand,
+    src: PhysReg,
+) {
     ctx.emit_byte(prefix);
     let r = registers::needs_rex(src);
     let b = mem.base.is_some_and(registers::needs_rex);
@@ -1263,7 +1609,13 @@ fn encode_sse_mr(ctx: &mut EncodingContext, prefix: u8, opcode: u8, mem: &Memory
 }
 
 /// CVTSI2SS / CVTSI2SD: convert GPR integer → SSE scalar.
-fn encode_cvtsi2ss_sd(ctx: &mut EncodingContext, prefix: u8, dst: PhysReg, src: PhysReg, src_size: OperandSize) {
+fn encode_cvtsi2ss_sd(
+    ctx: &mut EncodingContext,
+    prefix: u8,
+    dst: PhysReg,
+    src: PhysReg,
+    src_size: OperandSize,
+) {
     ctx.emit_byte(prefix);
     if let Some(rex) = compute_rex(src_size, Some(dst), Some(src), None) {
         ctx.emit_byte(rex);
@@ -1274,7 +1626,13 @@ fn encode_cvtsi2ss_sd(ctx: &mut EncodingContext, prefix: u8, dst: PhysReg, src: 
 }
 
 /// CVTTSS2SI / CVTTSD2SI: truncate SSE scalar → GPR integer.
-fn encode_cvttss_sd_2si(ctx: &mut EncodingContext, prefix: u8, dst: PhysReg, src: PhysReg, dst_size: OperandSize) {
+fn encode_cvttss_sd_2si(
+    ctx: &mut EncodingContext,
+    prefix: u8,
+    dst: PhysReg,
+    src: PhysReg,
+    dst_size: OperandSize,
+) {
     ctx.emit_byte(prefix);
     if let Some(rex) = compute_rex(dst_size, Some(dst), Some(src), None) {
         ctx.emit_byte(rex);
@@ -1296,7 +1654,12 @@ fn encode_cvt_ss_sd(ctx: &mut EncodingContext, prefix: u8, opcode: u8, dst: Phys
 /// Encode MOVAPS xmm, xmm (0F 28 /r — no mandatory prefix).
 fn encode_movaps_rr(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg) {
     if registers::needs_rex(dst) || registers::needs_rex(src) {
-        ctx.emit_byte(encode_rex(false, registers::needs_rex(dst), false, registers::needs_rex(src)));
+        ctx.emit_byte(encode_rex(
+            false,
+            registers::needs_rex(dst),
+            false,
+            registers::needs_rex(src),
+        ));
     }
     ctx.emit_byte(0x0F);
     ctx.emit_byte(0x28);
@@ -1306,7 +1669,12 @@ fn encode_movaps_rr(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg) {
 /// Encode MOVUPS xmm, xmm (0F 10 /r — no mandatory prefix).
 fn encode_movups_rr(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg) {
     if registers::needs_rex(dst) || registers::needs_rex(src) {
-        ctx.emit_byte(encode_rex(false, registers::needs_rex(dst), false, registers::needs_rex(src)));
+        ctx.emit_byte(encode_rex(
+            false,
+            registers::needs_rex(dst),
+            false,
+            registers::needs_rex(src),
+        ));
     }
     ctx.emit_byte(0x0F);
     ctx.emit_byte(0x10);
@@ -1316,7 +1684,12 @@ fn encode_movups_rr(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg) {
 /// Encode XORPS xmm, xmm (0F 57 /r — no mandatory prefix).
 fn encode_xorps_rr(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg) {
     if registers::needs_rex(dst) || registers::needs_rex(src) {
-        ctx.emit_byte(encode_rex(false, registers::needs_rex(dst), false, registers::needs_rex(src)));
+        ctx.emit_byte(encode_rex(
+            false,
+            registers::needs_rex(dst),
+            false,
+            registers::needs_rex(src),
+        ));
     }
     ctx.emit_byte(0x0F);
     ctx.emit_byte(0x57);
@@ -1327,7 +1700,12 @@ fn encode_xorps_rr(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg) {
 fn encode_xorpd_rr(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg) {
     ctx.emit_byte(0x66);
     if registers::needs_rex(dst) || registers::needs_rex(src) {
-        ctx.emit_byte(encode_rex(false, registers::needs_rex(dst), false, registers::needs_rex(src)));
+        ctx.emit_byte(encode_rex(
+            false,
+            registers::needs_rex(dst),
+            false,
+            registers::needs_rex(src),
+        ));
     }
     ctx.emit_byte(0x0F);
     ctx.emit_byte(0x57);
@@ -1407,14 +1785,17 @@ fn extract_imm(op: &MachineOperand) -> Option<i64> {
 /// relative to RSP.
 fn extract_mem(op: &MachineOperand) -> Option<MemoryOperand> {
     match op {
-        MachineOperand::Memory { base, offset, index, scale } => {
-            Some(MemoryOperand {
-                base: Some(*base),
-                index: *index,
-                scale: *scale,
-                displacement: *offset,
-            })
-        }
+        MachineOperand::Memory {
+            base,
+            offset,
+            index,
+            scale,
+        } => Some(MemoryOperand {
+            base: Some(*base),
+            index: *index,
+            scale: *scale,
+            displacement: *offset,
+        }),
         MachineOperand::FrameIndex(idx) => {
             // FrameIndex → [RSP + idx*8].  The multiplier may vary depending
             // on the slot size, but 8 (QWord) is the default for x86-64.
@@ -1604,7 +1985,11 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             ) {
                 if registers::is_sse(dst) {
                     // SSE load: determine SS vs SD from operand size flags
-                    let prefix = if size == OperandSize::DWord { 0xF3 } else { 0xF2 };
+                    let prefix = if size == OperandSize::DWord {
+                        0xF3
+                    } else {
+                        0xF2
+                    };
                     encode_sse_rm(ctx, prefix, 0x10, dst, &mem);
                 } else {
                     encode_mov_reg_mem(ctx, dst, &mem, size);
@@ -1617,7 +2002,11 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
                 ops.get(1).and_then(extract_phys_reg),
             ) {
                 if registers::is_sse(src) {
-                    let prefix = if size == OperandSize::DWord { 0xF3 } else { 0xF2 };
+                    let prefix = if size == OperandSize::DWord {
+                        0xF3
+                    } else {
+                        0xF2
+                    };
                     encode_sse_mr(ctx, prefix, 0x11, &mem, src);
                 } else {
                     encode_mov_mem_reg(ctx, &mem, src, size);
@@ -1854,11 +2243,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
                 // Direct jump to external symbol — E9 rel32 with relocation
                 ctx.emit_byte(0xE9);
                 emit_disp32(ctx, 0);
-                ctx.record_relocation(
-                    sym.to_string(),
-                    X86_64RelocationType::R_X86_64_PLT32,
-                    -4,
-                );
+                ctx.record_relocation(sym.to_string(), X86_64RelocationType::R_X86_64_PLT32, -4);
             }
         }
         opcodes::JCC => {
@@ -2128,9 +2513,9 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
 
                 // .capture:
                 let capture_pos = ctx.current_offset;
-                encode_pause(ctx);  // F3 90
+                encode_pause(ctx); // F3 90
                 encode_lfence(ctx); // 0F AE E8
-                // JMP .capture (EB rel8 — short backward jump)
+                                    // JMP .capture (EB rel8 — short backward jump)
                 ctx.emit_byte(0xEB);
                 let jmp_disp = (capture_pos as i32) - (ctx.current_offset as i32 + 1);
                 ctx.emit_byte(jmp_disp as u8);
@@ -2138,8 +2523,7 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
                 // .setup: — patch the CALL displacement
                 let setup_pos = ctx.current_offset;
                 let call_disp = (setup_pos as i32) - (call_pos as i32 + 5);
-                ctx.buffer[call_pos + 1..call_pos + 5]
-                    .copy_from_slice(&call_disp.to_le_bytes());
+                ctx.buffer[call_pos + 1..call_pos + 5].copy_from_slice(&call_disp.to_le_bytes());
 
                 // MOV [rsp], target_reg — overwrite return address
                 let rsp_mem = MemoryOperand {
@@ -2164,37 +2548,76 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
     }
 }
 
-
 // ============================================================================
 // ALU dispatch helpers (reduce repetition in the match arms)
 // ============================================================================
 
-fn encode_alu_dispatch_rr(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(dst), Some(src)) = (ops.first().and_then(extract_phys_reg), ops.get(1).and_then(extract_phys_reg)) {
+fn encode_alu_dispatch_rr(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    ops: &[MachineOperand],
+    size: OperandSize,
+) {
+    if let (Some(dst), Some(src)) = (
+        ops.first().and_then(extract_phys_reg),
+        ops.get(1).and_then(extract_phys_reg),
+    ) {
         encode_alu_reg_reg(ctx, op, dst, src, size);
     }
 }
 
-fn encode_alu_dispatch_ri(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(dst), Some(imm)) = (ops.first().and_then(extract_phys_reg), ops.get(1).and_then(extract_imm)) {
+fn encode_alu_dispatch_ri(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    ops: &[MachineOperand],
+    size: OperandSize,
+) {
+    if let (Some(dst), Some(imm)) = (
+        ops.first().and_then(extract_phys_reg),
+        ops.get(1).and_then(extract_imm),
+    ) {
         encode_alu_reg_imm(ctx, op, dst, imm, size);
     }
 }
 
-fn encode_alu_dispatch_rm(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(dst), Some(mem)) = (ops.first().and_then(extract_phys_reg), ops.get(1).and_then(extract_mem)) {
+fn encode_alu_dispatch_rm(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    ops: &[MachineOperand],
+    size: OperandSize,
+) {
+    if let (Some(dst), Some(mem)) = (
+        ops.first().and_then(extract_phys_reg),
+        ops.get(1).and_then(extract_mem),
+    ) {
         encode_alu_reg_mem(ctx, op, dst, &mem, size);
     }
 }
 
-fn encode_alu_dispatch_mr(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(mem), Some(src)) = (ops.first().and_then(extract_mem), ops.get(1).and_then(extract_phys_reg)) {
+fn encode_alu_dispatch_mr(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    ops: &[MachineOperand],
+    size: OperandSize,
+) {
+    if let (Some(mem), Some(src)) = (
+        ops.first().and_then(extract_mem),
+        ops.get(1).and_then(extract_phys_reg),
+    ) {
         encode_alu_mem_reg(ctx, op, &mem, src, size);
     }
 }
 
-fn encode_alu_dispatch_mi(ctx: &mut EncodingContext, op: AluOp, ops: &[MachineOperand], size: OperandSize) {
-    if let (Some(mem), Some(imm)) = (ops.first().and_then(extract_mem), ops.get(1).and_then(extract_imm)) {
+fn encode_alu_dispatch_mi(
+    ctx: &mut EncodingContext,
+    op: AluOp,
+    ops: &[MachineOperand],
+    size: OperandSize,
+) {
+    if let (Some(mem), Some(imm)) = (
+        ops.first().and_then(extract_mem),
+        ops.get(1).and_then(extract_imm),
+    ) {
         encode_alu_mem_imm(ctx, op, &mem, imm, size);
     }
 }
@@ -2229,9 +2652,9 @@ pub fn encode_function(mf: &MachineFunction) -> AssembledFunction {
             // validation and potential future use in encoding decisions:
             let _is_term = instr.is_terminator;
             let _is_call = instr.is_call;
-            let _is_ret  = instr.is_return;
-            let _impl_d  = &instr.implicit_defs;
-            let _impl_u  = &instr.implicit_uses;
+            let _is_ret = instr.is_return;
+            let _impl_d = &instr.implicit_defs;
+            let _impl_u = &instr.implicit_uses;
 
             encode_instruction(instr, &mut ctx);
         }

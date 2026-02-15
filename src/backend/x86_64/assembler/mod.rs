@@ -227,15 +227,15 @@ pub struct AssembledFunction {
 /// These sequences execute as NOPs but occupy the specified number of bytes,
 /// providing better pipeline throughput than repeated single-byte 0x90 NOPs.
 const NOP_SEQUENCES: [&[u8]; 9] = [
-    &[0x90],                                                             // 1 byte
-    &[0x66, 0x90],                                                       // 2 bytes
-    &[0x0F, 0x1F, 0x00],                                                // 3 bytes
-    &[0x0F, 0x1F, 0x40, 0x00],                                          // 4 bytes
-    &[0x0F, 0x1F, 0x44, 0x00, 0x00],                                    // 5 bytes
-    &[0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00],                              // 6 bytes
-    &[0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00],                        // 7 bytes
-    &[0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],                  // 8 bytes
-    &[0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],           // 9 bytes
+    &[0x90],                                                 // 1 byte
+    &[0x66, 0x90],                                           // 2 bytes
+    &[0x0F, 0x1F, 0x00],                                     // 3 bytes
+    &[0x0F, 0x1F, 0x40, 0x00],                               // 4 bytes
+    &[0x0F, 0x1F, 0x44, 0x00, 0x00],                         // 5 bytes
+    &[0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00],                   // 6 bytes
+    &[0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00],             // 7 bytes
+    &[0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00],       // 8 bytes
+    &[0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00], // 9 bytes
 ];
 
 /// Emits a NOP sequence of the specified total byte length using multi-byte
@@ -354,12 +354,7 @@ impl X86_64Assembler {
     ///
     /// Like [`record_fixup`], but allows specifying a non-zero addend
     /// that will be added to the resolved displacement or address.
-    pub fn record_fixup_with_addend(
-        &mut self,
-        label_id: u32,
-        kind: FixupKind,
-        addend: i64,
-    ) {
+    pub fn record_fixup_with_addend(&mut self, label_id: u32, kind: FixupKind, addend: i64) {
         let field_size = kind.size();
         self.fixups.push(Fixup {
             offset: self.current_offset - field_size,
@@ -469,12 +464,7 @@ impl X86_64Assembler {
     /// * `reloc_type` — The ELF relocation type (determines computation).
     /// * `addend` — Signed addend for the relocation (typically `-4` for
     ///   PC-relative relocations to account for the 4-byte field size).
-    pub fn emit_relocation(
-        &mut self,
-        symbol: &str,
-        reloc_type: X86_64RelocationType,
-        addend: i64,
-    ) {
+    pub fn emit_relocation(&mut self, symbol: &str, reloc_type: X86_64RelocationType, addend: i64) {
         let field_size = reloc_type.size() as usize;
         self.relocations.push(RelocationEntry {
             offset: self.current_offset - field_size,
@@ -558,12 +548,7 @@ impl X86_64Assembler {
     /// Writes a placeholder of the given size and records a relocation.
     /// Supports 32-bit (`R_X86_64_32`, `R_X86_64_32S`) and 64-bit
     /// (`R_X86_64_64`) data relocations.
-    pub fn emit_data_reference(
-        &mut self,
-        symbol: &str,
-        is_64bit: bool,
-        is_signed: bool,
-    ) {
+    pub fn emit_data_reference(&mut self, symbol: &str, is_64bit: bool, is_signed: bool) {
         if is_64bit {
             self.emit_u64_le(0);
             self.emit_relocation(symbol, X86_64RelocationType::R_X86_64_64, 0);
@@ -630,9 +615,8 @@ impl X86_64Assembler {
                 FixupKind::Rel8 => {
                     // PC after the fixup field = fixup.offset + 1
                     let pc = fixup.offset + 1;
-                    let displacement =
-                        (target_offset as i64) - (pc as i64) + fixup.addend;
-                    if displacement >= -128 && displacement <= 127 {
+                    let displacement = (target_offset as i64) - (pc as i64) + fixup.addend;
+                    if (-128..=127).contains(&displacement) {
                         self.code_buffer[fixup.offset] = displacement as u8;
                     } else {
                         // Displacement overflow — instruction should have used
@@ -643,23 +627,19 @@ impl X86_64Assembler {
                 FixupKind::Rel32 => {
                     // PC after the fixup field = fixup.offset + 4
                     let pc = fixup.offset + 4;
-                    let displacement =
-                        (target_offset as i64) - (pc as i64) + fixup.addend;
+                    let displacement = (target_offset as i64) - (pc as i64) + fixup.addend;
                     let bytes = (displacement as i32).to_le_bytes();
-                    self.code_buffer[fixup.offset..fixup.offset + 4]
-                        .copy_from_slice(&bytes);
+                    self.code_buffer[fixup.offset..fixup.offset + 4].copy_from_slice(&bytes);
                 }
                 FixupKind::Abs32 => {
                     let value = (target_offset as i64 + fixup.addend) as u32;
                     let bytes = value.to_le_bytes();
-                    self.code_buffer[fixup.offset..fixup.offset + 4]
-                        .copy_from_slice(&bytes);
+                    self.code_buffer[fixup.offset..fixup.offset + 4].copy_from_slice(&bytes);
                 }
                 FixupKind::Abs64 => {
                     let value = (target_offset as i64 + fixup.addend) as u64;
                     let bytes = value.to_le_bytes();
-                    self.code_buffer[fixup.offset..fixup.offset + 8]
-                        .copy_from_slice(&bytes);
+                    self.code_buffer[fixup.offset..fixup.offset + 8].copy_from_slice(&bytes);
                 }
             }
         }
@@ -1001,7 +981,7 @@ mod tests {
 
         // Emit JMP rel32 at offset 0
         asm.emit_byte(0xE9); // opcode at [0]
-        asm.emit_u32_le(0);  // placeholder at [1..5]
+        asm.emit_u32_le(0); // placeholder at [1..5]
         asm.record_fixup(1, FixupKind::Rel32);
 
         // Emit 3 NOPs at offset 5..8
@@ -1035,7 +1015,7 @@ mod tests {
 
         // Emit JMP rel32 targeting label 0
         asm.emit_byte(0xE9); // opcode at [10]
-        asm.emit_u32_le(0);  // placeholder at [11..15]
+        asm.emit_u32_le(0); // placeholder at [11..15]
         asm.record_fixup(0, FixupKind::Rel32);
 
         let unresolved = asm.resolve_fixups();
@@ -1152,7 +1132,10 @@ mod tests {
         let mut asm = X86_64Assembler::new();
         asm.emit_data_reference("global_var", true, false);
         assert_eq!(asm.relocations.len(), 1);
-        assert_eq!(asm.relocations[0].reloc_type, X86_64RelocationType::R_X86_64_64);
+        assert_eq!(
+            asm.relocations[0].reloc_type,
+            X86_64RelocationType::R_X86_64_64
+        );
         assert_eq!(asm.relocations[0].offset, 0);
         assert_eq!(asm.current_offset, 8);
     }
@@ -1162,7 +1145,10 @@ mod tests {
         let mut asm = X86_64Assembler::new();
         asm.emit_data_reference("local_sym", false, true);
         assert_eq!(asm.relocations.len(), 1);
-        assert_eq!(asm.relocations[0].reloc_type, X86_64RelocationType::R_X86_64_32S);
+        assert_eq!(
+            asm.relocations[0].reloc_type,
+            X86_64RelocationType::R_X86_64_32S
+        );
     }
 
     #[test]
@@ -1170,7 +1156,10 @@ mod tests {
         let mut asm = X86_64Assembler::new();
         asm.emit_data_reference("section_sym", false, false);
         assert_eq!(asm.relocations.len(), 1);
-        assert_eq!(asm.relocations[0].reloc_type, X86_64RelocationType::R_X86_64_32);
+        assert_eq!(
+            asm.relocations[0].reloc_type,
+            X86_64RelocationType::R_X86_64_32
+        );
     }
 
     #[test]
@@ -1253,10 +1242,7 @@ mod tests {
         asm.emit_u32_le(0); // 4-byte placeholder for relocation field
         asm.emit_relocation("foo", X86_64RelocationType::R_X86_64_PC32, 0);
         let result = asm.finish();
-        assert_eq!(
-            result.code,
-            vec![0x48, 0x89, 0xE5, 0x00, 0x00, 0x00, 0x00]
-        );
+        assert_eq!(result.code, vec![0x48, 0x89, 0xE5, 0x00, 0x00, 0x00, 0x00]);
         assert_eq!(result.size, 7);
         assert_eq!(result.relocations.len(), 1);
         assert_eq!(result.relocations[0].offset, 3); // field starts at byte 3

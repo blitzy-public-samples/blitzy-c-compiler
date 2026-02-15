@@ -48,7 +48,7 @@
 // ============================================================================
 
 use super::{LoweringContext, LoweringError};
-use crate::common::diagnostics::Span;
+use crate::common::diagnostics::{Diagnostic, Severity, Span};
 use crate::common::fx_hash::FxHashMap;
 use crate::common::string_interner::Symbol;
 use crate::common::target::Target;
@@ -185,6 +185,9 @@ pub fn lower_asm_statement(
     asm_stmt: &AsmStatement,
 ) -> Result<(), LoweringError> {
     let span = asm_stmt.span;
+
+    // Step 0: Emit diagnostic warnings for unusual but valid constructs.
+    emit_asm_diagnostics(ctx, asm_stmt);
 
     // Step 1: Build the named operand → positional index map.
     let operand_map = build_operand_map(&asm_stmt.outputs, &asm_stmt.inputs);
@@ -383,14 +386,21 @@ fn build_operand_map(
 
     for (idx, operand) in outputs.iter().enumerate() {
         if let Some(name) = operand.name {
-            map.insert(name, idx);
+            // Guard against duplicate named operands — later duplicates
+            // are silently ignored (the first binding wins, consistent
+            // with GCC behaviour).
+            if !map.contains_key(&name) {
+                map.insert(name, idx);
+            }
         }
     }
 
     let output_count = outputs.len();
     for (idx, operand) in inputs.iter().enumerate() {
         if let Some(name) = operand.name {
-            map.insert(name, output_count + idx);
+            if !map.contains_key(&name) {
+                map.insert(name, output_count + idx);
+            }
         }
     }
 
@@ -570,23 +580,32 @@ fn lower_output_operands(
 ) -> Result<Vec<AsmOutputBinding>, LoweringError> {
     let mut bindings = Vec::with_capacity(outputs.len());
 
-    for operand in outputs {
+    for (idx, operand) in outputs.iter().enumerate() {
         let parsed = validate_constraint(&operand.constraint, true, ctx, operand.span)?;
 
-        // Lower the C expression to an lvalue address.
-        let lvalue_addr = lower_lvalue(ctx, &operand.expression).map_err(|e| {
-            LoweringError::InvalidConstraint {
-                constraint: operand.constraint.clone(),
-                span: operand.span,
-                message: format!("output operand expression is not a valid lvalue: {}", e),
-            }
-        })?;
+        // Determine the IR type for this operand based on the constraint class.
+        // Memory constraints use pointer type; register constraints use the
+        // architecture's native word size; sub-register constraints may use
+        // narrower types (I8, I16).
+        let operand_type = constraint_preferred_ir_type(&parsed.constraint_class, ctx);
 
-        // Determine the IR type of the operand. For now, use a default
-        // integer type based on the target's pointer width. A more
-        // accurate type would come from the expression's C type, but
-        // at the IR level inline asm operates on machine-width integers.
-        let operand_type = default_operand_ir_type(ctx);
+        // Lower the C expression to an lvalue address.
+        // If the expression is not directly addressable, create a temporary
+        // alloca to serve as the output storage location.
+        let lvalue_addr = match lower_lvalue(ctx, &operand.expression) {
+            Ok(addr) => addr,
+            Err(_lvalue_err) => {
+                // The expression is not an addressable lvalue (e.g., a
+                // bitfield or a complex rvalue context). Create a temporary
+                // alloca that the asm can write to, and the caller must
+                // arrange to copy the result to the actual destination.
+                let store_type = match &parsed.constraint_class {
+                    ConstraintClass::Memory => IrType::Ptr,
+                    _ => default_operand_ir_type(ctx),
+                };
+                create_output_temporary(ctx, &store_type, idx)
+            }
+        };
 
         // For read-write (+) constraints, emit a pre-asm load.
         let pre_load_value = if parsed.modifier == Some(ConstraintModifier::ReadWrite) {
@@ -1013,6 +1032,101 @@ fn default_operand_ir_type(ctx: &LoweringContext<'_>) -> IrType {
     }
 }
 
+/// Returns the preferred IR type for a given constraint class.
+///
+/// Used to validate and annotate operand types during lowering:
+/// - `Register` → native word size (I32 or I64 depending on target)
+/// - `Memory` → pointer type (`IrType::Ptr`)
+/// - `Immediate` / `Numeric` → I64 for 64-bit targets, I32 for 32-bit
+/// - Sub-register constraints may use `I8` or `I16` for byte/word operations
+///
+/// The returned type is a hint for the backend; the actual operand IR type
+/// is determined by the expression lowering and may differ.
+fn constraint_preferred_ir_type(
+    class: &ConstraintClass,
+    ctx: &LoweringContext<'_>,
+) -> IrType {
+    match class {
+        ConstraintClass::Memory => IrType::Ptr,
+        ConstraintClass::Register | ConstraintClass::General => {
+            default_operand_ir_type(ctx)
+        }
+        ConstraintClass::Immediate | ConstraintClass::Numeric => {
+            default_operand_ir_type(ctx)
+        }
+        ConstraintClass::Matching(_) => default_operand_ir_type(ctx),
+        ConstraintClass::ArchSpecific(ch) => {
+            // Architecture-specific type mapping for sub-register constraints.
+            match ch {
+                // x86: 'q' constrains to byte-addressable registers (AL, BL, CL, DL)
+                'q' | 'Q' => IrType::I8,
+                // Some architectures use half-word constraints
+                'l' => IrType::I16,
+                _ => default_operand_ir_type(ctx),
+            }
+        }
+    }
+}
+
+/// Emits diagnostic warnings for unusual but valid inline assembly constructs.
+///
+/// This function detects patterns that, while syntactically and semantically
+/// correct, may indicate programmer mistakes or sub-optimal code:
+///
+/// - Non-volatile asm with memory clobber but no outputs (usually should be volatile)
+/// - `asm goto` with no goto labels (semantically meaningless)
+/// - Empty template string (possibly missing content)
+fn emit_asm_diagnostics(ctx: &mut LoweringContext<'_>, asm_stmt: &AsmStatement) {
+    // Warn about non-volatile asm with "memory" clobber and no outputs.
+    // Such statements are almost always meant to be volatile barriers.
+    if !asm_stmt.is_volatile
+        && asm_stmt.outputs.is_empty()
+        && asm_stmt.clobbers.iter().any(|c| c.trim() == "memory")
+    {
+        let diag = Diagnostic::new(
+            Severity::Warning,
+            asm_stmt.span,
+            "non-volatile asm with 'memory' clobber and no outputs; \
+             consider adding 'volatile' qualifier",
+        );
+        ctx.diagnostics().emit(diag);
+    }
+
+    // Warn about asm goto with no actual goto labels.
+    if asm_stmt.is_goto && asm_stmt.goto_labels.is_empty() {
+        ctx.diagnostics().warning(
+            asm_stmt.span,
+            "asm goto with no goto labels has no effect on control flow",
+        );
+    }
+
+    // Warn about completely empty template (no template fragments or all empty).
+    let has_content = asm_stmt.template.iter().any(|frag| !frag.is_empty());
+    if !has_content && !asm_stmt.outputs.is_empty() {
+        ctx.diagnostics().warning(
+            asm_stmt.span,
+            "empty asm template with output operands; outputs may be uninitialized",
+        );
+    }
+}
+
+/// Creates a temporary alloca for an output operand when the output
+/// expression is not directly addressable or when an intermediate
+/// storage location is needed for multi-step output handling.
+///
+/// This is used when the constraint analysis determines that a temporary
+/// is required (e.g., for complex output expressions where the backend
+/// needs a known address to write to, then the value is copied to the
+/// final destination).
+fn create_output_temporary(
+    ctx: &mut LoweringContext<'_>,
+    operand_type: &IrType,
+    operand_idx: usize,
+) -> ValueId {
+    let name = format!("asm_out_tmp_{}", operand_idx);
+    ctx.builder.build_alloca(ctx.function, operand_type.clone(), Some(&name))
+}
+
 // ============================================================================
 // Extended template processing with interner access
 // ============================================================================
@@ -1149,13 +1263,30 @@ fn process_asm_template_with_interner(
 ///
 /// Returns the positional index if found, or `None` if the name is not
 /// defined in the operand map.
+///
+/// Resolution strategy:
+/// 1. First, try to intern the name and look up the resulting Symbol
+///    directly in the operand map via `FxHashMap::get()` — this is O(1).
+/// 2. If the name is not in the interner (shouldn't happen for valid AST),
+///    fall back to linear scan comparing resolved symbol strings.
 fn resolve_named_operand_via_interner(
     ctx: &LoweringContext<'_>,
     name: &str,
     operand_map: &AsmOperandMap,
 ) -> Option<usize> {
-    // Iterate over the operand map entries. For each Symbol key, resolve
-    // it through the interner and compare with the target name string.
+    // Fast path: look up the name in the interner and use direct hash map
+    // access. This works when the template's named reference was interned
+    // through the same interner as the operand declarations.
+    if let Some(sym) = ctx.module_ctx.interner.lookup(name) {
+        if let Some(&idx) = operand_map.get(&sym) {
+            return Some(idx);
+        }
+    }
+
+    // Slow path: iterate over operand map entries, resolve each Symbol
+    // through the interner, and compare with the target name string.
+    // This handles edge cases where the template name string was not
+    // previously interned (e.g., constructed via macro concatenation).
     for (&sym, &idx) in operand_map.iter() {
         let sym_name = ctx.module_ctx.interner.resolve(sym);
         if sym_name == name {

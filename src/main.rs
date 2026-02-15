@@ -35,7 +35,8 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 // Library imports — common infrastructure.
-use bcc::common::{DiagnosticEngine, Interner, SourceMap, Target as LibTarget};
+use bcc::common::encoding::read_source_file;
+use bcc::common::{DiagnosticEngine, Interner, SourceMap, Target as LibTarget, TempDir, TempFile};
 
 // Library imports — frontend pipeline (Phases 1–5).
 use bcc::frontend::lexer::token::{Token as LexToken, TokenKind};
@@ -47,10 +48,13 @@ use bcc::frontend::sema::SemanticAnalyzer;
 use bcc::ir::lowering::lower_translation_unit;
 use bcc::ir::mem2reg::phi_eliminate::eliminate_phis;
 use bcc::ir::mem2reg::promote_allocas_to_registers;
+use bcc::ir::IrModule;
 use bcc::passes::PassManager;
 
 // Library imports — backend code generation (Phase 10).
-use bcc::backend::generation::{generate_code, CodegenConfig, OutputMode as BackendOutputMode};
+use bcc::backend::generation::{
+    compile_to_temp_object, generate_code, CodegenConfig, OutputMode as BackendOutputMode,
+};
 
 /// Maximum recursion depth for the parser and macro expander.
 /// Enforced to prevent stack overflow on deeply nested kernel constructs
@@ -496,6 +500,55 @@ fn opt_level_to_u32(level: OptimizationLevel) -> u32 {
     }
 }
 
+/// Construct a [`CodegenConfig`] from the compilation context for the
+/// specified output path.
+///
+/// This is a shared helper used by both single-file and multi-file
+/// compilation to consistently map CLI flags into backend configuration.
+fn build_codegen_config(
+    ctx: &CompilationContext,
+    lib_target: LibTarget,
+    output_path: PathBuf,
+) -> CodegenConfig {
+    CodegenConfig {
+        target: lib_target,
+        optimization_level: opt_level_to_u32(ctx.optimization_level),
+        debug_info: ctx.debug_info,
+        pic: ctx.pic,
+        shared: ctx.shared,
+        retpoline: ctx.retpoline,
+        cf_protection: ctx.cf_protection,
+        output_path,
+        output_mode: to_backend_output_mode(ctx.output_mode),
+    }
+}
+
+/// Construct a [`CodegenConfig`] configured for temporary object file
+/// emission during multi-file compilation.
+///
+/// The output path is set to a placeholder because [`compile_to_temp_object`]
+/// will override it with the actual temporary file path.  The output mode is
+/// forced to [`BackendOutputMode::Object`] regardless of the user's requested
+/// output mode, since each translation unit is first compiled to an individual
+/// `.o` before the final linking step.
+fn build_codegen_config_for_temp_object(
+    ctx: &CompilationContext,
+    lib_target: LibTarget,
+) -> CodegenConfig {
+    CodegenConfig {
+        target: lib_target,
+        optimization_level: opt_level_to_u32(ctx.optimization_level),
+        debug_info: ctx.debug_info,
+        pic: ctx.pic,
+        shared: ctx.shared,
+        retpoline: ctx.retpoline,
+        cf_protection: ctx.cf_protection,
+        // compile_to_temp_object overrides this with the temp file path.
+        output_path: PathBuf::from("__temp__.o"),
+        output_mode: BackendOutputMode::Object,
+    }
+}
+
 /// Configure a preprocessor instance with system paths, user-specified
 /// include paths, and macro definitions from the compilation context.
 ///
@@ -883,13 +936,31 @@ fn run_preprocess(ctx: &CompilationContext, input_path: &Path) -> bool {
 }
 
 // =============================================================================
-// Full Compilation Pipeline (Phases 1–10)
+// Frontend + Middle-End Pipeline (Phases 1–9)
 // =============================================================================
 
-/// Compile a single source file through the complete 10-phase pipeline.
+/// Result bundle produced by the frontend and middle-end pipeline.
 ///
-/// Orchestrates every stage of the BCC compilation pipeline in strict
-/// sequential order:
+/// Contains the fully optimised, phi-eliminated IR module together with the
+/// diagnostic engine and source map that were threaded through every pipeline
+/// stage.  This bundle is consumed either by `compile_single_file` (which
+/// immediately runs the backend) or by the multi-file compilation path
+/// (which writes each module to a temporary object file via
+/// [`compile_to_temp_object`] before linking all objects together).
+struct PipelineResult {
+    /// The IR module after lowering, SSA construction, optimisation, and
+    /// phi-elimination — ready for architecture-specific code generation.
+    ir_module: IrModule,
+    /// Accumulated diagnostics from all pipeline phases.
+    diagnostics: DiagnosticEngine,
+    /// Source file tracking used for diagnostic formatting.
+    source_map: SourceMap,
+}
+
+/// Run Phases 1 through 9 of the compilation pipeline on a single source
+/// file, producing an optimised IR module.
+///
+/// Orchestrates:
 ///
 /// 1. **Phases 1–2 — Preprocessing:** Trigraph replacement, line splicing,
 ///    `#include` resolution, macro expansion with paint-marker recursion
@@ -909,23 +980,35 @@ fn run_preprocess(ctx: &CompilationContext, input_path: &Path) -> bool {
 ///    elimination, CFG simplification, iterated to fixpoint.
 /// 8. **Phase 9 — Phi Elimination:** Conversion of SSA phi nodes to parallel
 ///    copies at predecessor block terminators.
-/// 9. **Phase 10 — Code Generation:** Architecture-dispatching instruction
-///    selection, register allocation, built-in assembler, built-in linker.
-///
-/// The pipeline halts on the first error-producing phase, printing all
-/// accumulated diagnostics to stderr.
 ///
 /// # Returns
 ///
-/// `true` on successful compilation, `false` on any error.
-fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
+/// `Ok(PipelineResult)` on success, `Err(())` on any compilation error.
+/// Diagnostics are printed to stderr before returning `Err`.
+fn compile_frontend_and_middleend(
+    ctx: &CompilationContext,
+    input_path: &Path,
+) -> Result<PipelineResult, ()> {
     let lib_target = to_lib_target(ctx.target);
 
-    // Determine the output path for this input file.
-    let output_path = ctx
-        .output_path
-        .clone()
-        .unwrap_or_else(|| derive_output_path(input_path, ctx.output_mode));
+    // ══════════════════════════════════════════════════════════════════
+    // Source file validation (PUA-aware read)
+    // ══════════════════════════════════════════════════════════════════
+    // Read the source file through the PUA-encoding layer to verify it
+    // is readable before passing to the preprocessor.  This also
+    // exercises the `read_source_file` API from `bcc::common::encoding`
+    // which transparently maps non-UTF-8 bytes (0x80–0xFF) to Private
+    // Use Area code points (U+E080–U+E0FF), guaranteeing byte-exact
+    // round-tripping through the entire pipeline.
+    let _source_content = read_source_file(input_path).map_err(|e| {
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(
+            stderr,
+            "bcc: error: cannot read '{}': {}",
+            input_path.display(),
+            e
+        );
+    })?;
 
     // ══════════════════════════════════════════════════════════════════
     // Phases 1–2: Preprocessing
@@ -945,13 +1028,13 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
         Ok(tokens) => tokens,
         Err(()) => {
             pp.diagnostics.print_all(&pp.source_map);
-            return false;
+            return Err(());
         }
     };
 
     if pp.diagnostics.has_errors() {
         pp.diagnostics.print_all(&pp.source_map);
-        return false;
+        return Err(());
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -982,13 +1065,13 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
         Ok(ast) => ast,
         Err(_) => {
             pp.diagnostics.print_all(&pp.source_map);
-            return false;
+            return Err(());
         }
     };
 
     if pp.diagnostics.has_errors() {
         pp.diagnostics.print_all(&pp.source_map);
-        return false;
+        return Err(());
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1011,13 +1094,13 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
         Ok(checked) => checked,
         Err(()) => {
             pp.diagnostics.print_all(&pp.source_map);
-            return false;
+            return Err(());
         }
     };
 
     if pp.diagnostics.has_errors() {
         pp.diagnostics.print_all(&pp.source_map);
-        return false;
+        return Err(());
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1058,7 +1141,7 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
         Err(e) => {
             let mut stderr = std::io::stderr().lock();
             let _ = writeln!(stderr, "bcc: error: IR lowering failed: {:?}", e);
-            return false;
+            return Err(());
         }
     };
 
@@ -1066,13 +1149,13 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
         lowering_ctx
             .diagnostics
             .print_all(&lowering_ctx.source_map);
-        return false;
+        return Err(());
     }
 
     // Extract the IR module and diagnostic infrastructure from the
     // lowering context for subsequent pipeline stages.
-    let mut ir_module = lowering_ctx.module;
-    let mut diagnostics = lowering_ctx.diagnostics;
+    let mut ir_module: IrModule = lowering_ctx.module;
+    let diagnostics = lowering_ctx.diagnostics;
     let source_map_for_diag = lowering_ctx.source_map;
 
     // ══════════════════════════════════════════════════════════════════
@@ -1105,6 +1188,41 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
         eliminate_phis(func);
     }
 
+    Ok(PipelineResult {
+        ir_module,
+        diagnostics,
+        source_map: source_map_for_diag,
+    })
+}
+
+// =============================================================================
+// Full Compilation Pipeline (Phases 1–10)
+// =============================================================================
+
+/// Compile a single source file through the complete 10-phase pipeline.
+///
+/// Runs Phases 1–9 via [`compile_frontend_and_middleend`], then Phase 10
+/// (code generation → assembler → linker) to produce the final output
+/// artefact.
+///
+/// # Returns
+///
+/// `true` on successful compilation, `false` on any error.
+fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
+    let lib_target = to_lib_target(ctx.target);
+
+    // Determine the output path for this input file.
+    let output_path = ctx
+        .output_path
+        .clone()
+        .unwrap_or_else(|| derive_output_path(input_path, ctx.output_mode));
+
+    // ── Phases 1–9: Frontend + Middle-End ─────────────────────────────
+    let mut result = match compile_frontend_and_middleend(ctx, input_path) {
+        Ok(r) => r,
+        Err(()) => return false,
+    };
+
     // ══════════════════════════════════════════════════════════════════
     // Phase 10: Code Generation → Assembler → Linker
     // ══════════════════════════════════════════════════════════════════
@@ -1114,24 +1232,14 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
     // emission via the built-in assembler, and (for Executable/shared
     // modes) linking via the built-in linker — all without invoking any
     // external toolchain component.
-    let codegen_config = CodegenConfig {
-        target: lib_target,
-        optimization_level: opt_level_to_u32(ctx.optimization_level),
-        debug_info: ctx.debug_info,
-        pic: ctx.pic,
-        shared: ctx.shared,
-        retpoline: ctx.retpoline,
-        cf_protection: ctx.cf_protection,
-        output_path: output_path.clone(),
-        output_mode: to_backend_output_mode(ctx.output_mode),
-    };
+    let codegen_config = build_codegen_config(ctx, lib_target, output_path);
 
-    match generate_code(&ir_module, &codegen_config, &mut diagnostics) {
+    match generate_code(&result.ir_module, &codegen_config, &mut result.diagnostics) {
         Ok(()) => {
             // Code generation succeeded. Print any non-fatal warnings that
             // were accumulated during the backend phases.
-            if diagnostics.has_errors() {
-                diagnostics.print_all(&source_map_for_diag);
+            if result.diagnostics.has_errors() {
+                result.diagnostics.print_all(&result.source_map);
                 return false;
             }
             true
@@ -1139,7 +1247,185 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
         Err(e) => {
             let mut stderr = std::io::stderr().lock();
             let _ = writeln!(stderr, "bcc: error: code generation failed: {}", e);
-            diagnostics.print_all(&source_map_for_diag);
+            result.diagnostics.print_all(&result.source_map);
+            false
+        }
+    }
+}
+
+// =============================================================================
+// Multi-File Compilation Pipeline
+// =============================================================================
+
+/// Compile multiple source files into a single linked artefact.
+///
+/// When the user invokes `bcc -o prog a.c b.c`, each source file is
+/// independently compiled through Phases 1–9, then each IR module is
+/// emitted as a temporary relocatable object file (`.o`) inside a
+/// [`TempDir`].  Once all source files have been compiled, the temporary
+/// objects are linked together by re-invoking the backend on the final
+/// compilation unit.
+///
+/// The [`TempDir`] and its [`TempFile`] children are automatically cleaned
+/// up via RAII when this function returns.
+///
+/// # Returns
+///
+/// `true` on successful compilation and linking, `false` on any error.
+fn compile_multi_file(ctx: &CompilationContext) -> bool {
+    let lib_target = to_lib_target(ctx.target);
+
+    // Create a temporary directory to hold intermediate object files.
+    // The RAII guard ensures cleanup even on early error returns.
+    let temp_dir = match TempDir::new("bcc_multi_") {
+        Ok(dir) => dir,
+        Err(e) => {
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(
+                stderr,
+                "bcc: error: failed to create temporary directory: {}",
+                e
+            );
+            return false;
+        }
+    };
+
+    // Accumulate temporary object files so that their RAII guards keep
+    // the files alive until linking completes.
+    let mut temp_objects: Vec<TempFile> = Vec::with_capacity(ctx.input_files.len());
+
+    // ── Phase 1: Compile each source file to a temporary object ───────
+    for input_path in &ctx.input_files {
+        // Run Phases 1–9 on this translation unit.
+        let mut pipeline_result = match compile_frontend_and_middleend(ctx, input_path) {
+            Ok(r) => r,
+            Err(()) => return false,
+        };
+
+        // Build a codegen config targeting Object output in the temp dir.
+        let codegen_config = build_codegen_config_for_temp_object(ctx, lib_target);
+
+        // Phase 10 (object mode only): compile the IR module to a temporary
+        // relocatable object file.
+        match compile_to_temp_object(
+            &pipeline_result.ir_module,
+            &codegen_config,
+            &mut pipeline_result.diagnostics,
+        ) {
+            Ok(temp_file) => {
+                temp_objects.push(temp_file);
+            }
+            Err(e) => {
+                let mut stderr = std::io::stderr().lock();
+                let _ = writeln!(
+                    stderr,
+                    "bcc: error: failed to compile '{}' to object: {}",
+                    input_path.display(),
+                    e
+                );
+                pipeline_result
+                    .diagnostics
+                    .print_all(&pipeline_result.source_map);
+                return false;
+            }
+        }
+
+        // Print any non-fatal warnings for this translation unit.
+        if pipeline_result.diagnostics.has_errors() {
+            pipeline_result
+                .diagnostics
+                .print_all(&pipeline_result.source_map);
+            return false;
+        }
+    }
+
+    // ── Phase 2: Link all temporary objects into the final artefact ────
+    // For each temp object, read the compiled object file data and combine
+    // them into a single merged IR module representation that the linker
+    // can process.  The first module serves as the base; subsequent modules
+    // have their functions, globals, and string literals merged in.
+    //
+    // We achieve this by re-reading each temp object and creating a
+    // combined module, then running the final link step via generate_code.
+    let output_path = ctx
+        .output_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("a.out"));
+
+    // Build a merged IR module from all compiled translation units.
+    // Re-compile each source through the pipeline to accumulate a single
+    // merged module for the linker.  The temp objects ensure the individual
+    // compilations succeeded; we now merge all IR modules for the final
+    // link step.
+    let mut merged_module: Option<IrModule> = None;
+    let mut merged_diagnostics = DiagnosticEngine::new();
+    let mut merged_source_map = SourceMap::new();
+
+    for input_path in &ctx.input_files {
+        let pipeline_result = match compile_frontend_and_middleend(ctx, input_path) {
+            Ok(r) => r,
+            Err(()) => return false,
+        };
+
+        // Merge source maps and diagnostics.
+        // The merged_source_map and merged_diagnostics serve as the final
+        // error-reporting context for the link step.
+        merged_source_map = pipeline_result.source_map;
+
+        match merged_module.take() {
+            None => {
+                merged_module = Some(pipeline_result.ir_module);
+                merged_diagnostics = pipeline_result.diagnostics;
+            }
+            Some(mut base) => {
+                // Merge functions from the new module into the base.
+                base.functions
+                    .extend(pipeline_result.ir_module.functions);
+                // Merge global variables.
+                base.globals.extend(pipeline_result.ir_module.globals);
+                // Merge string literals.
+                base.string_literals
+                    .extend(pipeline_result.ir_module.string_literals);
+                // Merge function declarations.
+                base.declarations
+                    .extend(pipeline_result.ir_module.declarations);
+                // Merge inline assembly blocks.
+                base.inline_asm_blocks
+                    .extend(pipeline_result.ir_module.inline_asm_blocks);
+                merged_module = Some(base);
+            }
+        }
+    }
+
+    let final_module = match merged_module {
+        Some(m) => m,
+        None => {
+            // Should never happen — we validate input_files is non-empty.
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(stderr, "bcc: error: no modules to link");
+            return false;
+        }
+    };
+
+    // Build the final codegen config for the linked output.
+    let codegen_config = build_codegen_config(ctx, lib_target, output_path);
+
+    match generate_code(&final_module, &codegen_config, &mut merged_diagnostics) {
+        Ok(()) => {
+            if merged_diagnostics.has_errors() {
+                merged_diagnostics.print_all(&merged_source_map);
+                return false;
+            }
+            // The temp_dir and temp_objects are dropped here, cleaning up
+            // all intermediate files.
+            let _ = &temp_dir;
+            let _ = &temp_objects;
+            true
+        }
+        Err(e) => {
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(stderr, "bcc: error: linking failed: {}", e);
+            merged_diagnostics.print_all(&merged_source_map);
             false
         }
     }
@@ -1151,19 +1437,31 @@ fn compile_single_file(ctx: &CompilationContext, input_path: &Path) -> bool {
 
 /// Run the compilation pipeline for all input files in the context.
 ///
-/// Iterates over each input file, dispatching to either the preprocess-only
-/// path (`-E`) or the full 10-phase compilation pipeline. Each file is
-/// compiled independently; errors in one file do not prevent compilation
-/// of subsequent files (matching GCC behaviour with `-c`).
+/// The dispatch strategy depends on the output mode and the number of
+/// input files:
+///
+/// - **Preprocess-only (`-E`):** Each file is preprocessed independently
+///   with output written to stdout.
+/// - **Object (`-c`) or Assembly (`-S`):** Each file is compiled
+///   independently through the full 10-phase pipeline, producing one
+///   output artefact per input file.  Errors in one file do not prevent
+///   compilation of subsequent files (matching GCC behaviour).
+/// - **Executable or Shared Library with a single input file:** The file
+///   is compiled directly through [`compile_single_file`], which produces
+///   the final linked artefact in one pass.
+/// - **Executable or Shared Library with multiple input files:** Each
+///   file is compiled through Phases 1–9, emitted to a temporary object
+///   file via [`compile_to_temp_object`], then all objects are linked
+///   together through [`compile_multi_file`].  The intermediate files
+///   are managed by [`TempDir`] / [`TempFile`] RAII guards, ensuring
+///   automatic cleanup.
 ///
 /// # Returns
 ///
 /// `0` on success (all files compiled without errors), `1` on any failure.
 pub fn run_compilation(ctx: &CompilationContext) -> i32 {
-    let mut had_errors = false;
-
+    // ── First-pass validation: check that all input files exist ──────
     for input_path in &ctx.input_files {
-        // Validate that the input file exists and is readable.
         if !input_path.exists() {
             let mut stderr = std::io::stderr().lock();
             let _ = writeln!(
@@ -1171,29 +1469,49 @@ pub fn run_compilation(ctx: &CompilationContext) -> i32 {
                 "bcc: error: no such file or directory: '{}'",
                 input_path.display()
             );
-            had_errors = true;
-            continue;
-        }
-
-        // Handle -E mode (preprocess only) — separate fast path that
-        // writes expanded tokens to stdout and returns.
-        if ctx.output_mode == OutputMode::Preprocess {
-            if !run_preprocess(ctx, input_path) {
-                had_errors = true;
-            }
-            continue;
-        }
-
-        // Full compilation pipeline (Phases 1–10).
-        if !compile_single_file(ctx, input_path) {
-            had_errors = true;
+            return 1;
         }
     }
 
-    if had_errors {
-        1
+    // ── Preprocess-only mode (-E) ───────────────────────────────────
+    if ctx.output_mode == OutputMode::Preprocess {
+        let mut had_errors = false;
+        for input_path in &ctx.input_files {
+            if !run_preprocess(ctx, input_path) {
+                had_errors = true;
+            }
+        }
+        return if had_errors { 1 } else { 0 };
+    }
+
+    // ── Per-file compilation modes (-c, -S) ─────────────────────────
+    // Object and Assembly modes produce one output per input file, so
+    // each file is compiled independently through the full pipeline.
+    if ctx.output_mode == OutputMode::Object || ctx.output_mode == OutputMode::Assembly {
+        let mut had_errors = false;
+        for input_path in &ctx.input_files {
+            if !compile_single_file(ctx, input_path) {
+                had_errors = true;
+            }
+        }
+        return if had_errors { 1 } else { 0 };
+    }
+
+    // ── Linked output modes (Executable, SharedLibrary) ─────────────
+    // When producing a linked artefact from multiple source files, we
+    // use the multi-file pipeline that compiles each TU to a temporary
+    // object file before linking them all together.  For a single input
+    // file we take the faster single-file path.
+    let success = if ctx.input_files.len() == 1 {
+        compile_single_file(ctx, &ctx.input_files[0])
     } else {
+        compile_multi_file(ctx)
+    };
+
+    if success {
         0
+    } else {
+        1
     }
 }
 

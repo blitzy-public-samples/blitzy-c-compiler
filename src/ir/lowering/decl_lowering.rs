@@ -58,22 +58,35 @@
 // ============================================================================
 
 use super::{
-    // Shared context types
-    GlobalSymbolInfo, LoweringContext, LoweringError, ModuleLoweringContext,
     // Helper functions from the parent module
-    build_function_attributes, c_type_to_ir_type, create_function_lowering_context,
-    ensure_not_terminated, get_alignment_attr, get_section_attr, get_visibility_attr,
-    has_weak_attr, lower_initializer_to_constant, map_sema_linkage_to_ir,
-    map_visibility_kind_to_ir,
+    build_function_attributes,
+    c_type_to_ir_type,
+    create_function_lowering_context,
+    ensure_not_terminated,
     // Submodule re-entry for delegation
-    expr_lowering, stmt_lowering,
+    expr_lowering,
+    get_alignment_attr,
+    get_section_attr,
+    get_visibility_attr,
+    has_weak_attr,
+    lower_initializer_to_constant,
+    map_sema_linkage_to_ir,
+    map_visibility_kind_to_ir,
+    stmt_lowering,
+    // Shared context types
+    GlobalSymbolInfo,
+    LoweringContext,
+    LoweringError,
+    ModuleLoweringContext,
 };
 
 // ============================================================================
 // Imports — IR infrastructure
 // ============================================================================
 
-use crate::ir::function::{IrFunction, Linkage as IrLinkage, Parameter, Visibility as IrVisibility};
+use crate::ir::function::{
+    IrFunction, Linkage as IrLinkage, Parameter, Visibility as IrVisibility,
+};
 use crate::ir::instructions::ValueId;
 use crate::ir::module::{Constant, FunctionDecl, GlobalVariable};
 use crate::ir::types::IrType;
@@ -82,11 +95,11 @@ use crate::ir::types::IrType;
 // Imports — Frontend AST and semantic analysis
 // ============================================================================
 
+use crate::frontend::sema::initializer::CheckedInitializer;
 use crate::frontend::sema::{
     CheckedDeclaration, Linkage as SemaLinkage, StorageClass as SemaStorageClass, SymbolId,
     SymbolTable, ValidatedAttribute,
 };
-use crate::frontend::sema::initializer::CheckedInitializer;
 
 // ============================================================================
 // Imports — Common infrastructure
@@ -137,7 +150,15 @@ pub fn lower_global_variable(
             storage_class,
             attrs,
             span,
-        } => (*symbol_id, ty, init.as_ref(), *linkage, *storage_class, attrs, *span),
+        } => (
+            *symbol_id,
+            ty,
+            init.as_ref(),
+            *linkage,
+            *storage_class,
+            attrs,
+            *span,
+        ),
         _ => {
             return Err(LoweringError::UnsupportedExpression {
                 span: Span::DUMMY,
@@ -148,7 +169,16 @@ pub fn lower_global_variable(
 
     // Thread-local globals are handled by a dedicated path.
     if storage_class == SemaStorageClass::ThreadLocal {
-        return lower_thread_local(module_ctx, symbol_table, symbol_id, ty, init, linkage, attrs, span);
+        return lower_thread_local(
+            module_ctx,
+            symbol_table,
+            symbol_id,
+            ty,
+            init,
+            linkage,
+            attrs,
+            span,
+        );
     }
 
     let target = &module_ctx.target;
@@ -340,11 +370,9 @@ pub fn lower_function_definition(
             if ir_return_ty == IrType::Void {
                 ctx.builder.build_return(ctx.function, None);
             } else {
-                let zero = ctx.builder.build_const_int(
-                    ctx.function,
-                    ir_return_ty.clone(),
-                    0,
-                );
+                let zero = ctx
+                    .builder
+                    .build_const_int(ctx.function, ir_return_ty.clone(), 0);
                 ctx.builder.build_return(ctx.function, Some(zero));
             }
         }
@@ -425,14 +453,25 @@ pub fn lower_local_declaration(
             // Static local variables are emitted as module-level globals.
             if *storage_class == SemaStorageClass::Static {
                 return lower_static_local_from_context(
-                    ctx, *symbol_id, ty, init.as_ref(), attrs, *span,
+                    ctx,
+                    *symbol_id,
+                    ty,
+                    init.as_ref(),
+                    attrs,
+                    *span,
                 );
             }
 
             // Thread-local locals are also module-level globals.
             if *storage_class == SemaStorageClass::ThreadLocal {
                 return lower_thread_local_from_context(
-                    ctx, *symbol_id, ty, init.as_ref(), *linkage, attrs, *span,
+                    ctx,
+                    *symbol_id,
+                    ty,
+                    init.as_ref(),
+                    *linkage,
+                    attrs,
+                    *span,
                 );
             }
 
@@ -443,9 +482,10 @@ pub fn lower_local_declaration(
             // Construct a unique local name from the symbol ID.
             // The original Symbol handle was registered by the sema pass;
             // we use the symbol_id's numeric value as a unique suffix.
-            let var_symbol = ctx.module_ctx.interner.intern(
-                &format!("_local_{}", symbol_id.as_u32()),
-            );
+            let var_symbol = ctx
+                .module_ctx
+                .interner
+                .intern(&format!("_local_{}", symbol_id.as_u32()));
 
             // Create the alloca in the entry block per alloca-then-promote.
             let alloca = ctx.create_local_alloca(var_symbol, ir_type.clone());
@@ -527,12 +567,10 @@ pub fn lower_local_declaration(
         // Function definitions at block scope are a GCC extension (nested
         // functions). We do not lower them here; they would need a separate
         // trampoline mechanism. For now, produce an error.
-        CheckedDeclaration::FunctionDef { span, .. } => {
-            Err(LoweringError::UnsupportedExpression {
-                span: *span,
-                message: "nested function definitions are not supported".to_string(),
-            })
-        }
+        CheckedDeclaration::FunctionDef { span, .. } => Err(LoweringError::UnsupportedExpression {
+            span: *span,
+            message: "nested function definitions are not supported".to_string(),
+        }),
     }
 }
 
@@ -745,7 +783,9 @@ fn lower_static_local_from_context(
         global.initializer = Some(constant);
     } else {
         // Static locals without explicit initializers are zero-initialized.
-        global.initializer = Some(Constant::Zero { ty: ir_type.clone() });
+        global.initializer = Some(Constant::Zero {
+            ty: ir_type.clone(),
+        });
     }
 
     // Register the global symbol.
@@ -766,12 +806,15 @@ fn lower_static_local_from_context(
     // Create a local reference to the static global so that local code
     // can access it through the variable map. We build a global_ref
     // instruction that produces a pointer to the global.
-    let global_ref = ctx.builder.build_global_ref(ctx.function, &mangled_name, IrType::Ptr);
+    let global_ref = ctx
+        .builder
+        .build_global_ref(ctx.function, &mangled_name, IrType::Ptr);
 
     // Register in the variable map using a synthetic symbol.
-    let local_sym = ctx.module_ctx.interner.intern(
-        &format!("_static_local_{}", symbol_id.as_u32()),
-    );
+    let local_sym = ctx
+        .module_ctx
+        .interner
+        .intern(&format!("_static_local_{}", symbol_id.as_u32()));
     ctx.variables.insert(local_sym, global_ref);
 
     Ok(())
@@ -814,7 +857,9 @@ fn lower_thread_local_from_context(
         let constant = lower_initializer_to_constant(checked_init, ty, ctx.module_ctx)?;
         global.initializer = Some(constant);
     } else {
-        global.initializer = Some(Constant::Zero { ty: ir_type.clone() });
+        global.initializer = Some(Constant::Zero {
+            ty: ir_type.clone(),
+        });
     }
 
     // Register the global symbol.
@@ -833,10 +878,13 @@ fn lower_thread_local_from_context(
     ctx.module_ctx.module.add_global(global);
 
     // Create a local reference to the TLS global.
-    let global_ref = ctx.builder.build_global_ref(ctx.function, &mangled_name, IrType::Ptr);
-    let local_sym = ctx.module_ctx.interner.intern(
-        &format!("_tls_local_{}", symbol_id.as_u32()),
-    );
+    let global_ref = ctx
+        .builder
+        .build_global_ref(ctx.function, &mangled_name, IrType::Ptr);
+    let local_sym = ctx
+        .module_ctx
+        .interner
+        .intern(&format!("_tls_local_{}", symbol_id.as_u32()));
     ctx.variables.insert(local_sym, global_ref);
 
     Ok(())
@@ -939,7 +987,10 @@ fn lower_local_initializer(
             Ok(())
         }
 
-        CheckedInitializer::Aggregate { fields, zero_filled } => {
+        CheckedInitializer::Aggregate {
+            fields,
+            zero_filled,
+        } => {
             // For aggregate initializers, we need to store each field
             // at its correct byte offset within the aggregate.
             //
@@ -958,11 +1009,9 @@ fn lower_local_initializer(
                 // Compute the GEP index for this field.
                 // For structs, the index is the field position.
                 // For arrays, the index is the element index.
-                let index_val = ctx.builder.build_const_int(
-                    ctx.function,
-                    IrType::I32,
-                    idx as i64,
-                );
+                let index_val = ctx
+                    .builder
+                    .build_const_int(ctx.function, IrType::I32, idx as i64);
                 let field_ptr = ctx.builder.build_gep(
                     ctx.function,
                     alloca,
@@ -1003,9 +1052,9 @@ fn build_zero_constant(ctx: &mut LoweringContext<'_>, ir_type: &IrType) -> Value
             // Void type shouldn't be zero-initialized; return a dummy value.
             ctx.builder.build_const_int(ctx.function, IrType::I32, 0)
         }
-        IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 | IrType::I128 => {
-            ctx.builder.build_const_int(ctx.function, ir_type.clone(), 0)
-        }
+        IrType::I1 | IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 | IrType::I128 => ctx
+            .builder
+            .build_const_int(ctx.function, ir_type.clone(), 0),
         IrType::F32 | IrType::F64 | IrType::F80 => {
             ctx.builder
                 .build_const_float(ctx.function, ir_type.clone(), 0.0)
@@ -1139,10 +1188,7 @@ mod tests {
         let complex_double = CType::Complex(Box::new(CType::Double));
         let result = map_c_type_to_ir_type(&complex_double, &target).unwrap();
         match result {
-            IrType::Struct {
-                ref fields,
-                packed,
-            } => {
+            IrType::Struct { ref fields, packed } => {
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0], IrType::F64);
                 assert_eq!(fields[1], IrType::F64);

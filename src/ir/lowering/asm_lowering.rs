@@ -389,18 +389,14 @@ fn build_operand_map(
             // Guard against duplicate named operands — later duplicates
             // are silently ignored (the first binding wins, consistent
             // with GCC behaviour).
-            if !map.contains_key(&name) {
-                map.insert(name, idx);
-            }
+            map.entry(name).or_insert(idx);
         }
     }
 
     let output_count = outputs.len();
     for (idx, operand) in inputs.iter().enumerate() {
         if let Some(name) = operand.name {
-            if !map.contains_key(&name) {
-                map.insert(name, output_count + idx);
-            }
+            map.entry(name).or_insert_with(|| output_count + idx);
         }
     }
 

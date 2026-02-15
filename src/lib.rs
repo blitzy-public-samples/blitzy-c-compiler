@@ -194,21 +194,18 @@
 // These suppressions address patterns that are idiomatic and unavoidable in
 // compiler implementations. Each is deliberately chosen:
 
-/// Compiler pipeline functions naturally accumulate many parameters
-/// (target, options, diagnostics, source map, interner, etc.).
+// Compiler pipeline functions naturally accumulate many parameters
+// (target, options, diagnostics, source map, interner, etc.).
 #![allow(clippy::too_many_arguments)]
-
-/// AST and IR enums have inherently varying-size variants — a
-/// `FunctionDef` is far larger than a `Break` statement, and forcing
-/// uniform boxing would add needless indirection.
+// AST and IR enums have inherently varying-size variants — a
+// `FunctionDef` is far larger than a `Break` statement, and forcing
+// uniform boxing would add needless indirection.
 #![allow(clippy::large_enum_variant)]
-
-/// Module inception (e.g., `parser::parser`) is occasionally useful
-/// when a module's primary type shares its name.
+// Module inception (e.g., `parser::parser`) is occasionally useful
+// when a module's primary type shares its name.
 #![allow(clippy::module_inception)]
-
-/// Compiler type representations are inherently complex — deeply nested
-/// generics for type-safe IR manipulation are expected and correct.
+// Compiler type representations are inherently complex — deeply nested
+// generics for type-safe IR manipulation are expected and correct.
 #![allow(clippy::type_complexity)]
 
 // ═══════════════════════════════════════════════════════════════════════════════

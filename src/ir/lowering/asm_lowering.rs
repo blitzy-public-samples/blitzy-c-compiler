@@ -1501,7 +1501,7 @@ mod tests {
     #[test]
     fn test_default_operand_type_coverage() {
         // Verify the constraint class enum covers all expected variants.
-        let classes = vec![
+        let classes = [
             ConstraintClass::Register,
             ConstraintClass::Memory,
             ConstraintClass::Immediate,

@@ -517,10 +517,11 @@ pub fn insert_endbr64_at_indirect_targets(func: &mut MachineFunction) {
 
     // Also include blocks that have explicit labels (potential address-taken blocks)
     for block in &func.blocks {
-        if block.label.is_some() && block.id != func.blocks[0].id {
-            if !indirect_targets.contains(&block.id) {
-                indirect_targets.push(block.id);
-            }
+        if block.label.is_some()
+            && block.id != func.blocks[0].id
+            && !indirect_targets.contains(&block.id)
+        {
+            indirect_targets.push(block.id);
         }
     }
 

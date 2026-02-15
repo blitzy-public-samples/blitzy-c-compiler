@@ -70,3 +70,8 @@ pub mod riscv64;
 /// intervals, performs greedy allocation with furthest-next-use spilling, and
 /// generates spill/reload pseudo-instructions for the prologue/epilogue pass.
 pub mod register_allocator;
+
+/// Phase 10 code generation driver — architecture dispatch, security mitigation
+/// injection, object file emission, and DWARF debug info coordination. This
+/// module is the primary entry point for converting IR to machine code.
+pub mod generation;

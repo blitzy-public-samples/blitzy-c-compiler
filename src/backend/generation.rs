@@ -29,7 +29,7 @@
 //! `llvm-mc`, `lld`) are invoked.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::common::target::Target;
 use crate::common::diagnostics::{DiagnosticEngine, Span};
@@ -39,7 +39,7 @@ use crate::ir::module::IrModule;
 use crate::ir::function::{IrFunction, Linkage, Visibility};
 use crate::ir::types::IrType;
 use crate::backend::traits::{
-    ArchCodegen, MachineFunction, MachineBasicBlock, MachineInstr, PhysReg,
+    ArchCodegen, MachineFunction, MachineBasicBlock,
     CodegenConfig as BackendCodegenConfig,
 };
 use crate::backend::register_allocator::RegisterAllocator;
@@ -64,7 +64,7 @@ use crate::backend::x86_64::security::{
 use crate::backend::dwarf::{DwarfGenerator, DwarfSections};
 use crate::backend::linker_common::{
     LinkerScript, OutputType, SymbolResolver, SectionMerger,
-    RelocationProcessor, DynamicSectionBuilder,
+    DynamicSectionBuilder,
     InputSection, InputSymbol, InputRelocation,
     SymbolBinding, SymbolType as LinkerSymbolType, SymbolVisibility as LinkerSymbolVisibility,
 };
@@ -193,7 +193,7 @@ impl CodegenConfig {
     /// The backend config carries only codegen-relevant flags (target,
     /// optimization, PIC, security) but not output path or mode, which
     /// are orchestration concerns handled by the generation driver.
-    fn to_backend_config(&self) -> BackendCodegenConfig {
+    pub(crate) fn to_backend_config(&self) -> BackendCodegenConfig {
         BackendCodegenConfig {
             target: self.target,
             optimization_level: self.optimization_level,
@@ -211,7 +211,7 @@ impl CodegenConfig {
     /// the x86-64 target. This check is used to gate the security pass
     /// during function compilation.
     #[inline]
-    fn has_security_mitigations(&self) -> bool {
+    pub(crate) fn has_security_mitigations(&self) -> bool {
         self.target == Target::X86_64 && (self.retpoline || self.cf_protection)
     }
 
@@ -220,7 +220,7 @@ impl CodegenConfig {
     /// PIC is required when either `-fPIC` or `-shared` is set, since
     /// shared libraries must be position-independent.
     #[inline]
-    fn requires_pic(&self) -> bool {
+    pub fn requires_pic(&self) -> bool {
         self.pic || self.shared
     }
 
@@ -228,7 +228,7 @@ impl CodegenConfig {
     ///
     /// Maps the high-level `OutputMode` and `shared` flag to the linker's
     /// [`OutputType`] enum for section-to-segment layout decisions.
-    fn linker_output_type(&self) -> OutputType {
+    pub(crate) fn linker_output_type(&self) -> OutputType {
         match self.output_mode {
             OutputMode::Object => OutputType::RelocatableObject,
             OutputMode::Executable if self.shared => OutputType::SharedLibrary,
@@ -246,6 +246,7 @@ impl CodegenConfig {
 ///
 /// Produced by [`compile_function`] and consumed by the ELF writer or linker
 /// to construct output sections and symbol tables.
+#[allow(dead_code)]
 struct AssembledFunction {
     /// Function symbol name.
     name: String,
@@ -365,8 +366,8 @@ fn compile_function(
     ir_func: &IrFunction,
     codegen: &dyn ArchCodegen,
     config: &CodegenConfig,
-    backend_config: &BackendCodegenConfig,
-    diagnostics: &mut DiagnosticEngine,
+    _backend_config: &BackendCodegenConfig,
+    _diagnostics: &mut DiagnosticEngine,
     dwarf: &mut DwarfGenerator,
     text_offset: u64,
 ) -> io::Result<AssembledFunction> {
@@ -710,7 +711,7 @@ fn write_object_file(
     module: &IrModule,
     config: &CodegenConfig,
     dwarf_sections: &Option<DwarfSections>,
-    diagnostics: &mut DiagnosticEngine,
+    _diagnostics: &mut DiagnosticEngine,
 ) -> io::Result<()> {
     let mut elf = ElfWriter::new(config.target);
     elf.set_type(ET_REL);
@@ -777,7 +778,8 @@ fn write_object_file(
         ));
     }
 
-    if !rodata_data.is_empty() {
+    let has_rodata = !rodata_data.is_empty();
+    if has_rodata {
         let mut rodata_section = ElfSection::new(".rodata", SHT_PROGBITS);
         rodata_section.flags = SHF_ALLOC;
         rodata_section.data = rodata_data;
@@ -809,7 +811,8 @@ fn write_object_file(
         ));
     }
 
-    if !data_data.is_empty() {
+    let has_data = !data_data.is_empty();
+    if has_data {
         let mut data_section = ElfSection::new(".data", SHT_PROGBITS);
         data_section.flags = SHF_ALLOC | SHF_WRITE;
         data_section.data = data_data;
@@ -882,11 +885,11 @@ fn write_object_file(
     add_data_symbols(&mut elf, &rodata_symbols, STT_OBJECT, 2);
 
     // Data symbols
-    let data_section_idx = if !rodata_data.is_empty() { 3 } else { 2 };
+    let data_section_idx = if has_rodata { 3 } else { 2 };
     add_data_symbols(&mut elf, &data_symbols, STT_OBJECT, data_section_idx as u16);
 
     // BSS symbols
-    let bss_section_idx = data_section_idx + if !data_data.is_empty() { 1 } else { 0 };
+    let bss_section_idx = data_section_idx + if has_data { 1 } else { 0 };
     add_data_symbols(&mut elf, &bss_symbols, STT_OBJECT, bss_section_idx as u16);
 
     // Undefined symbol references (from function declarations)
@@ -1050,8 +1053,8 @@ fn write_linked_output(
     };
 
     // --- Phase 5: Dynamic linking sections (for -shared) ---
-    let mut dynamic_builder = if config.shared {
-        let mut builder = DynamicSectionBuilder::new();
+    let _dynamic_builder = if config.shared {
+        let builder = DynamicSectionBuilder::new();
         // Dynamic sections are generated during the final ELF write phase
         Some(builder)
     } else {
@@ -1125,7 +1128,6 @@ fn write_linked_output(
     }
 
     // Add retpoline thunk symbols
-    let mut thunk_offset = 0u64;
     for thunk in &retpoline_thunks {
         let mut sym = ElfSymbol::new(&thunk.name);
         sym.sym_type = STT_FUNC;
@@ -1135,7 +1137,6 @@ fn write_linked_output(
             sym.value = val;
         }
         elf.add_symbol(sym);
-        thunk_offset += thunk.code.len() as u64;
     }
 
     // Add global/data symbols
@@ -1776,7 +1777,7 @@ fn generate_retpoline_thunks(codegen: &dyn ArchCodegen) -> Vec<RetpolineThunkDat
 fn build_program_headers(
     elf: &mut ElfWriter,
     section_merger: &SectionMerger,
-    config: &CodegenConfig,
+    _config: &CodegenConfig,
     base_address: u64,
     page_size: u64,
 ) {

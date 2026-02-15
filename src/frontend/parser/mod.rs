@@ -75,15 +75,17 @@ pub mod types;
 // Imports
 // ---------------------------------------------------------------------------
 
-use crate::common::diagnostics::{DiagnosticEngine, Span};
+use crate::common::diagnostics::DiagnosticEngine;
 use crate::common::fx_hash::FxHashSet;
 use crate::common::source_map::SourceMap;
 use crate::common::string_interner::{Interner, Symbol};
 use crate::common::target::Target;
 use crate::frontend::lexer::token::{Token, TokenKind};
 
-// Re-export key AST types for convenience.
-pub use ast::TranslationUnit;
+// Re-export all AST types for convenience access by consumers (sema, IR lowering).
+// NOTE: This includes `Span` (re-exported by ast.rs from token.rs from diagnostics.rs),
+// `TranslationUnit`, `Declaration`, `Expression`, `Statement`, and all other AST nodes.
+pub use ast::*;
 
 // ===========================================================================
 // ParseError

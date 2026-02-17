@@ -1055,6 +1055,32 @@ pub struct MachineFunction {
     /// larger if the function uses types with stricter alignment
     /// requirements (e.g., 32-byte AVX vectors).
     pub stack_alignment: u32,
+
+    /// Set of virtual register IDs that must be allocated to floating-point
+    /// (XMM/SIMD) registers. These are VRegs created by the instruction
+    /// selector for temporary float operations (e.g., UCOMISS operand
+    /// materialization) that do not have IR value entries and would
+    /// otherwise default to general-purpose register class.
+    pub float_vregs: std::collections::HashSet<u32>,
+
+    /// Architecture-specific frame metadata carried from instruction
+    /// selection to the deferred prologue/epilogue emission phase.
+    ///
+    /// Frame objects describe each stack-allocated variable (alloca) with
+    /// its size, alignment, and offset within the local area.  The tuple
+    /// elements are: `(size, alignment, offset)` where `offset` is a
+    /// negative value measured from the base of the local area.
+    pub frame_objects: Vec<(u32, u32, i32)>,
+
+    /// Running negative offset representing the current allocation
+    /// watermark in the local frame area.  Copied from the instruction
+    /// selector so that deferred prologue/epilogue emission can compute
+    /// the exact local area size.
+    pub frame_offset_watermark: i32,
+
+    /// Whether the function is variadic (uses `...` / `va_start`).
+    /// Controls the 64-byte register save area for X0-X7 on AArch64.
+    pub is_variadic: bool,
 }
 
 impl MachineFunction {
@@ -1071,6 +1097,10 @@ impl MachineFunction {
             used_callee_saved: Vec::new(),
             has_calls: false,
             stack_alignment,
+            float_vregs: std::collections::HashSet::new(),
+            frame_objects: Vec::new(),
+            frame_offset_watermark: 0,
+            is_variadic: false,
         }
     }
 
@@ -1716,6 +1746,52 @@ pub trait ArchCodegen {
     /// | AArch64     | X29 (FP)|
     /// | RISC-V 64   | s0 (x8) |
     fn frame_pointer(&self) -> PhysReg;
+
+    /// Returns the scratch GPR reserved for spill code generation.
+    ///
+    /// This register is **never** allocated by the register allocator and is
+    /// used exclusively as a temporary when lowering memory-to-memory moves
+    /// generated during register spilling (e.g., loading from one stack slot
+    /// and storing to another).
+    ///
+    /// | Architecture | Scratch GPR |
+    /// |-------------|-------------|
+    /// | x86-64      | R11         |
+    /// | i686        | ECX (TBD)   |
+    /// | AArch64     | X16 (TBD)   |
+    /// | RISC-V 64   | t6 (TBD)    |
+    fn spill_scratch_gpr(&self) -> PhysReg {
+        PhysReg::NONE
+    }
+
+    /// Returns the scratch SSE/FP register reserved for spill code generation.
+    ///
+    /// Similar to [`spill_scratch_gpr`](Self::spill_scratch_gpr), but for
+    /// floating-point values.
+    fn spill_scratch_sse(&self) -> PhysReg {
+        PhysReg::NONE
+    }
+
+    /// Returns the link (return-address) register for this architecture.
+    ///
+    /// This register holds the return address after a `call`/`jal`/`bl`
+    /// instruction and must NOT be allocated for arbitrary values. The
+    /// register allocator will reserve this register so that it cannot be
+    /// clobbered by normal allocation.
+    ///
+    /// Architectures where the link register is managed via the stack
+    /// (x86-64 and i686 push the return address implicitly) should return
+    /// [`PhysReg::NONE`].
+    ///
+    /// | Architecture | Link Register |
+    /// |-------------|---------------|
+    /// | x86-64      | (none — stack)|
+    /// | i686        | (none — stack)|
+    /// | AArch64     | X30 (LR)     |
+    /// | RISC-V 64   | X1 (RA)      |
+    fn link_register(&self) -> PhysReg {
+        PhysReg::NONE
+    }
 
     /// Returns the pointer size in bytes for this target.
     ///

@@ -599,6 +599,43 @@ impl ProgramHeader {
 }
 
 // ===========================================================================
+// RelaEntry — Relocation entry with explicit addend
+// ===========================================================================
+
+/// A single ELF relocation entry with explicit addend (`Elf64_Rela` /
+/// `Elf32_Rela`).
+///
+/// When serialized into a `.rela.*` section the writer resolves the symbol
+/// name to its final symbol-table index after local/global sorting, ensuring
+/// the `r_info` field is correct.
+#[derive(Clone, Debug)]
+pub struct RelaEntry {
+    /// Byte offset (relative to the section being relocated) where the
+    /// relocation is applied.
+    pub offset: u64,
+    /// Name of the target symbol.  Resolved to a symbol-table index
+    /// during [`ElfWriter::write()`].
+    pub symbol: String,
+    /// Architecture-specific relocation type (e.g. `R_X86_64_PC32 = 2`).
+    pub reloc_type: u32,
+    /// Signed addend for the relocation computation.
+    pub addend: i64,
+}
+
+/// A group of relocations targeting one section.
+///
+/// During [`ElfWriter::write()`] this is converted into a `.rela.<name>`
+/// section whose `sh_info` points to the target section and `sh_link`
+/// points to `.symtab`.
+struct RelocationGroup {
+    /// 1-based section index of the section that is being relocated
+    /// (e.g. `.text` = 1 for the first user section).
+    target_section_idx: usize,
+    /// Individual relocation entries.
+    entries: Vec<RelaEntry>,
+}
+
+// ===========================================================================
 // ElfWriter — Main ELF file construction API
 // ===========================================================================
 
@@ -631,7 +668,8 @@ impl ProgramHeader {
 ///
 /// 1. ELF header (52 bytes for 32-bit, 64 bytes for 64-bit)
 /// 2. Program header table (if program headers were added)
-/// 3. Section data (user sections, then auto-generated `.symtab`, `.strtab`)
+/// 3. Section data (user sections, then auto-generated `.rela.*`, `.symtab`,
+///    `.strtab`)
 /// 4. Section header string table (`.shstrtab`) data
 /// 5. Section header table
 pub struct ElfWriter {
@@ -664,6 +702,10 @@ pub struct ElfWriter {
     /// Program header table entries. Only present for `ET_EXEC` and `ET_DYN`
     /// output; empty for `ET_REL`.
     program_headers: Vec<ProgramHeader>,
+
+    /// Relocation groups keyed by the 1-based section index of the target
+    /// section.  Serialized into `.rela.*` sections during [`write()`].
+    relocation_groups: Vec<RelocationGroup>,
 }
 
 impl ElfWriter {
@@ -684,6 +726,7 @@ impl ElfWriter {
             string_table: StringTable::new(),
             section_string_table: StringTable::new(),
             program_headers: Vec::new(),
+            relocation_groups: Vec::new(),
         }
     }
 
@@ -761,6 +804,33 @@ impl ElfWriter {
         self.program_headers.push(phdr);
     }
 
+    /// Registers relocation entries for a given section.
+    ///
+    /// `target_section_idx` is the **1-based** section index returned by
+    /// [`add_section()`].  During [`write()`] the entries are serialized
+    /// into a `.rela.<section_name>` section with correct `sh_link`
+    /// (→ `.symtab`) and `sh_info` (→ target section).
+    ///
+    /// Symbol names in each [`RelaEntry`] are resolved to their final
+    /// symbol-table indices after the local/global sort, ensuring the
+    /// `r_info` field is correct even though symbol ordering is deferred.
+    pub fn add_relocations(&mut self, target_section_idx: usize, entries: Vec<RelaEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+        // Pre-register relocation symbol names in the string table so
+        // they are available during serialization.
+        for e in &entries {
+            if !e.symbol.is_empty() {
+                self.string_table.add_string(&e.symbol);
+            }
+        }
+        self.relocation_groups.push(RelocationGroup {
+            target_section_idx,
+            entries,
+        });
+    }
+
     // -----------------------------------------------------------------------
     // Core serialization
     // -----------------------------------------------------------------------
@@ -788,12 +858,36 @@ impl ElfWriter {
         // ---- Step 1: Sort symbols (locals before globals) -----------------
         let (sorted_symbols, first_global_index) = self.sort_symbols();
 
+        // Build a name → sorted-index map so we can resolve relocation
+        // symbol references to their final position in the symbol table.
+        let mut sym_name_to_idx: FxHashMap<String, usize> = FxHashMap::default();
+        for (idx, sym) in sorted_symbols.iter().enumerate() {
+            if !sym.name.is_empty() {
+                // If multiple symbols share a name (e.g. overloaded weak
+                // symbols), the last one wins.  This is acceptable because
+                // the ELF spec only guarantees uniqueness within the same
+                // binding class.
+                sym_name_to_idx.insert(sym.name.clone(), idx);
+            }
+        }
+
         // ---- Step 2: Build string tables ----------------------------------
         // Symbol string table (.strtab): collect all symbol names.
         let mut strtab = StringTable::new();
         for sym in &sorted_symbols {
             if !sym.name.is_empty() {
                 strtab.add_string(&sym.name);
+            }
+        }
+        // Also include relocation symbol names that might not be in the
+        // sorted list (e.g. symbols referenced only by relocations but
+        // somehow missing from the symbol table — shouldn't happen in
+        // practice, but be defensive).
+        for group in &self.relocation_groups {
+            for e in &group.entries {
+                if !e.symbol.is_empty() {
+                    strtab.add_string(&e.symbol);
+                }
             }
         }
 
@@ -803,10 +897,49 @@ impl ElfWriter {
         for section in &self.sections {
             shstrtab.add_string(&section.name);
         }
+        // Names for auto-generated .rela.* sections.
+        for group in &self.relocation_groups {
+            let target_idx = group.target_section_idx;
+            if target_idx >= 1 && target_idx <= self.sections.len() {
+                let rela_name = format!(".rela{}", self.sections[target_idx - 1].name);
+                shstrtab.add_string(&rela_name);
+            }
+        }
         // Names for auto-generated sections.
         shstrtab.add_string(".symtab");
         shstrtab.add_string(".strtab");
         shstrtab.add_string(".shstrtab");
+
+        // ---- Step 2b: Serialize .rela.* section data ----------------------
+        let rela_entry_size: usize = if is_64bit { 24 } else { 12 };
+        // Each element: (section_name, target_section_1based, rela_data)
+        let mut rela_sections: Vec<(String, usize, Vec<u8>)> = Vec::new();
+        for group in &self.relocation_groups {
+            let target_idx = group.target_section_idx;
+            if target_idx < 1 || target_idx > self.sections.len() {
+                continue;
+            }
+            let rela_name = format!(".rela{}", self.sections[target_idx - 1].name);
+            let mut rela_data = Vec::with_capacity(group.entries.len() * rela_entry_size);
+            for entry in &group.entries {
+                // Resolve symbol name to its index in the sorted symbol table.
+                let sym_idx = sym_name_to_idx.get(&entry.symbol).copied().unwrap_or(0);
+                if is_64bit {
+                    // Elf64_Rela: r_offset (8), r_info (8), r_addend (8)
+                    rela_data.extend_from_slice(&entry.offset.to_le_bytes());
+                    let r_info: u64 = ((sym_idx as u64) << 32) | (entry.reloc_type as u64);
+                    rela_data.extend_from_slice(&r_info.to_le_bytes());
+                    rela_data.extend_from_slice(&entry.addend.to_le_bytes());
+                } else {
+                    // Elf32_Rela: r_offset (4), r_info (4), r_addend (4)
+                    rela_data.extend_from_slice(&(entry.offset as u32).to_le_bytes());
+                    let r_info: u32 = ((sym_idx as u32) << 8) | (entry.reloc_type & 0xff);
+                    rela_data.extend_from_slice(&r_info.to_le_bytes());
+                    rela_data.extend_from_slice(&(entry.addend as i32).to_le_bytes());
+                }
+            }
+            rela_sections.push((rela_name, target_idx, rela_data));
+        }
 
         // ---- Step 3: Build .symtab section data ---------------------------
         let sym_entry_size = if is_64bit {
@@ -859,12 +992,25 @@ impl ElfWriter {
         }
 
         // Total number of sections in the section header table:
-        // null(0) + user sections + .symtab + .strtab + .shstrtab
+        // null(0) + user sections + rela sections + .symtab + .strtab + .shstrtab
         let num_user_sections = self.sections.len();
-        let symtab_section_idx = num_user_sections + 1; // +1 for null section
+        let num_rela_sections = rela_sections.len();
+        // .rela.* sections are placed after user sections in the section
+        // header table, each one getting its own index.
+        let rela_base_idx = num_user_sections + 1; // first rela section index (1-based)
+        let symtab_section_idx = rela_base_idx + num_rela_sections;
         let strtab_section_idx = symtab_section_idx + 1;
         let shstrtab_section_idx = strtab_section_idx + 1;
         let total_sections = shstrtab_section_idx + 1; // includes null section
+
+        // .rela.* section data offsets
+        let mut rela_offsets: Vec<usize> = Vec::with_capacity(num_rela_sections);
+        for (_rela_name, _target_idx, rela_data) in &rela_sections {
+            let rela_align = if is_64bit { 8 } else { 4 };
+            current_offset = align_up(current_offset, rela_align);
+            rela_offsets.push(current_offset);
+            current_offset += rela_data.len();
+        }
 
         // .symtab data offset
         if sym_entry_size > 1 {
@@ -917,6 +1063,12 @@ impl ElfWriter {
             }
         }
 
+        // .rela.* section data
+        for (ri, (_rela_name, _target_idx, rela_data)) in rela_sections.iter().enumerate() {
+            pad_to(&mut output, rela_offsets[ri]);
+            output.extend_from_slice(rela_data);
+        }
+
         // .symtab data
         pad_to(&mut output, symtab_offset);
         output.extend_from_slice(&symtab_data);
@@ -943,6 +1095,10 @@ impl ElfWriter {
             // virtual allocation size stored in the data vector's length.
             let sh_offset = section_offsets[i] as u64;
             let sh_size = section.data.len() as u64;
+            // eprintln!(
+            // "[elf_write shdr] section={:20} addr=0x{:08x} offset=0x{:04x} size=0x{:04x} flags=0x{:x}",
+            // section.name, section.addr, sh_offset, sh_size, section.flags
+            // );
             self.write_section_header(
                 &mut output,
                 is_64bit,
@@ -956,6 +1112,27 @@ impl ElfWriter {
                 section.info,
                 section.alignment,
                 section.entry_size,
+            );
+        }
+
+        // .rela.* section headers
+        for (ri, (rela_name, target_idx, rela_data)) in rela_sections.iter().enumerate() {
+            let sh_name = shstrtab.get_offset(rela_name).unwrap_or(0);
+            let sh_offset = rela_offsets[ri] as u64;
+            let sh_size = rela_data.len() as u64;
+            self.write_section_header(
+                &mut output,
+                is_64bit,
+                sh_name,
+                SHT_RELA,
+                0, // flags (no SHF_ALLOC for ET_REL)
+                0, // address
+                sh_offset,
+                sh_size,
+                symtab_section_idx as u32,    // sh_link → .symtab
+                *target_idx as u32,           // sh_info → section being relocated
+                if is_64bit { 8 } else { 4 }, // alignment
+                rela_entry_size as u64,       // entry size
             );
         }
 

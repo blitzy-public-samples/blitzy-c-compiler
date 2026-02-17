@@ -80,6 +80,16 @@ fn compile_and_run_fixture(fixture_name: &str, test_name: &str, target: &str) ->
 
     // Execute
     let run_result = run_binary_for_target(binary_str, target);
+
+    // DEBUG: Save failing binary for investigation
+    if !run_result.success() {
+        let save_dir = std::path::Path::new("/tmp/bcc_debug_save");
+        let _ = std::fs::create_dir_all(save_dir);
+        let save_path = save_dir.join(format!("{}_{}", test_name, target));
+        let _ = std::fs::copy(binary_str, &save_path);
+        eprintln!("DEBUG: Saved failing binary to {}", save_path.display());
+    }
+
     assert!(
         run_result.success(),
         "Test binary '{}' for fixture '{}' (target {}) exited with code {:?}.\nstdout:\n{}\nstderr:\n{}",
@@ -172,17 +182,26 @@ fn test_pua_roundtrip() {
     let hex_no_space: String = hex_lower
         .lines()
         .flat_map(|line| {
-            // Each objdump line looks like:
-            //  <addr>  XXXXXXXX XXXXXXXX XXXXXXXX XXXXXXXX  <ascii>
-            // Extract the hex portion between the address and the ASCII.
-            if let Some(hex_start) = line.find("  ") {
-                let after_addr = &line[hex_start..];
-                // Take characters up to the next double-space or ASCII column
-                let hex_part = after_addr.split("  ").next().unwrap_or("").replace(' ', "");
-                Some(hex_part)
-            } else {
-                None
+            // Each objdump -s line looks like:
+            //  <addr> XXXXXXXX XXXXXXXX XXXXXXXX XXXXXXXX  <ascii>
+            // The hex portion is between the address (starts with space/hex
+            // chars) and the ASCII column (separated by two spaces).
+            let trimmed = line.trim();
+            if trimmed.is_empty() || !trimmed.starts_with(|c: char| c.is_ascii_hexdigit()) {
+                return None;
             }
+            // Skip the address field (first whitespace-separated token).
+            let after_addr = match trimmed.find(' ') {
+                Some(idx) => &trimmed[idx..],
+                None => return None,
+            };
+            // Everything up to the double-space before ASCII is hex data.
+            let hex_part = if let Some(ascii_sep) = after_addr.find("  ") {
+                &after_addr[..ascii_sep]
+            } else {
+                after_addr
+            };
+            Some(hex_part.replace(' ', ""))
         })
         .collect::<String>();
 

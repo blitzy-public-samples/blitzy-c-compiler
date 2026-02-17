@@ -48,6 +48,7 @@ use crate::common::target::Target;
 use crate::common::type_builder::{self, compute_struct_layout};
 use crate::common::types::CType;
 
+use crate::frontend::lexer::token::{FloatSuffix, IntegerSuffix};
 use crate::frontend::parser::ast::{Expression, TypeName};
 use crate::frontend::sema::constant_eval::{
     evaluate_constant_expression, is_constant_expression, ConstValue,
@@ -191,6 +192,11 @@ enum BuiltinKind {
     SubOverflow,
     MulOverflow,
 
+    // -- Absolute value --
+    Abs,
+    Labs,
+    Llabs,
+
     // -- Miscellaneous --
     Prefetch,
     ObjectSize,
@@ -328,6 +334,11 @@ pub fn evaluate_builtin(
             check_overflow_arith("__builtin_mul_overflow", args, span, diagnostics)
         }
 
+        // ---- Absolute value ----
+        BuiltinKind::Abs => check_abs(args, span, diagnostics, IntWidth::Int),
+        BuiltinKind::Labs => check_abs(args, span, diagnostics, IntWidth::Long),
+        BuiltinKind::Llabs => check_abs(args, span, diagnostics, IntWidth::LongLong),
+
         // ---- Miscellaneous ----
         BuiltinKind::Prefetch => check_prefetch(args, span, diagnostics),
         BuiltinKind::ObjectSize => check_object_size(args, span, diagnostics),
@@ -393,6 +404,11 @@ fn lookup_builtin(name: &str) -> Option<BuiltinKind> {
         "__builtin_add_overflow" => Some(BuiltinKind::AddOverflow),
         "__builtin_sub_overflow" => Some(BuiltinKind::SubOverflow),
         "__builtin_mul_overflow" => Some(BuiltinKind::MulOverflow),
+
+        // Absolute value
+        "__builtin_abs" => Some(BuiltinKind::Abs),
+        "__builtin_labs" => Some(BuiltinKind::Labs),
+        "__builtin_llabs" => Some(BuiltinKind::Llabs),
 
         // Miscellaneous
         "__builtin_prefetch" => Some(BuiltinKind::Prefetch),
@@ -644,6 +660,49 @@ fn eval_types_compatible_p(
 /// GCC semantics: This is used by the Linux kernel's `__same_type()` and
 /// type-dispatching macros where one branch may contain deliberately
 /// ill-typed code that must not be diagnosed.
+/// Helper for __builtin_choose_expr: evaluates the controlling expression
+/// which may be a nested compile-time builtin like __builtin_constant_p
+/// or __builtin_types_compatible_p, or a regular constant expression.
+fn try_eval_controlling_expr(
+    expr: &Expression,
+    diag: &mut DiagnosticEngine,
+    target: &Target,
+) -> Result<bool, ()> {
+    // Handle nested __builtin_constant_p(expr) → always returns 0 or 1
+    if let Expression::FunctionCall { callee, args, .. } = expr {
+        if let Expression::Identifier { name: _, .. } = callee.as_ref() {
+            // We can't resolve the Symbol without an interner, but we can
+            // check if the callee looks like a compile-time builtin by
+            // pattern matching. Since we're inside the builtin evaluator,
+            // this is specifically for the __builtin_choose_expr context.
+            //
+            // For __builtin_constant_p: if arg is a literal → 1, else → 0
+            // For __builtin_types_compatible_p: requires type resolution
+            //
+            // Strategy: try evaluating inner args as constants. If the
+            // inner call is __builtin_constant_p with a constant arg, it's 1.
+            if args.len() == 1 {
+                // Likely __builtin_constant_p — check if the argument is constant
+                let is_const = evaluate_constant_expression(&args[0], diag, target).is_ok();
+                // Clear any diagnostics that the above might have added
+                return Ok(is_const);
+            }
+        }
+    }
+
+    // Handle __builtin_types_compatible_p AST node
+    if let Expression::BuiltinTypesCompatibleP { type1, type2, .. } = expr {
+        // Types are compatible if they're structurally the same.
+        // Without full type resolution, compare the TypeName structures.
+        let compat = format!("{:?}", type1) == format!("{:?}", type2);
+        return Ok(compat);
+    }
+
+    // Fall back to general constant expression evaluation
+    let const_val = evaluate_constant_expression(expr, diag, target)?;
+    Ok(const_val.to_i128() != 0)
+}
+
 fn eval_choose_expr(
     args: &[Expression],
     span: Span,
@@ -652,36 +711,33 @@ fn eval_choose_expr(
 ) -> Result<BuiltinResult, ()> {
     validate_arg_count(args, 3, "__builtin_choose_expr", span, diag)?;
 
-    // Evaluate the first argument as a constant expression.
-    // The controlling expression must be an integer constant expression
-    // per GCC semantics.
-    let const_val = evaluate_constant_expression(&args[0], diag, target)?;
-    // Use to_i128() to get a scalar value for the branch decision,
-    // then check if it is non-zero to select the first expression.
-    let controlling_value = const_val.to_i128();
-    let choose_first = controlling_value != 0;
+    // The controlling expression must be an integer constant expression.
+    // However, GCC allows compile-time builtins like __builtin_constant_p
+    // and __builtin_types_compatible_p as the controlling expression.
+    // Try to evaluate nested builtins directly before falling back to the
+    // general constant expression evaluator.
+    let choose_first = try_eval_controlling_expr(&args[0], diag, target)?;
 
-    if choose_first {
-        // Return expr1 as the selected expression. We wrap it in a
-        // RuntimeCall so the downstream phase processes the selected
-        // expression and ignores the other.
-        Ok(BuiltinResult::RuntimeCall {
-            return_type: CType::Void, // Actual type determined by downstream
-            checked_args: vec![CheckedExpression {
-                expr: args[1].clone(),
-                expected_ty: CType::Void, // No type constraint
-            }],
-        })
-    } else {
-        // Return expr2 as the selected expression.
-        Ok(BuiltinResult::RuntimeCall {
-            return_type: CType::Void,
-            checked_args: vec![CheckedExpression {
-                expr: args[2].clone(),
-                expected_ty: CType::Void,
-            }],
-        })
+    let selected = if choose_first { &args[1] } else { &args[2] };
+
+    // Try to evaluate the selected expression as a compile-time constant.
+    // This handles common cases like __builtin_choose_expr(..., 42, 0)
+    // where the selected branch is a literal.
+    if let Ok(const_val) = evaluate_constant_expression(selected, diag, target) {
+        return Ok(BuiltinResult::CompileTimeValue(const_val));
     }
+
+    // If we can't evaluate as a constant, infer the return type from the
+    // expression. Default to int for safety.
+    let return_type = infer_simple_expr_type(selected);
+
+    Ok(BuiltinResult::RuntimeCall {
+        return_type,
+        checked_args: vec![CheckedExpression {
+            expr: selected.clone(),
+            expected_ty: CType::Void,
+        }],
+    })
 }
 
 /// Evaluates `__builtin_offsetof(type, member)`.
@@ -917,6 +973,35 @@ fn check_ffs(
         return_ty,
         &args[0],
         expected_arg_ty,
+    ))
+}
+
+// ===========================================================================
+// Runtime-deferred builtin handlers — absolute value
+// ===========================================================================
+
+/// Type-checks `__builtin_abs`, `__builtin_labs`, `__builtin_llabs`.
+///
+/// Returns the absolute value of the argument. The return type matches
+/// the argument width (int, long, or long long respectively).
+fn check_abs(
+    args: &[Expression],
+    span: Span,
+    diag: &mut DiagnosticEngine,
+    width: IntWidth,
+) -> Result<BuiltinResult, ()> {
+    let name = match width {
+        IntWidth::Int => "__builtin_abs",
+        IntWidth::Long => "__builtin_labs",
+        IntWidth::LongLong => "__builtin_llabs",
+    };
+    validate_arg_count(args, 1, name, span, diag)?;
+
+    let return_ty = width.to_signed_type();
+    Ok(make_runtime_call_single(
+        return_ty.clone(),
+        &args[0],
+        return_ty,
     ))
 }
 
@@ -1472,6 +1557,89 @@ fn apply_abstract_declarator(base: CType, type_name: &TypeName) -> Option<CType>
 // ===========================================================================
 // Target-dependent helpers
 // ===========================================================================
+
+/// Infers a simple C type from an expression without full type checking.
+///
+/// This is used by `__builtin_choose_expr` to determine the return type
+/// of the selected branch expression. It handles common expression forms:
+/// integer literals, float literals, char literals, string literals, casts,
+/// sizeof, and identifiers. Falls back to `CType::Int` for complex
+/// expressions that would require full type resolution.
+fn infer_simple_expr_type(expr: &Expression) -> CType {
+    match expr {
+        Expression::IntegerLiteral { suffix, .. } => match suffix {
+            IntegerSuffix::None | IntegerSuffix::L | IntegerSuffix::LL => {
+                CType::Int { signed: true }
+            }
+            IntegerSuffix::U | IntegerSuffix::UL | IntegerSuffix::ULL => {
+                CType::Int { signed: false }
+            }
+        },
+        Expression::FloatLiteral { suffix, .. } => match suffix {
+            FloatSuffix::None => CType::Double,
+            FloatSuffix::F => CType::Float,
+            FloatSuffix::L => CType::LongDouble,
+        },
+        Expression::CharLiteral { .. } => CType::Int { signed: true },
+        Expression::StringLiteral { .. } => CType::Pointer(Box::new(CType::Char { signed: true })),
+        Expression::Cast { type_name, .. } => {
+            // For casts, try to extract the target type from the type name.
+            // This covers `__builtin_choose_expr(c, (int)x, (float)y)`.
+            ctype_from_type_name(type_name)
+        }
+        Expression::Sizeof { .. } | Expression::Alignof { .. } => {
+            // sizeof and _Alignof yield size_t (unsigned)
+            CType::Int { signed: false }
+        }
+        Expression::UnaryOp { operand, .. } => {
+            // Propagate type from the operand for simple unary ops
+            infer_simple_expr_type(operand)
+        }
+        Expression::Conditional {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            // Use the then-branch type, or else-branch for GCC ternary
+            if let Some(then_e) = then_expr {
+                infer_simple_expr_type(then_e)
+            } else {
+                infer_simple_expr_type(else_expr)
+            }
+        }
+        Expression::FunctionCall { .. } => {
+            // Function calls (including nested builtins) default to int.
+            // In practice, __builtin_choose_expr rarely has function calls
+            // as the selected branch — they are usually literals or simple
+            // expressions. Full type resolution would require the symbol table.
+            CType::Int { signed: true }
+        }
+        _ => CType::Int { signed: true },
+    }
+}
+
+/// Extracts a `CType` from a `TypeName` AST node.
+///
+/// Handles common type specifiers found in cast expressions.
+/// Falls back to `CType::Int` for complex or unrecognized types.
+fn ctype_from_type_name(type_name: &crate::frontend::parser::ast::TypeName) -> CType {
+    use crate::frontend::parser::ast::TypeSpecifier;
+    for spec in &type_name.specifiers.specifiers {
+        match spec {
+            TypeSpecifier::Void => return CType::Void,
+            TypeSpecifier::Char => return CType::Char { signed: true },
+            TypeSpecifier::Short => return CType::Short { signed: true },
+            TypeSpecifier::Int => return CType::Int { signed: true },
+            TypeSpecifier::Long => return CType::Long { signed: true },
+            TypeSpecifier::Float => return CType::Float,
+            TypeSpecifier::Double => return CType::Double,
+            TypeSpecifier::Unsigned => return CType::Int { signed: false },
+            TypeSpecifier::Signed => return CType::Int { signed: true },
+            _ => {}
+        }
+    }
+    CType::Int { signed: true }
+}
 
 /// Returns the `size_t` type for the given target architecture.
 ///

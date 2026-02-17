@@ -213,17 +213,25 @@ pub fn lower_asm_statement(
     // Step 6: Process the template string — resolve named operands,
     // validate operand references, concatenate fragments.
     let total_operand_count = asm_stmt.outputs.len() + asm_stmt.inputs.len();
-    let processed_template = if operand_map.is_empty() {
-        // No named operands — use the simpler template processor that
-        // doesn't need interner access.
-        process_asm_template(&asm_stmt.template, &operand_map, total_operand_count, span)?
+    let processed_template = if operand_map.is_empty() && asm_stmt.goto_labels.is_empty() {
+        // No named operands and no goto labels — use the simpler template
+        // processor that doesn't need interner access.
+        process_asm_template(
+            &asm_stmt.template,
+            &operand_map,
+            total_operand_count,
+            &asm_stmt.goto_labels,
+            span,
+        )?
     } else {
-        // Named operands present — use the interner-aware processor.
+        // Named operands or goto labels present — use the interner-aware
+        // processor so that %[name] and %l[label] can be resolved.
         process_asm_template_with_interner(
             ctx,
             &asm_stmt.template,
             &operand_map,
             total_operand_count,
+            &asm_stmt.goto_labels,
             span,
         )?
     };
@@ -233,7 +241,8 @@ pub fn lower_asm_statement(
     // Format: output constraints separated by commas, then input constraints
     // separated by commas, with a colon separating the two groups.
     // Example: "=r,=m:r,i,0"
-    let combined_constraints = build_constraint_string(&output_bindings, &asm_stmt.inputs, span)?;
+    let combined_constraints =
+        build_constraint_string(&output_bindings, &asm_stmt.inputs, &goto_targets, span)?;
 
     // Step 8: Collect all operand ValueIds in order: outputs' store targets
     // first (for the backend to know where to write), then read-write
@@ -266,7 +275,15 @@ pub fn lower_asm_statement(
         asm_stmt.is_volatile || asm_stmt.outputs.is_empty() || clobber_set.has_memory_clobber;
 
     // Step 10: Emit the InlineAsm IR instruction.
-    let _asm_result = ctx.builder.build_inline_asm(
+    //
+    // For `asm goto`, the goto_targets are stored directly on the IR
+    // instruction.  This allows the CFG reconstruction pass
+    // (`rebuild_cfg_edges`) to discover the goto-target edges by
+    // inspecting the InlineAsm instruction, preventing the
+    // `simplify_cfg` pass from incorrectly removing those target blocks
+    // as unreachable.
+    let ir_goto_targets = goto_targets.clone();
+    let _asm_result = ctx.builder.build_inline_asm_full(
         ctx.function,
         processed_template,
         combined_constraints,
@@ -274,13 +291,23 @@ pub fn lower_asm_statement(
         clobber_set.all_clobbers,
         has_side_effects,
         false, // is_align_stack: not required for standard inline asm
+        IrType::I64,
+        ir_goto_targets,
     );
 
-    // Step 11: For asm goto, the instruction acts as a potential terminator.
-    // Create a fall-through block and add successor edges.
+    // Step 11: For asm goto, the InlineAsm instruction acts as a potential
+    // branch to one of the goto targets.  We create a fall-through block
+    // and emit an **explicit Branch** from the current block to it.  The
+    // Branch terminates the block; the goto targets are recorded on the
+    // InlineAsm instruction and respected by CFG analysis.
     if asm_stmt.is_goto && !goto_targets.is_empty() {
         let current_block = ctx.builder.get_insert_block();
         if let Some(curr_bb) = current_block {
+            // Create a fall-through block for the normal (non-goto) path.
+            let fallthrough_bb = ctx
+                .builder
+                .create_block(ctx.function, Some("asm_goto.fallthrough"));
+
             // Add goto targets as successors of the current block.
             for &target_bb in &goto_targets {
                 ctx.function.get_block_mut(curr_bb).add_successor(target_bb);
@@ -289,16 +316,18 @@ pub fn lower_asm_statement(
                     .add_predecessor(curr_bb);
             }
 
-            // Create a fall-through block for the normal (non-goto) path.
-            let fallthrough_bb = ctx
-                .builder
-                .create_block(ctx.function, Some("asm_goto.fallthrough"));
+            // Add fall-through as a successor.
             ctx.function
                 .get_block_mut(curr_bb)
                 .add_successor(fallthrough_bb);
             ctx.function
                 .get_block_mut(fallthrough_bb)
                 .add_predecessor(curr_bb);
+
+            // Emit an explicit branch to the fall-through block.
+            // This terminates the current block so that optimization
+            // passes see it as a properly terminated block.
+            ctx.builder.build_branch(ctx.function, fallthrough_bb);
 
             // Move the insertion point to the fall-through block so that
             // subsequent instructions after the asm goto are placed there.
@@ -411,6 +440,7 @@ fn process_asm_template(
     template: &[Vec<u8>],
     _operand_map: &AsmOperandMap,
     total_operand_count: usize,
+    goto_labels: &[Symbol],
     span: Span,
 ) -> Result<String, LoweringError> {
     // Concatenate all template string fragments with spaces.
@@ -509,9 +539,39 @@ fn process_asm_template(
                 // Emit the positional reference as-is.
                 result.push('%');
                 result.push_str(&idx_str);
+            } else if next == 'l' && i + 2 < len && chars[i + 2] == '[' {
+                // Goto label reference: %l[name] — resolve to %l<goto_index>.
+                i += 3; // skip '%l['
+                let start = i;
+                while i < len && chars[i] != ']' {
+                    i += 1;
+                }
+                if i >= len {
+                    return Err(LoweringError::InvalidConstraint {
+                        constraint: "unterminated %l[name]".to_string(),
+                        span,
+                        message: "expected ']' in asm goto label reference".to_string(),
+                    });
+                }
+                let _label_name: String = chars[start..i].iter().collect();
+                i += 1; // skip ']'
+
+                // Find the index of this label in the goto_labels array.
+                // Note: without interner access, we use a simple string
+                // comparison. If there are no goto_labels, emit a placeholder.
+                let label_idx = goto_labels.len(); // default: out of range
+                                                   // Since we don't have interner access here, emit the label
+                                                   // as %l<N> where N is the sequential goto label index.
+                                                   // In the simple template path (no named operands), asm goto
+                                                   // typically doesn't use named labels, but handle defensively.
+                                                   // The interner-aware path handles name resolution properly.
+                result.push_str(&format!("%l{}", label_idx));
             } else if next.is_ascii_alphabetic() {
                 // Operand modifier: %b0, %w1, %h2, etc.
                 // The letter is a modifier, followed by the operand number.
+                //
+                // Special case: %l<N> where N is a digit — this is a goto
+                // label positional reference. Pass through as-is.
                 result.push('%');
                 result.push(next);
                 i += 2;
@@ -973,10 +1033,9 @@ fn validate_arch_specific_constraint(
 fn build_constraint_string(
     output_bindings: &[AsmOutputBinding],
     inputs: &[AsmOperand],
+    goto_targets: &[crate::ir::basic_block::BasicBlockId],
     span: Span,
 ) -> Result<String, LoweringError> {
-    let mut parts: Vec<String> = Vec::new();
-
     // Output constraints.
     let mut output_parts: Vec<String> = Vec::new();
     for binding in output_bindings {
@@ -993,17 +1052,38 @@ fn build_constraint_string(
     let output_str = output_parts.join(",");
     let input_str = input_parts.join(",");
 
-    if !output_str.is_empty() && !input_str.is_empty() {
-        parts.push(format!("{}:{}", output_str, input_str));
+    let mut result = if !output_str.is_empty() && !input_str.is_empty() {
+        format!("{}:{}", output_str, input_str)
     } else if !output_str.is_empty() {
-        parts.push(output_str);
+        output_str
     } else if !input_str.is_empty() {
         // No outputs, only inputs — prefix with colon.
-        parts.push(format!(":{}", input_str));
+        format!(":{}", input_str)
+    } else {
+        String::new()
+    };
+
+    // Append goto targets as a third colon-section if present.
+    // Format: ":GOTO<block_id>,GOTO<block_id>,..."
+    if !goto_targets.is_empty() {
+        // Ensure we have at least two colons before adding goto section.
+        let colon_count = result.chars().filter(|&c| c == ':').count();
+        if colon_count == 0 {
+            result.push_str("::");
+        } else if colon_count == 1 {
+            result.push(':');
+        } else {
+            result.push(':');
+        }
+        let goto_strs: Vec<String> = goto_targets
+            .iter()
+            .map(|bb| format!("GOTO{}", bb.index()))
+            .collect();
+        result.push_str(&goto_strs.join(","));
     }
 
     let _ = span; // Available for future diagnostics.
-    Ok(parts.join(""))
+    Ok(result)
 }
 
 // ============================================================================
@@ -1128,6 +1208,7 @@ fn process_asm_template_with_interner(
     template: &[Vec<u8>],
     operand_map: &AsmOperandMap,
     total_operand_count: usize,
+    goto_labels: &[Symbol],
     span: Span,
 ) -> Result<String, LoweringError> {
     // Concatenate all template fragments.
@@ -1212,6 +1293,42 @@ fn process_asm_template_with_interner(
 
                 result.push('%');
                 result.push_str(&idx_str);
+            } else if next == 'l' && i + 2 < len && chars[i + 2] == '[' {
+                // Goto label reference: %l[name] — resolve to %l<goto_index>.
+                i += 3; // skip '%l['
+                let start = i;
+                while i < len && chars[i] != ']' {
+                    i += 1;
+                }
+                if i >= len {
+                    return Err(LoweringError::InvalidConstraint {
+                        constraint: "unterminated %l[name]".to_string(),
+                        span,
+                        message: "expected ']' in asm goto label reference".to_string(),
+                    });
+                }
+                let label_name: String = chars[start..i].iter().collect();
+                i += 1; // skip ']'
+
+                // Resolve the label name to its index in goto_labels.
+                let mut found_idx: Option<usize> = None;
+                for (idx, &label_sym) in goto_labels.iter().enumerate() {
+                    let name_str = ctx.module_ctx.interner.resolve(label_sym);
+                    if name_str == label_name {
+                        found_idx = Some(idx);
+                        break;
+                    }
+                }
+
+                match found_idx {
+                    Some(idx) => {
+                        result.push_str(&format!("%l{}", idx));
+                    }
+                    None => {
+                        // Label not found — emit as-is for backend to handle.
+                        result.push_str(&format!("%l[{}]", label_name));
+                    }
+                }
             } else if next.is_ascii_alphabetic() {
                 // Operand modifier: %b0, %w1, etc.
                 result.push('%');
@@ -1364,7 +1481,7 @@ mod tests {
         // Test %% escape handling.
         let template = vec![b"%%rax".to_vec()];
         let map = FxHashMap::default();
-        let result = process_asm_template(&template, &map, 0, Span::DUMMY);
+        let result = process_asm_template(&template, &map, 0, &[], Span::DUMMY);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "%rax");
     }
@@ -1373,7 +1490,7 @@ mod tests {
     fn test_template_positional_reference() {
         let template = vec![b"mov %0, %1".to_vec()];
         let map = FxHashMap::default();
-        let result = process_asm_template(&template, &map, 2, Span::DUMMY);
+        let result = process_asm_template(&template, &map, 2, &[], Span::DUMMY);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "mov %0, %1");
     }
@@ -1382,7 +1499,7 @@ mod tests {
     fn test_template_positional_out_of_range() {
         let template = vec![b"mov %5, %0".to_vec()];
         let map = FxHashMap::default();
-        let result = process_asm_template(&template, &map, 2, Span::DUMMY);
+        let result = process_asm_template(&template, &map, 2, &[], Span::DUMMY);
         assert!(result.is_err());
     }
 
@@ -1391,7 +1508,7 @@ mod tests {
         // .pushsection/.popsection should pass through unchanged.
         let template = vec![b".pushsection .data\n.byte 0x42\n.popsection".to_vec()];
         let map = FxHashMap::default();
-        let result = process_asm_template(&template, &map, 0, Span::DUMMY);
+        let result = process_asm_template(&template, &map, 0, &[], Span::DUMMY);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains(".pushsection"));
@@ -1402,7 +1519,7 @@ mod tests {
     fn test_template_multiple_fragments() {
         let template = vec![b"mov %0, ".to_vec(), b"%1".to_vec()];
         let map = FxHashMap::default();
-        let result = process_asm_template(&template, &map, 2, Span::DUMMY);
+        let result = process_asm_template(&template, &map, 2, &[], Span::DUMMY);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "mov %0, %1");
     }
@@ -1412,7 +1529,7 @@ mod tests {
         // %b0 — byte modifier on operand 0.
         let template = vec![b"movb %b0, (%1)".to_vec()];
         let map = FxHashMap::default();
-        let result = process_asm_template(&template, &map, 2, Span::DUMMY);
+        let result = process_asm_template(&template, &map, 2, &[], Span::DUMMY);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "movb %b0, (%1)");
     }
@@ -1442,7 +1559,7 @@ mod tests {
             span: Span::DUMMY,
         }];
 
-        let result = build_constraint_string(&outputs, &inputs, Span::DUMMY);
+        let result = build_constraint_string(&outputs, &inputs, &[], Span::DUMMY);
         assert!(result.is_ok());
         let constraint_str = result.unwrap();
         assert_eq!(constraint_str, "=r:r");
@@ -1462,7 +1579,7 @@ mod tests {
             span: Span::DUMMY,
         }];
 
-        let result = build_constraint_string(&outputs, &inputs, Span::DUMMY);
+        let result = build_constraint_string(&outputs, &inputs, &[], Span::DUMMY);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), ":r");
     }

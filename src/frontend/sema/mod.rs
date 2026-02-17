@@ -100,7 +100,7 @@ use crate::common::types::{CType, FieldDef};
 use crate::frontend::parser::ast::{
     AbstractDeclarator, Attribute, BlockItem, Declaration, DeclarationSpecifiers, Declarator,
     DerivedDeclarator, Enumerator, Expression, FieldDeclaration, ForInit, InitDeclarator,
-    ParameterList, SpecifierQualifierList, Statement, StorageClass as AstStorageClass,
+    Initializer, ParameterList, SpecifierQualifierList, Statement, StorageClass as AstStorageClass,
     TranslationUnit, TypeName, TypeSpecifier, TypeofOperand,
 };
 
@@ -109,8 +109,8 @@ use attribute_handler::{
     propagate_to_symbol, propagate_to_type, validate_attributes, AttributeTargetKind,
 };
 use builtin_eval::evaluate_builtin;
-use constant_eval::{evaluate_constant_expression_with_resolver, evaluate_static_assert};
-use initializer::analyze_initializer;
+use constant_eval::{evaluate_constant_expression_with_resolver, evaluate_static_assert_full};
+use initializer::{analyze_initializer, count_top_level_initializer_elements};
 use scope::{ScopeLevel, TagEntry, TagKind};
 use type_checker::check_expression;
 
@@ -145,6 +145,8 @@ pub enum CheckedDeclaration {
         linkage: Linkage,
         /// Storage class specifier.
         storage_class: StorageClass,
+        /// Whether the `const` qualifier was present on this declaration.
+        is_const: bool,
         /// Validated GCC attributes.
         attrs: Vec<ValidatedAttribute>,
         /// Source location of the declaration.
@@ -529,7 +531,16 @@ impl<'a> SemanticAnalyzer<'a> {
                 message,
                 span,
             } => {
-                evaluate_static_assert(condition, message, self.diagnostics, self.target)?;
+                let tr = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
+                let er = make_enum_resolver(&self.scope_stack, &self.symbol_table);
+                evaluate_static_assert_full(
+                    condition,
+                    message,
+                    self.diagnostics,
+                    self.target,
+                    Some(&tr),
+                    Some(&er),
+                )?;
                 Ok(CheckedDeclaration::StaticAssert { span: *span })
             }
 
@@ -582,7 +593,63 @@ impl<'a> SemanticAnalyzer<'a> {
             }
         }
 
-        // General expression type-checking.
+        // Handle GCC statement expressions ({ ... }) — we must process
+        // declarations inside the body so that variables declared within
+        // are visible during type-checking of subsequent expressions.
+        if let Expression::StatementExpression { body, span } = expr {
+            self.scope_stack.push(ScopeLevel::Block);
+            for item in body {
+                match item {
+                    BlockItem::Declaration(decl) => {
+                        let _ = self.analyze_declaration(decl);
+                    }
+                    BlockItem::Statement(sub_stmt) => {
+                        let _ = self.analyze_statement(sub_stmt);
+                    }
+                }
+            }
+            // Determine result type from the last expression statement.
+            let result_ty = if let Some(BlockItem::Statement(Statement::Expression {
+                expr: last_expr,
+                ..
+            })) = body.last()
+            {
+                let typed = check_expression(
+                    last_expr,
+                    &self.scope_stack,
+                    &self.symbol_table,
+                    self.target,
+                    self.diagnostics,
+                    self.current_function_return_type.as_ref(),
+                    self.interner,
+                );
+                typed.ty
+            } else {
+                CType::Void
+            };
+            self.scope_stack.pop();
+            return Ok(TypedExpression {
+                expr: expr.clone(),
+                ty: result_ty,
+                is_lvalue: false,
+                is_constant: false,
+                span: *span,
+            });
+        }
+
+        // Handle recursive statement expressions inside other expression forms.
+        // Walk the expression tree to find and pre-process any nested
+        // statement expressions before general type-checking.
+        //
+        // IMPORTANT: pre-processing pushes scopes and registers declarations
+        // but does NOT pop them.  The scopes must remain active while
+        // `check_expression` runs so that identifiers declared inside
+        // `({ ... })` blocks are visible during type-checking.  We track
+        // the number of scopes pushed and pop them all afterwards.
+        let scopes_pushed = self.pre_process_nested_stmt_exprs(expr);
+
+        // General expression type-checking — scopes from statement
+        // expressions remain active here.
         let typed = check_expression(
             expr,
             &self.scope_stack,
@@ -590,8 +657,187 @@ impl<'a> SemanticAnalyzer<'a> {
             self.target,
             self.diagnostics,
             self.current_function_return_type.as_ref(),
+            self.interner,
         );
+
+        // Pop all scopes that were pushed for nested statement expressions.
+        for _ in 0..scopes_pushed {
+            self.scope_stack.pop();
+        }
+
         Ok(typed)
+    }
+
+    // ====================================================================
+    // Analyze initializer with statement expression support
+    // ====================================================================
+
+    /// Analyzes an initializer, handling statement expressions by pushing a
+    /// block scope and registering declarations within them before
+    /// delegating to the standard initializer analysis.
+    fn analyze_initializer_with_stmt_exprs(
+        &mut self,
+        init: &Initializer,
+        target_type: &CType,
+    ) -> Option<CheckedInitializer> {
+        // For expression initializers that are statement expressions,
+        // push a scope, register declarations, then analyze.
+        if let Initializer::Expression(expr) = init {
+            if let Expression::StatementExpression { body, span: _ } = expr.as_ref() {
+                self.scope_stack.push(ScopeLevel::Block);
+                for item in body {
+                    match item {
+                        BlockItem::Declaration(decl) => {
+                            let _ = self.analyze_declaration(decl);
+                        }
+                        BlockItem::Statement(sub_stmt) => {
+                            let _ = self.analyze_statement(sub_stmt);
+                        }
+                    }
+                }
+                // Run the initializer analysis while the scope is active.
+                let result = analyze_initializer(
+                    init,
+                    target_type,
+                    self.diagnostics,
+                    self.target,
+                    self.interner,
+                    &self.scope_stack,
+                    &self.symbol_table,
+                )
+                .ok();
+                self.scope_stack.pop();
+                return result;
+            } else {
+                // For non-stmt-expr expressions, still check for nested stmt exprs.
+                // Push scopes (don't pop) so identifiers are visible during analysis.
+                let nested_pushed = self.pre_process_nested_stmt_exprs(expr);
+                let result = analyze_initializer(
+                    init,
+                    target_type,
+                    self.diagnostics,
+                    self.target,
+                    self.interner,
+                    &self.scope_stack,
+                    &self.symbol_table,
+                )
+                .ok();
+                for _ in 0..nested_pushed {
+                    self.scope_stack.pop();
+                }
+                return result;
+            }
+        }
+
+        // Default: standard initializer analysis.
+        analyze_initializer(
+            init,
+            target_type,
+            self.diagnostics,
+            self.target,
+            self.interner,
+            &self.scope_stack,
+            &self.symbol_table,
+        )
+        .ok()
+    }
+
+    /// Recursively scans an initializer for statement expressions and
+    /// processes declarations within them.
+    #[allow(dead_code)]
+    fn pre_process_initializer_stmt_exprs(&mut self, init: &Initializer) -> usize {
+        match init {
+            Initializer::Expression(expr) => self.pre_process_nested_stmt_exprs(expr),
+            Initializer::List { items, .. } => {
+                let mut count = 0;
+                for item in items {
+                    count += self.pre_process_initializer_stmt_exprs(&item.initializer);
+                }
+                count
+            }
+        }
+    }
+
+    // ====================================================================
+    // Pre-process nested statement expressions
+    // ====================================================================
+
+    /// Recursively scans an expression tree for nested `StatementExpression`
+    /// nodes and processes declarations within them, ensuring that variables
+    /// declared inside `({ ... })` are registered in the scope before the
+    /// general type-checker encounters them.
+    /// Recursively scans an expression tree for nested `StatementExpression`
+    /// nodes and processes declarations within them.  Scopes are pushed but
+    /// NOT popped — the caller is responsible for popping after type-checking
+    /// completes so that identifiers remain visible during `check_expression`.
+    ///
+    /// Returns the total number of scopes pushed.
+    fn pre_process_nested_stmt_exprs(&mut self, expr: &Expression) -> usize {
+        match expr {
+            Expression::StatementExpression { body, .. } => {
+                self.scope_stack.push(ScopeLevel::Block);
+                let count = 1; // We pushed one scope for this stmt expr.
+                for item in body {
+                    match item {
+                        BlockItem::Declaration(decl) => {
+                            let _ = self.analyze_declaration(decl);
+                        }
+                        BlockItem::Statement(sub_stmt) => {
+                            let _ = self.analyze_statement(sub_stmt);
+                        }
+                    }
+                }
+                // Do NOT pop — leave scope active for check_expression.
+                count
+            }
+            Expression::BinaryOp { left, right, .. } => {
+                let l = self.pre_process_nested_stmt_exprs(left);
+                let r = self.pre_process_nested_stmt_exprs(right);
+                l + r
+            }
+            Expression::UnaryOp { operand, .. } => self.pre_process_nested_stmt_exprs(operand),
+            Expression::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                let c = self.pre_process_nested_stmt_exprs(condition);
+                let t = then_expr
+                    .as_ref()
+                    .map_or(0, |t| self.pre_process_nested_stmt_exprs(t));
+                let e = self.pre_process_nested_stmt_exprs(else_expr);
+                c + t + e
+            }
+            Expression::FunctionCall { callee, args, .. } => {
+                let mut count = self.pre_process_nested_stmt_exprs(callee);
+                for a in args {
+                    count += self.pre_process_nested_stmt_exprs(a);
+                }
+                count
+            }
+            Expression::Cast { operand, .. } => self.pre_process_nested_stmt_exprs(operand),
+            Expression::Comma { expressions, .. } => {
+                let mut count = 0;
+                for e in expressions {
+                    count += self.pre_process_nested_stmt_exprs(e);
+                }
+                count
+            }
+            Expression::AddressOf { operand, .. } | Expression::Dereference { operand, .. } => {
+                self.pre_process_nested_stmt_exprs(operand)
+            }
+            Expression::ArraySubscript { array, index, .. } => {
+                let a = self.pre_process_nested_stmt_exprs(array);
+                let i = self.pre_process_nested_stmt_exprs(index);
+                a + i
+            }
+            Expression::MemberAccess { object, .. } => self.pre_process_nested_stmt_exprs(object),
+            Expression::ArrowAccess { pointer, .. } => self.pre_process_nested_stmt_exprs(pointer),
+            Expression::BuiltinVaArg { ap, .. } => self.pre_process_nested_stmt_exprs(ap),
+            // Leaf expressions — no nesting to process.
+            _ => 0,
+        }
     }
 
     // ====================================================================
@@ -755,7 +1001,12 @@ impl<'a> SemanticAnalyzer<'a> {
                 // Evaluate case value as integer constant expression.
                 {
                     let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
-                    match evaluate_constant_expression_with_resolver(value, self.diagnostics, self.target, &resolver) {
+                    match evaluate_constant_expression_with_resolver(
+                        value,
+                        self.diagnostics,
+                        self.target,
+                        &resolver,
+                    ) {
                         Ok(const_val) => {
                             if let Some(int_val) = const_val.as_integer() {
                                 // Check for duplicate case values.
@@ -826,18 +1077,29 @@ impl<'a> SemanticAnalyzer<'a> {
                                 *span,
                                 "returning a value from a void function".to_string(),
                             );
-                        } else if !types_compatible(&typed.ty, ret_ty) {
-                            // Allow implicit conversions between arithmetic types
-                            if !(typed.ty.is_arithmetic() && ret_ty.is_arithmetic()
-                                || typed.ty.is_pointer() && ret_ty.is_pointer())
-                            {
-                                self.diagnostics.warning(
-                                    *span,
-                                    format!(
-                                        "incompatible return type: expected '{:?}', found '{:?}'",
-                                        ret_ty, typed.ty
-                                    ),
-                                );
+                        } else {
+                            // Apply function-to-pointer decay (C11 §6.3.2.1p4):
+                            // A function designator used in a value context (such
+                            // as a return statement) decays to a pointer to that
+                            // function type.
+                            let decayed_ty = if typed.ty.is_function() {
+                                CType::Pointer(Box::new(typed.ty.clone()))
+                            } else {
+                                typed.ty.clone()
+                            };
+                            if !types_compatible(&decayed_ty, ret_ty) {
+                                // Allow implicit conversions between arithmetic types
+                                if !(decayed_ty.is_arithmetic() && ret_ty.is_arithmetic()
+                                    || decayed_ty.is_pointer() && ret_ty.is_pointer())
+                                {
+                                    self.diagnostics.warning(
+                                        *span,
+                                        format!(
+                                            "incompatible return type: expected '{:?}', found '{:?}'",
+                                            ret_ty, decayed_ty
+                                        ),
+                                    );
+                                }
                             }
                         }
                     }
@@ -952,17 +1214,26 @@ impl<'a> SemanticAnalyzer<'a> {
                 // Evaluate both range bounds.
                 {
                     let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
-                    if let Ok(low_val) =
-                        evaluate_constant_expression_with_resolver(low, self.diagnostics, self.target, &resolver)
-                    {
-                        if let Ok(high_val) =
-                            evaluate_constant_expression_with_resolver(high, self.diagnostics, self.target, &resolver)
-                        {
-                            if let (Some(lo), Some(hi)) = (low_val.as_integer(), high_val.as_integer())
+                    if let Ok(low_val) = evaluate_constant_expression_with_resolver(
+                        low,
+                        self.diagnostics,
+                        self.target,
+                        &resolver,
+                    ) {
+                        if let Ok(high_val) = evaluate_constant_expression_with_resolver(
+                            high,
+                            self.diagnostics,
+                            self.target,
+                            &resolver,
+                        ) {
+                            if let (Some(lo), Some(hi)) =
+                                (low_val.as_integer(), high_val.as_integer())
                             {
                                 if lo > hi {
-                                    self.diagnostics
-                                        .error(*span, format!("empty case range ({} ... {})", lo, hi));
+                                    self.diagnostics.error(
+                                        *span,
+                                        format!("empty case range ({} ... {})", lo, hi),
+                                    );
                                 }
                                 // Insert all values in range for duplicate detection.
                                 if let Some(case_set) = self.switch_case_values.last_mut() {
@@ -1163,7 +1434,9 @@ impl<'a> SemanticAnalyzer<'a> {
                         self.target,
                         self.diagnostics,
                         self.current_function_return_type.as_ref(),
+                        self.interner,
                     );
+                    // eprintln!("[DEBUG TYPEOF sema/mod] expr => {:?}", typed.ty);
                     typed.ty
                 }
                 TypeofOperand::TypeName(tn) => self.resolve_type_name(tn),
@@ -1303,7 +1576,12 @@ impl<'a> SemanticAnalyzer<'a> {
             for e in enum_list {
                 let value = if let Some(val_expr) = &e.value {
                     let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
-                    match evaluate_constant_expression_with_resolver(val_expr, self.diagnostics, self.target, &resolver) {
+                    match evaluate_constant_expression_with_resolver(
+                        val_expr,
+                        self.diagnostics,
+                        self.target,
+                        &resolver,
+                    ) {
                         Ok(cv) => {
                             if let Some(iv) = cv.as_integer() {
                                 iv as i64
@@ -1323,7 +1601,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 next_value = value.wrapping_add(1);
 
                 // Insert enumerator as an integer constant in the current scope.
-                let entry = SymbolEntry::new(
+                let mut entry = SymbolEntry::new(
                     e.name,
                     CType::Int { signed: true },
                     Linkage::None,
@@ -1331,6 +1609,7 @@ impl<'a> SemanticAnalyzer<'a> {
                     true,
                     e.span,
                 );
+                entry.const_value = Some(value as i128);
                 let id = self.symbol_table.insert(entry);
                 self.scope_stack.insert(e.name, id);
             }
@@ -1391,7 +1670,12 @@ impl<'a> SemanticAnalyzer<'a> {
                 };
                 let bit_width = fd.bit_width.as_ref().and_then(|bw| {
                     let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
-                    match evaluate_constant_expression_with_resolver(bw, self.diagnostics, self.target, &resolver) {
+                    match evaluate_constant_expression_with_resolver(
+                        bw,
+                        self.diagnostics,
+                        self.target,
+                        &resolver,
+                    ) {
                         Ok(cv) => cv.as_integer().map(|v| v as u32),
                         Err(()) => None,
                     }
@@ -1464,7 +1748,12 @@ impl<'a> SemanticAnalyzer<'a> {
                 } => {
                     let arr_size = size.as_ref().and_then(|s| {
                         let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
-                        match evaluate_constant_expression_with_resolver(s, self.diagnostics, self.target, &resolver) {
+                        match evaluate_constant_expression_with_resolver(
+                            s,
+                            self.diagnostics,
+                            self.target,
+                            &resolver,
+                        ) {
                             Ok(cv) => cv.as_integer().map(|v| v as usize),
                             Err(()) => None,
                         }
@@ -1605,23 +1894,13 @@ impl<'a> SemanticAnalyzer<'a> {
                 }
             }
 
-            // Analyze initializer (if present).
-            let checked_init = if let Some(ref init) = init_decl.initializer {
-                analyze_initializer(
-                    init,
-                    &final_ty,
-                    self.diagnostics,
-                    self.target,
-                    self.interner,
-                    &self.scope_stack,
-                    &self.symbol_table,
-                )
-                .ok()
-            } else {
-                None
-            };
-
-            // Create and insert symbol table entry.
+            // C11 §6.2.1p7: An identifier's scope begins just after
+            // the completion of its declarator, BEFORE the initializer.
+            // This means `int *p = malloc(sizeof(*p))` must see `p` in
+            // scope so that `sizeof(*p)` can resolve to `sizeof(int)`.
+            //
+            // We therefore register the variable in the symbol table
+            // and scope stack BEFORE analyzing the initializer.
             let is_definition = has_init || (!is_file_scope && sc != StorageClass::Extern);
             let mut entry =
                 SymbolEntry::new(name_sym, final_ty.clone(), linkage, sc, is_definition, span);
@@ -1636,6 +1915,36 @@ impl<'a> SemanticAnalyzer<'a> {
             let sym_id = self.symbol_table.insert(entry);
             self.scope_stack.insert(name_sym, sym_id);
 
+            // Analyze initializer (if present).
+            // The variable is now in scope, so `sizeof(*var)` etc. resolve.
+            let checked_init = if let Some(ref init) = init_decl.initializer {
+                self.analyze_initializer_with_stmt_exprs(init, &final_ty)
+            } else {
+                None
+            };
+
+            // C11 §6.7.9p22: If an array of unknown size is initialized,
+            // its size is determined by the number of initializer elements.
+            // Update the declared type accordingly so the alloca is correctly
+            // sized in the IR lowering phase.
+            if let CType::Array {
+                ref element,
+                size: None,
+            } = final_ty
+            {
+                if let Some(ref ci) = checked_init {
+                    let inferred_count = count_top_level_initializer_elements(ci);
+                    if inferred_count > 0 {
+                        final_ty = CType::Array {
+                            element: element.clone(),
+                            size: Some(inferred_count),
+                        };
+                        // Also update the symbol table entry with the completed type.
+                        self.symbol_table.get_mut(sym_id).ty = final_ty.clone();
+                    }
+                }
+            }
+
             if first_result.is_none() {
                 first_result = Some(CheckedDeclaration::Variable {
                     symbol_id: sym_id,
@@ -1643,6 +1952,7 @@ impl<'a> SemanticAnalyzer<'a> {
                     init: checked_init,
                     linkage,
                     storage_class: sc,
+                    is_const: specifiers.type_qualifiers.is_const,
                     attrs: all_attrs.clone(),
                     span,
                 });
@@ -1685,7 +1995,11 @@ impl<'a> SemanticAnalyzer<'a> {
         body: &Statement,
         span: Span,
     ) -> Result<CheckedDeclaration, ()> {
-        let return_ty = self.resolve_type_specifiers(specifiers);
+        let base_return_ty = self.resolve_type_specifiers(specifiers);
+        // Apply derived declarators that precede the Function derivation to
+        // the return type.  For `int *f(void)`, the Pointer derivation turns
+        // the specifier type `int` into the actual return type `int *`.
+        let return_ty = self.apply_return_type_derivations(base_return_ty, &declarator.derived);
         let sc = specifiers
             .storage_class
             .as_ref()
@@ -1833,7 +2147,10 @@ impl<'a> SemanticAnalyzer<'a> {
         attrs: &[Attribute],
         span: Span,
     ) -> Result<CheckedDeclaration, ()> {
-        let return_ty = self.resolve_type_specifiers(specifiers);
+        let base_return_ty = self.resolve_type_specifiers(specifiers);
+        // Apply pre-Function derived declarators (e.g. Pointer) to get the
+        // actual return type — see apply_return_type_derivations doc comment.
+        let return_ty = self.apply_return_type_derivations(base_return_ty, &declarator.derived);
         let sc = specifiers
             .storage_class
             .as_ref()
@@ -2118,7 +2435,12 @@ impl<'a> SemanticAnalyzer<'a> {
         for e in enumerators {
             let value = if let Some(ref val_expr) = e.value {
                 let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
-                match evaluate_constant_expression_with_resolver(val_expr, self.diagnostics, self.target, &resolver) {
+                match evaluate_constant_expression_with_resolver(
+                    val_expr,
+                    self.diagnostics,
+                    self.target,
+                    &resolver,
+                ) {
                     Ok(cv) => {
                         if let Some(iv) = cv.as_integer() {
                             iv as i64
@@ -2139,7 +2461,7 @@ impl<'a> SemanticAnalyzer<'a> {
             next_value = value.wrapping_add(1);
 
             // Insert each enumerator as an integer constant.
-            let entry = SymbolEntry::new(
+            let mut entry = SymbolEntry::new(
                 e.name,
                 CType::Int { signed: true },
                 Linkage::None,
@@ -2147,6 +2469,7 @@ impl<'a> SemanticAnalyzer<'a> {
                 true,
                 e.span,
             );
+            entry.const_value = Some(value as i128);
             let id = self.symbol_table.insert(entry);
             self.scope_stack.insert(e.name, id);
         }
@@ -2173,6 +2496,47 @@ impl<'a> SemanticAnalyzer<'a> {
             attrs: validated_attrs,
             span,
         })
+    }
+
+    /// Applies derived declarators that precede the `Function` derivation
+    /// to the base return type.
+    ///
+    /// In C, `int *f(void)` has the declarator chain `[Pointer, Function]`.
+    /// The `Pointer` applies to the specifier type `int`, producing the
+    /// actual return type `int *`.  This method walks the derived list up to
+    /// (but not including) the `Function` derivation and folds each modifier
+    /// into the base type.
+    fn apply_return_type_derivations(
+        &mut self,
+        mut ty: CType,
+        derived: &[DerivedDeclarator],
+    ) -> CType {
+        for d in derived {
+            match d {
+                DerivedDeclarator::Function { .. } => break,
+                DerivedDeclarator::Pointer { .. } => {
+                    ty = CType::Pointer(Box::new(ty));
+                }
+                DerivedDeclarator::Array { size, .. } => {
+                    let arr_size = size.as_ref().and_then(|s| {
+                        let resolver = make_typedef_resolver(&self.scope_stack, &self.symbol_table);
+                        evaluate_constant_expression_with_resolver(
+                            s,
+                            self.diagnostics,
+                            self.target,
+                            &resolver,
+                        )
+                        .ok()
+                        .and_then(|cv| cv.as_integer().map(|v| v as usize))
+                    });
+                    ty = CType::Array {
+                        element: Box::new(ty),
+                        size: arr_size,
+                    };
+                }
+            }
+        }
+        ty
     }
 
     /// Extracts the parameter list from a chain of derived declarators.
@@ -2234,5 +2598,19 @@ fn make_typedef_resolver<'a>(
         } else {
             None
         }
+    }
+}
+
+/// Builds an enum-constant resolver closure from the current scope stack and
+/// symbol table.  Enum constants are stored as symbols with
+/// `StorageClass::EnumConstant` and a compile-time `const_value`.
+fn make_enum_resolver<'a>(
+    scope_stack: &'a ScopeStack,
+    symbol_table: &'a SymbolTable,
+) -> impl Fn(Symbol) -> Option<i128> + 'a {
+    move |sym: Symbol| {
+        let id = scope_stack.lookup(sym)?;
+        let entry = symbol_table.get(id);
+        entry.const_value
     }
 }

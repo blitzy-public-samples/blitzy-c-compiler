@@ -136,6 +136,11 @@ pub struct LiveInterval {
     pub is_fixed: bool,
     /// Register class — determines which physical register pool is used.
     pub reg_class: RegisterClass,
+    /// `true` when this interval's live range spans at least one call
+    /// instruction.  Values live across calls **must** be placed in
+    /// callee-saved registers (or spilled) because caller-saved registers
+    /// are clobbered by the callee.
+    pub crosses_call: bool,
 }
 
 impl LiveInterval {
@@ -186,6 +191,7 @@ impl LiveInterval {
             spill_slot: None,
             is_fixed: false,
             reg_class: self.reg_class,
+            crosses_call: self.crosses_call,
         };
         self.end = pos;
         Some(new_interval)
@@ -297,7 +303,17 @@ impl RegisterSet {
 
         let sp = arch.stack_pointer();
         let fp = arch.frame_pointer();
-        let reserved: FxHashSet<PhysReg> = [sp, fp].iter().copied().collect();
+        // The spill-scratch GPR must also be reserved: it is used for
+        // spill-load/store pseudo-ops and must never be allocated to a
+        // user value.
+        let scratch_gpr = arch.spill_scratch_gpr();
+        // The link register (return-address) must be reserved on
+        // architectures where it is a visible GPR (AArch64 LR/X30,
+        // RISC-V RA/X1). On x86 the return address lives on the stack,
+        // so link_register() returns PhysReg::NONE, which won't match
+        // any real register.
+        let lr = arch.link_register();
+        let reserved: FxHashSet<PhysReg> = [sp, fp, scratch_gpr, lr].iter().copied().collect();
 
         // Build available list: caller-saved first, then callee-saved.
         // Only include registers in the integer range [0 .. int_count).
@@ -351,29 +367,38 @@ impl RegisterSet {
         let int_count = arch.integer_register_count() as u16;
         let total_count = int_count + arch.float_register_count() as u16;
 
+        // The spill-scratch SSE register must be excluded from allocation
+        // so that spill-load/store pseudo-ops can use it without conflicting
+        // with any live value assigned during the allocation sweep.
+        let scratch_sse = arch.spill_scratch_sse();
+
         let mut available = Vec::new();
 
-        // Caller-saved float regs first
+        // Caller-saved float regs first (excluding spill scratch)
         for &reg in arch.caller_saved_registers() {
-            if reg.0 >= int_count && reg.0 < total_count {
+            if reg.0 >= int_count && reg.0 < total_count && reg != scratch_sse {
                 available.push(reg);
             }
         }
-        // Callee-saved float regs second
+        // Callee-saved float regs second (excluding spill scratch)
         for &reg in arch.callee_saved_registers() {
-            if reg.0 >= int_count && reg.0 < total_count && !available.contains(&reg) {
+            if reg.0 >= int_count
+                && reg.0 < total_count
+                && reg != scratch_sse
+                && !available.contains(&reg)
+            {
                 available.push(reg);
             }
         }
 
         let callee_saved: Vec<PhysReg> = callee_saved_all
             .iter()
-            .filter(|r| r.0 >= int_count && r.0 < total_count)
+            .filter(|r| r.0 >= int_count && r.0 < total_count && **r != scratch_sse)
             .copied()
             .collect();
         let caller_saved: Vec<PhysReg> = caller_saved_all
             .iter()
-            .filter(|r| r.0 >= int_count && r.0 < total_count)
+            .filter(|r| r.0 >= int_count && r.0 < total_count && **r != scratch_sse)
             .copied()
             .collect();
 
@@ -478,6 +503,13 @@ pub struct RegisterAllocator {
 
     /// Return register for floating-point values.
     return_reg_float: PhysReg,
+
+    /// Scratch GPR reserved for spill code lowering (never allocated).
+    /// Used as a temporary when spill code requires memory-to-memory moves.
+    spill_scratch_gpr: PhysReg,
+
+    /// Scratch SSE register reserved for spill code lowering (never allocated).
+    spill_scratch_sse: PhysReg,
 }
 
 /// A pending spill or reload edit that is accumulated during the allocation
@@ -551,6 +583,8 @@ impl RegisterAllocator {
             arg_regs_float: arch.argument_registers_float().to_vec(),
             return_reg_int: arch.return_register_int(),
             return_reg_float: arch.return_register_float(),
+            spill_scratch_gpr: arch.spill_scratch_gpr(),
+            spill_scratch_sse: arch.spill_scratch_sse(),
         }
     }
 
@@ -623,6 +657,44 @@ impl RegisterAllocator {
         // extend live intervals across call boundaries for caller-saved regs.
         let mut call_indices: Vec<u32> = Vec::new();
 
+        // ---- Implicit physical-register range tracking ----
+        // Physical registers that appear as implicit defs or implicit uses
+        // must be represented as *fixed* live intervals so the allocator
+        // does not assign those physical registers to virtual registers
+        // during the overlap window.
+        //
+        // For example, x86 `MUL` writes its result to EAX (lo) and EDX
+        // (hi) as implicit defs.  The codegen emits two subsequent MOVs
+        // to save those values into virtual registers, with the first MOV
+        // carrying `implicit_use(EDX)` to indicate EDX is still live.
+        // Without a fixed interval for EDX spanning from the MUL through
+        // the saving MOV, the allocator could assign the virtual register
+        // destination of the first MOV to EDX, clobbering the high word.
+        //
+        // We track, per physical register, a list of disjoint half-open
+        // ranges [start, end).  When a new implicit def/use appears at
+        // instruction `idx`, we either extend the most recent range (if
+        // the new position is adjacent or overlapping) or start a fresh
+        // range.
+        let mut phys_reg_ranges: FxHashMap<u16, Vec<(u32, u32)>> = fx_hash_map();
+
+        // Boundary of integer vs. float registers for class determination.
+        let int_reg_boundary = self
+            .int_regs
+            .available
+            .iter()
+            .chain(self.float_regs.available.iter())
+            .map(|r| r.0)
+            .max()
+            .unwrap_or(0);
+        // Registers with id < float_start are integer; others are float.
+        let _float_start: u16 = self
+            .float_regs
+            .available
+            .first()
+            .map(|r| r.0)
+            .unwrap_or(int_reg_boundary + 1);
+
         // Linearise all blocks into a single instruction index space.
         // Index 0 is the first instruction of block 0, etc.
         let mut instr_idx: u32 = 0;
@@ -642,29 +714,52 @@ impl RegisterAllocator {
 
                 // ---- Scan explicit operands ----
                 for operand in &instr.operands {
-                    if let MachineOperand::VirtualReg(vid) = operand {
-                        let key = vid.0;
-                        first_seen.entry(key).or_insert(instr_idx);
-                        last_seen.insert(key, instr_idx);
+                    match operand {
+                        MachineOperand::VirtualReg(vid) => {
+                            let key = vid.0;
+                            first_seen.entry(key).or_insert(instr_idx);
+                            last_seen.insert(key, instr_idx);
 
-                        // Determine register class from IR type if not cached
-                        value_classes
-                            .entry(key)
-                            .or_insert_with(|| Self::classify_value(*vid, ir_func));
+                            // Determine register class from IR type if not
+                            // cached.  Also check float_vregs set for
+                            // temporary VRegs created by the instruction
+                            // selector (e.g., for materialising float
+                            // immediates into XMM registers).
+                            value_classes.entry(key).or_insert_with(|| {
+                                if mf.float_vregs.contains(&key) {
+                                    RegisterClass::FloatingPoint
+                                } else {
+                                    Self::classify_value(*vid, ir_func)
+                                }
+                            });
+                        }
+                        MachineOperand::Register(phys) => {
+                            // Explicit physical register operands (e.g.,
+                            // `MOV Register(EAX), VirtualReg(v1)`) must
+                            // also create fixed intervals so the allocator
+                            // knows the register is in use and does not
+                            // assign another vreg to it.
+                            Self::extend_phys_range(&mut phys_reg_ranges, phys.0, instr_idx);
+                        }
+                        _ => {}
                     }
                 }
 
                 // ---- Scan implicit defs ----
-                // Implicit defs on physical registers create interference at
-                // call sites (call clobber). We record the physical registers
-                // for future interference graph refinement.
+                // Implicit defs create a live range for the physical register
+                // starting at this instruction.  We record the range so a
+                // fixed interval is later created, preventing the allocator
+                // from assigning another vreg to that physical register.
                 for &reg in &instr.implicit_defs {
-                    let _ = reg;
+                    Self::extend_phys_range(&mut phys_reg_ranges, reg.0, instr_idx);
                 }
 
                 // ---- Scan implicit uses ----
+                // Implicit uses extend the live range of the physical register
+                // through this instruction, ensuring the register remains
+                // reserved and is not reassigned to a virtual register.
                 for &reg in &instr.implicit_uses {
-                    let _ = reg;
+                    Self::extend_phys_range(&mut phys_reg_ranges, reg.0, instr_idx);
                 }
 
                 instr_idx += 1;
@@ -678,6 +773,82 @@ impl RegisterAllocator {
         // available for future call-aware heuristic improvements.
         let _function_has_calls = mf.has_calls;
 
+        // ---- Back-edge aware live-interval extension ----
+        // The linear scan above computes first_seen/last_seen purely from
+        // the linear instruction index.  This is correct for straight-line
+        // code, but loops introduce back-edges: a block at the end of a
+        // loop body branches back to the loop header.  Any virtual register
+        // that is live at the header must also survive through the entire
+        // loop body, otherwise the register allocator may reuse its physical
+        // register inside the body, corrupting the value for the next
+        // iteration.
+        //
+        // We detect back-edges (branch to an earlier block in the linear
+        // layout) and extend last_seen for any virtual register whose
+        // interval straddles the target block.
+        {
+            // Build a map: block_linear_index → (first_instr_idx, last_instr_idx)
+            let mut block_bounds: Vec<(u32, u32)> = Vec::new();
+            let mut idx: u32 = 0;
+            for block in &mf.blocks {
+                let start = idx;
+                let count = block.instructions.len() as u32;
+                let end = if count > 0 { idx + count - 1 } else { idx };
+                block_bounds.push((start, end));
+                idx += count;
+            }
+
+            // Detect back-edges: scan each block's terminator for Label
+            // operands that refer to earlier blocks.
+            let mut changed = true;
+            // Iterate to a fixed point so that nested loops are handled.
+            while changed {
+                changed = false;
+                for (block_idx, block) in mf.blocks.iter().enumerate() {
+                    // Collect branch target block indices from the terminator.
+                    for instr in block.instructions.iter().rev() {
+                        if !instr.is_terminator {
+                            break;
+                        }
+                        for op in &instr.operands {
+                            if let MachineOperand::Label(target_block) = op {
+                                let target = *target_block as usize;
+                                if target < block_idx {
+                                    // Back-edge: block_idx → target.
+                                    // Any virtual register live at the
+                                    // start of `target` must survive to
+                                    // the end of `block_idx`.
+                                    let (_target_start, _target_end) = block_bounds[target];
+                                    let (_src_start, src_end) = block_bounds[block_idx];
+                                    for (&vid_key, fs) in &first_seen {
+                                        let ls = match last_seen.get(&vid_key) {
+                                            Some(v) => *v,
+                                            None => continue,
+                                        };
+                                        // The variable is live at the
+                                        // start of the target block if
+                                        // its interval overlaps
+                                        // [target_start, target_start].
+                                        // More precisely: it was defined
+                                        // before or at the target block
+                                        // start AND its current last_seen
+                                        // is at or after the target start.
+                                        if *fs <= _target_start
+                                            && ls >= _target_start
+                                            && ls < src_end
+                                        {
+                                            last_seen.insert(vid_key, src_end);
+                                            changed = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- Build LiveInterval for each virtual register ----
         for (&vid_key, &start) in &first_seen {
             let end_inclusive = *last_seen.get(&vid_key).unwrap_or(&start);
@@ -688,6 +859,11 @@ impl RegisterAllocator {
                 .get(&vid_key)
                 .unwrap_or(&RegisterClass::GeneralPurpose);
 
+            // Determine whether this interval crosses any call instruction.
+            // If it does, it MUST be assigned to a callee-saved register (or
+            // spilled) because caller-saved registers are clobbered by calls.
+            let crosses = call_indices.iter().any(|&ci| ci >= start && ci < end);
+
             let interval = LiveInterval {
                 value_id: ValueId(vid_key),
                 start,
@@ -696,10 +872,58 @@ impl RegisterAllocator {
                 spill_slot: None,
                 is_fixed: false,
                 reg_class: rc,
+                crosses_call: crosses,
             };
             let idx = self.intervals.len();
             self.intervals.push(interval);
             self.value_to_interval.insert(vid_key, idx);
+        }
+
+        // ---- Create fixed intervals for implicit physical-register ranges ----
+        // Each disjoint range tracked during the instruction scan becomes a
+        // fixed live interval.  The allocator's linear-scan sweep treats
+        // fixed intervals identically to pre-coloured parameter intervals:
+        // the register is removed from the free pool when the interval is
+        // active, preventing any virtual register from being assigned to it.
+        //
+        // We use synthetic `ValueId`s starting far above any real IR value
+        // to avoid collisions.  These synthetic IDs are NOT inserted into
+        // `value_to_interval` because they have no corresponding IR value —
+        // they exist solely to reserve the physical register.
+        {
+            let mut synthetic_id: u32 = 0x8000_0000; // well above any real ValueId
+            for (&phys_reg_id, ranges) in &phys_reg_ranges {
+                let phys_reg = PhysReg(phys_reg_id);
+
+                // Skip registers that are not in any allocatable pool —
+                // reserving them would be harmless but unnecessary.
+                let in_int_pool = self.int_regs.available.contains(&phys_reg);
+                let in_float_pool = self.float_regs.available.contains(&phys_reg);
+                if !in_int_pool && !in_float_pool {
+                    continue;
+                }
+
+                let rc = if in_float_pool {
+                    RegisterClass::FloatingPoint
+                } else {
+                    RegisterClass::GeneralPurpose
+                };
+
+                for &(start, end) in ranges {
+                    let interval = LiveInterval {
+                        value_id: ValueId(synthetic_id),
+                        start,
+                        end,
+                        register: Some(phys_reg),
+                        spill_slot: None,
+                        is_fixed: true,
+                        reg_class: rc,
+                        crosses_call: false,
+                    };
+                    self.intervals.push(interval);
+                    synthetic_id += 1;
+                }
+            }
         }
 
         // ---- Pre-colour function parameters ----
@@ -711,8 +935,14 @@ impl RegisterAllocator {
         // Rebuild the value_to_interval map after sorting (indices changed)
         self.value_to_interval.clear();
         for (idx, interval) in self.intervals.iter().enumerate() {
-            self.value_to_interval.insert(interval.value_id.0, idx);
+            // Only map real (non-synthetic) value IDs.
+            if interval.value_id.0 < 0x8000_0000 {
+                self.value_to_interval.insert(interval.value_id.0, idx);
+            }
         }
+
+        // DEBUG: dump live intervals when BCC_DUMP_INTERVALS is set
+        // (debug output suppressed for performance)
     }
 
     // -----------------------------------------------------------------------
@@ -748,6 +978,13 @@ impl RegisterAllocator {
         let mut free_float: Vec<PhysReg> =
             self.float_regs.available.iter().copied().rev().collect();
 
+        // Snapshot of the original allocatable sets.  `return_reg` uses
+        // these to ensure that reserved registers (SP, FP, scratch GPR,
+        // link register) are NEVER returned to the free pool — even if a
+        // pre-coloured / fixed interval for such a register expires.
+        let allocatable_int: Vec<PhysReg> = self.int_regs.available.clone();
+        let allocatable_float: Vec<PhysReg> = self.float_regs.available.clone();
+
         // We need to iterate by index because we mutate intervals in place.
         let n = self.intervals.len();
         for i in 0..n {
@@ -758,24 +995,55 @@ impl RegisterAllocator {
 
             // --- Step 1: Expire old intervals ---
             // Remove active intervals that have ended before (or at) cur_start.
+            //
+            // CRITICAL: When freeing a register from an expired interval, we
+            // must verify that no OTHER active interval still holds the same
+            // physical register.  This situation arises when a short-lived
+            // fixed interval (e.g., from an explicit `Register(ESI)` operand
+            // in a parameter MOV) overlaps with a longer pre-coloured
+            // parameter interval for the same register.  If the short
+            // interval expires first, naïvely returning the register to the
+            // free pool would allow the allocator to assign it to a virtual
+            // register while the longer interval still considers it reserved.
+            //
+            // We collect the expired indices first, then selectively free
+            // only registers that are not still held by remaining active
+            // intervals.
+            let mut expired_indices: Vec<usize> = Vec::new();
             let mut j = 0;
             while j < active.len() {
                 let ai = active[j];
                 if self.intervals[ai].end <= cur_start {
-                    // Free the register
-                    if let Some(reg) = self.intervals[ai].register {
-                        Self::return_reg(
-                            reg,
-                            self.intervals[ai].reg_class,
-                            &mut free_int,
-                            &mut free_float,
-                        );
-                    }
-                    active.swap_remove(j);
-                    // Don't increment j — swap_remove puts a new element at j
+                    expired_indices.push(j);
+                    j += 1;
                 } else {
                     j += 1;
                 }
+            }
+            // Remove expired entries in reverse order (so indices remain valid).
+            // Before returning a register, check that no surviving active
+            // interval still occupies it.
+            expired_indices.sort_unstable_by(|a, b| b.cmp(a)); // reverse order
+            for &ej in &expired_indices {
+                let ai = active[ej];
+                if let Some(reg) = self.intervals[ai].register {
+                    let reg_class = self.intervals[ai].reg_class;
+                    let still_held = active.iter().enumerate().any(|(pos, &other_ai)| {
+                        !expired_indices.contains(&pos)
+                            && self.intervals[other_ai].register == Some(reg)
+                    });
+                    if !still_held {
+                        Self::return_reg(
+                            reg,
+                            reg_class,
+                            &mut free_int,
+                            &mut free_float,
+                            &allocatable_int,
+                            &allocatable_float,
+                        );
+                    }
+                }
+                active.swap_remove(ej);
             }
 
             // --- Step 2: Handle pre-coloured (fixed) intervals ---
@@ -783,6 +1051,107 @@ impl RegisterAllocator {
                 if let Some(reg) = self.intervals[i].register {
                     // Remove this register from the free pool if present
                     Self::remove_from_free(reg, cur_class, &mut free_int, &mut free_float);
+
+                    // CRITICAL: Evict any active virtual register that currently
+                    // holds this physical register.  Without this, a vreg that
+                    // was assigned EAX before a MUL instruction (which implicitly
+                    // uses EAX) would silently conflict.
+                    let mut evicted_pos: Option<usize> = None;
+                    for (pos, &aidx) in active.iter().enumerate() {
+                        if self.intervals[aidx].is_fixed {
+                            continue;
+                        }
+                        if self.intervals[aidx].register == Some(reg) {
+                            evicted_pos = Some(pos);
+                            break;
+                        }
+                    }
+                    if let Some(epos) = evicted_pos {
+                        let evicted_idx = active[epos];
+                        // When a fixed interval (e.g., EAX for IDIV) evicts a
+                        // virtual register, we CANNOT simply reassign the vreg
+                        // to another free register — that register may have
+                        // been freed by a recently-expired interval whose range
+                        // overlapped with the evicted vreg's earlier range.
+                        //
+                        // Example: V5=[4,8) on EAX, V6=[5,7) on EDX.  When the
+                        // EAX-fixed interval at 7 evicts V5, V6 has just
+                        // expired and EDX is back in the free pool.  Naïvely
+                        // reassigning V5 to EDX would mean V5 "uses" EDX for
+                        // its entire range [4,8) — overlapping with V6 at [5,7).
+                        //
+                        // To guarantee correctness, we must verify the candidate
+                        // register was not occupied by ANY interval during the
+                        // evicted vreg's entire range [evicted.start, now).
+                        // We check ALL intervals (not just active) for overlap.
+                        let evicted_class = self.intervals[evicted_idx].reg_class;
+                        let evicted_crosses_call = self.intervals[evicted_idx].crosses_call;
+                        let evicted_start = self.intervals[evicted_idx].start;
+                        let epool = match evicted_class {
+                            RegisterClass::FloatingPoint => &mut free_float,
+                            _ => &mut free_int,
+                        };
+
+                        let callee_saved_ref2 = match evicted_class {
+                            RegisterClass::FloatingPoint => &self.float_regs.callee_saved,
+                            _ => &self.int_regs.callee_saved,
+                        };
+                        let cs2: FxHashSet<PhysReg> = callee_saved_ref2.iter().copied().collect();
+
+                        // Helper: check if a candidate register was used by any
+                        // other interval during [evicted_start, cur_start).
+                        // An interval `j` conflicts if it has a register assigned
+                        // equal to `candidate` and its range overlaps
+                        // [evicted_start, cur_start).
+                        let is_safe = |candidate: PhysReg| -> bool {
+                            for j in 0..n {
+                                if j == evicted_idx || j == i {
+                                    continue;
+                                }
+                                if let Some(r) = self.intervals[j].register {
+                                    if r == candidate {
+                                        let j_start = self.intervals[j].start;
+                                        let j_end = self.intervals[j].end;
+                                        // Check overlap with [evicted_start, cur_start)
+                                        if j_start < cur_start && j_end > evicted_start {
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                            true
+                        };
+
+                        let mut new_reg = None;
+                        if evicted_crosses_call {
+                            // Need a callee-saved register
+                            for idx2 in (0..epool.len()).rev() {
+                                if cs2.contains(&epool[idx2]) && is_safe(epool[idx2]) {
+                                    new_reg = Some(epool.swap_remove(idx2));
+                                    break;
+                                }
+                            }
+                        } else {
+                            // Try each candidate in the pool for safety
+                            for idx2 in (0..epool.len()).rev() {
+                                if is_safe(epool[idx2]) {
+                                    new_reg = Some(epool.swap_remove(idx2));
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(nr) = new_reg {
+                            self.intervals[evicted_idx].register = Some(nr);
+                            self.track_callee_saved_usage(nr);
+                            // evicted vreg stays in active with new register
+                        } else {
+                            // No safe register — spill the evicted vreg
+                            self.spill_interval(evicted_idx);
+                            active.swap_remove(epos);
+                        }
+                    }
+
                     self.track_callee_saved_usage(reg);
                     active.push(i);
                 }
@@ -793,6 +1162,7 @@ impl RegisterAllocator {
             // Vector, StackPointer, and FramePointer register classes are treated
             // as general-purpose for allocation purposes — the architecture backend
             // constrains actual availability through the register sets it provides.
+            let cur_crosses_call = self.intervals[i].crosses_call;
             let free_pool = match cur_class {
                 RegisterClass::GeneralPurpose
                 | RegisterClass::Vector
@@ -801,42 +1171,128 @@ impl RegisterAllocator {
                 RegisterClass::FloatingPoint => &mut free_float,
             };
 
-            if let Some(reg) = free_pool.pop() {
+            // Determine the appropriate callee-saved set for the register class.
+            let callee_saved_ref = match cur_class {
+                RegisterClass::FloatingPoint => &self.float_regs.callee_saved,
+                _ => &self.int_regs.callee_saved,
+            };
+            let callee_saved_snapshot: FxHashSet<PhysReg> =
+                callee_saved_ref.iter().copied().collect();
+
+            // For intervals that cross a call, we MUST use a callee-saved
+            // register.  Caller-saved registers will be clobbered by the
+            // callee and the value would be silently corrupted.
+            let assigned = if cur_crosses_call {
+                // Search the free pool for a callee-saved register.
+                let mut found = None;
+                for idx in (0..free_pool.len()).rev() {
+                    if callee_saved_snapshot.contains(&free_pool[idx]) {
+                        found = Some(free_pool.swap_remove(idx));
+                        break;
+                    }
+                }
+                found
+            } else {
+                // Normal allocation — take any free register.
+                free_pool.pop()
+            };
+
+            if let Some(reg) = assigned {
                 self.intervals[i].register = Some(reg);
                 self.track_callee_saved_usage(reg);
                 active.push(i);
             } else {
                 // --- Step 4: Spill ---
-                // Find the active interval with the furthest end in the same
-                // register class.
-                let spill_candidate = self.find_spill_candidate(&active, cur_class, cur_end);
-
-                match spill_candidate {
-                    Some(active_pos) => {
-                        let victim_idx = active[active_pos];
-                        let victim_end = self.intervals[victim_idx].end;
-
-                        if victim_end > cur_end {
-                            // The active interval extends further — spill it
-                            // and give its register to the current interval.
-                            let stolen_reg = self.intervals[victim_idx].register.take().unwrap();
-                            self.spill_interval(victim_idx);
-                            self.intervals[i].register = Some(stolen_reg);
-                            self.track_callee_saved_usage(stolen_reg);
-                            active.swap_remove(active_pos);
-                            active.push(i);
-                        } else {
-                            // Current interval is the longest — spill it
-                            self.spill_interval(i);
+                // If the interval crosses a call and no callee-saved register
+                // is free, try to evict an active interval that does NOT cross
+                // a call but is sitting in a callee-saved register — steal it.
+                let mut stolen = false;
+                if cur_crosses_call {
+                    // Look for an active interval in a caller-saved-friendly
+                    // position (doesn't cross a call) that currently holds a
+                    // callee-saved register.  We can evict it to a
+                    // caller-saved register or spill it.
+                    let mut best_victim: Option<(usize, u32)> = None;
+                    for (pos, &aidx) in active.iter().enumerate() {
+                        let ai = &self.intervals[aidx];
+                        if ai.is_fixed || ai.reg_class != cur_class {
+                            continue;
+                        }
+                        if let Some(areg) = ai.register {
+                            if callee_saved_snapshot.contains(&areg) && !ai.crosses_call {
+                                let dominated = match best_victim {
+                                    None => true,
+                                    Some((_, be)) => ai.end > be,
+                                };
+                                if dominated {
+                                    best_victim = Some((pos, ai.end));
+                                }
+                            }
                         }
                     }
-                    None => {
-                        // No active interval in the same class — spill current
-                        self.spill_interval(i);
+                    if let Some((victim_pos, _)) = best_victim {
+                        let victim_idx = active[victim_pos];
+                        let callee_reg = self.intervals[victim_idx].register.take().unwrap();
+                        // Try to reassign the victim to a free caller-saved
+                        // register.
+                        let mut reassigned = false;
+                        for idx2 in (0..free_pool.len()).rev() {
+                            if !callee_saved_snapshot.contains(&free_pool[idx2]) {
+                                let caller_reg = free_pool.swap_remove(idx2);
+                                self.intervals[victim_idx].register = Some(caller_reg);
+                                self.track_callee_saved_usage(caller_reg);
+                                reassigned = true;
+                                break;
+                            }
+                        }
+                        if !reassigned {
+                            // No caller-saved register free — spill the victim
+                            self.spill_interval(victim_idx);
+                            active.swap_remove(victim_pos);
+                        }
+                        // Assign the freed callee-saved register to us
+                        self.intervals[i].register = Some(callee_reg);
+                        self.track_callee_saved_usage(callee_reg);
+                        active.push(i);
+                        stolen = true;
+                    }
+                }
+
+                if !stolen {
+                    // Standard spill logic: find the active interval with the
+                    // furthest end in the same register class.
+                    let spill_candidate = self.find_spill_candidate(&active, cur_class, cur_end);
+
+                    match spill_candidate {
+                        Some(active_pos) => {
+                            let victim_idx = active[active_pos];
+                            let victim_end = self.intervals[victim_idx].end;
+
+                            if victim_end > cur_end {
+                                // The active interval extends further — spill it
+                                // and give its register to the current interval.
+                                let stolen_reg =
+                                    self.intervals[victim_idx].register.take().unwrap();
+                                self.spill_interval(victim_idx);
+                                self.intervals[i].register = Some(stolen_reg);
+                                self.track_callee_saved_usage(stolen_reg);
+                                active.swap_remove(active_pos);
+                                active.push(i);
+                            } else {
+                                // Current interval is the longest — spill it
+                                self.spill_interval(i);
+                            }
+                        }
+                        None => {
+                            // No active interval in the same class — spill current
+                            self.spill_interval(i);
+                        }
                     }
                 }
             }
         }
+
+        // DEBUG: dump allocation results (suppressed for performance)
     }
 
     // -----------------------------------------------------------------------
@@ -847,28 +1303,86 @@ impl RegisterAllocator {
     ///
     /// 1. **Replace** every `MachineOperand::VirtualReg(vid)` with either
     ///    `MachineOperand::Register(phys)` (if assigned) or
-    ///    `MachineOperand::FrameIndex(slot)` (if spilled).
-    /// 2. **Insert** spill-store pseudo-instructions after definitions of
-    ///    spilled values.
-    /// 3. **Insert** spill-load pseudo-instructions before uses of spilled
-    ///    values.
+    ///    `MachineOperand::Register(scratch)` (if spilled, using the
+    ///    reserved scratch register for the register class).
+    /// 2. **Insert** spill-store instructions after definitions of spilled
+    ///    values (scratch → stack slot).
+    /// 3. **Insert** spill-load instructions before uses of spilled values
+    ///    (stack slot → scratch).
     /// 4. **Update** `MachineFunction.frame_size` and
     ///    `MachineFunction.used_callee_saved` with allocation results.
     ///
+    /// # Spill Slot Layout
+    ///
+    /// Spill slots are placed in memory **after** the alloca area to avoid
+    /// overlapping with local variables. The byte offset from RBP for spill
+    /// slot `s` is:
+    ///
+    /// ```text
+    /// offset(s) = alloca_frame_size + (s + 1) * spill_slot_bytes
+    /// ```
+    ///
+    /// # Scratch Register Strategy
+    ///
+    /// Spilled values are accessed through **reserved scratch registers**
+    /// (one GPR, one SSE) that are never allocated to user values. This
+    /// avoids illegal memory-to-memory operands in the encoded
+    /// instructions. The scratch registers are architecture-provided via
+    /// [`ArchCodegen::spill_scratch_gpr`] and
+    /// [`ArchCodegen::spill_scratch_sse`].
+    ///
     /// This method must be called after [`allocate`](Self::allocate) has run.
     pub fn generate_spill_code(&mut self, mf: &mut MachineFunction) {
-        // Build ValueId → allocation result map for quick lookup.
-        let mut assignment: FxHashMap<u32, AllocationResult> = fx_hash_map();
+        // Capture the alloca frame size before adding spill space.
+        // Spill slots are placed AFTER this region.
+        let alloca_base = mf.frame_size as usize;
+        let slot_bytes = self.spill_slot_bytes as usize;
+
+        // Build ValueId → (AllocationResult, RegisterClass) map.
+        let mut assignment: FxHashMap<u32, (AllocationResult, RegisterClass)> = fx_hash_map();
+
+        // Debug: regalloc dump (suppressed for performance)
         for interval in &self.intervals {
             if let Some(reg) = interval.register {
-                assignment.insert(interval.value_id.0, AllocationResult::Register(reg));
+                assignment.insert(
+                    interval.value_id.0,
+                    (AllocationResult::Register(reg), interval.reg_class),
+                );
             } else if let Some(slot) = interval.spill_slot {
-                assignment.insert(interval.value_id.0, AllocationResult::Spilled(slot));
+                assignment.insert(
+                    interval.value_id.0,
+                    (AllocationResult::Spilled(slot), interval.reg_class),
+                );
             }
         }
 
-        // Pass 1: Rewrite operands + collect spill edit insertion points.
-        let mut edits: Vec<(usize, usize, SpillEditKind, u32, PhysReg)> = Vec::new();
+        // DEBUG: regalloc assignment debug output (suppressed for performance)
+
+        // Scratch registers for spill code (reserved, never allocated).
+        let scratch_gpr = self.spill_scratch_gpr;
+        let scratch_sse = self.spill_scratch_sse;
+
+        // Convert a spill slot index to a byte offset from RBP.
+        // Spill slots are placed after the alloca area so they never
+        // overlap with local variables or the saved RBP.
+        let slot_to_offset =
+            |slot: u32| -> u32 { (alloca_base + (slot as usize + 1) * slot_bytes) as u32 };
+
+        // ---------------------------------------------------------------
+        // Pass 1: Rewrite operands and collect spill edit points.
+        //
+        // Spilled VirtualRegs are replaced with the appropriate scratch
+        // register (not FrameIndex). The actual memory access is deferred
+        // to the SPILL_LOAD / SPILL_STORE pseudo-ops inserted in Pass 2.
+        // ---------------------------------------------------------------
+        struct EditEntry {
+            block_idx: usize,
+            instr_idx: usize,
+            kind: SpillEditKind,
+            slot: u32,
+            rc: RegisterClass,
+        }
+        let mut edits: Vec<EditEntry> = Vec::new();
 
         for (block_idx, block) in mf.blocks.iter_mut().enumerate() {
             for (instr_idx, instr) in block.instructions.iter_mut().enumerate() {
@@ -876,42 +1390,35 @@ impl RegisterAllocator {
                 for op in instr.operands.iter_mut() {
                     if let MachineOperand::VirtualReg(vid) = *op {
                         match assignment.get(&vid.0) {
-                            Some(AllocationResult::Register(reg)) => {
+                            Some((AllocationResult::Register(reg), _)) => {
                                 *op = MachineOperand::Register(*reg);
                             }
-                            Some(AllocationResult::Spilled(slot)) => {
-                                // For spilled values, we keep a FrameIndex as
-                                // a placeholder; the backend will lower it.
-                                *op = MachineOperand::FrameIndex(*slot);
-                                // Record a spill load/store edit.
-                                // The first operand of an instruction is
-                                // conventionally the definition; subsequent
-                                // operands are uses (architecture-dependent,
-                                // but the pseudo-ops handle both directions).
-                                if is_def_first {
-                                    edits.push((
-                                        block_idx,
-                                        instr_idx,
-                                        SpillEditKind::Store,
-                                        *slot,
-                                        PhysReg::NONE,
-                                    ));
+                            Some((AllocationResult::Spilled(slot), rc)) => {
+                                // Replace with scratch register — NOT
+                                // FrameIndex — to avoid illegal
+                                // memory-to-memory operand combinations.
+                                let scratch = match rc {
+                                    RegisterClass::FloatingPoint => scratch_sse,
+                                    _ => scratch_gpr,
+                                };
+                                *op = MachineOperand::Register(scratch);
+
+                                let kind = if is_def_first {
+                                    SpillEditKind::Store
                                 } else {
-                                    edits.push((
-                                        block_idx,
-                                        instr_idx,
-                                        SpillEditKind::Load,
-                                        *slot,
-                                        PhysReg::NONE,
-                                    ));
-                                }
+                                    SpillEditKind::Load
+                                };
+                                edits.push(EditEntry {
+                                    block_idx,
+                                    instr_idx,
+                                    kind,
+                                    slot: *slot,
+                                    rc: *rc,
+                                });
                             }
                             None => {
-                                // Value was not tracked — this can happen for
-                                // values that are immediately consumed (e.g.
-                                // zero-length live range). Leave as VirtualReg
-                                // and let the backend handle it or report an
-                                // internal error.
+                                // Value was not tracked (zero-length live
+                                // range). Leave as VirtualReg.
                             }
                         }
                     }
@@ -920,37 +1427,48 @@ impl RegisterAllocator {
             }
         }
 
-        // Pass 2: Insert spill pseudo-instructions.
-        // Process edits in reverse order so that insertion indices remain valid.
-        edits.sort_by(|a, b| {
-            a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)) // reverse instr order within block
-        });
-
-        // Group edits by block and apply in reverse instruction order.
-        let mut block_edits: FxHashMap<usize, Vec<(usize, SpillEditKind, u32, PhysReg)>> =
+        // ---------------------------------------------------------------
+        // Pass 2: Insert spill load/store pseudo-instructions.
+        //
+        // Each pseudo-op carries two operands:
+        //   [0] Register(scratch)    — the scratch register
+        //   [1] FrameIndex(offset)   — the stack slot byte offset
+        //
+        // The encoder lowers these to real MOV / MOVSD instructions.
+        // ---------------------------------------------------------------
+        let mut block_edits: FxHashMap<usize, Vec<(usize, SpillEditKind, u32, RegisterClass)>> =
             fx_hash_map();
-        for (bi, ii, kind, slot, reg) in edits {
+        for e in edits {
             block_edits
-                .entry(bi)
+                .entry(e.block_idx)
                 .or_default()
-                .push((ii, kind, slot, reg));
+                .push((e.instr_idx, e.kind, e.slot, e.rc));
         }
 
         for (block_idx, mut edit_list) in block_edits {
-            // Sort by instruction index descending so insertions don't
+            // Sort descending by instruction index so insertions do not
             // invalidate subsequent indices.
             edit_list.sort_by(|a, b| b.0.cmp(&a.0));
 
             if let Some(block) = mf.blocks.get_mut(block_idx) {
-                for (instr_idx, kind, slot, _reg) in edit_list {
+                for (instr_idx, kind, slot, rc) in edit_list {
+                    let byte_offset = slot_to_offset(slot);
+                    let scratch = match rc {
+                        RegisterClass::FloatingPoint => scratch_sse,
+                        _ => scratch_gpr,
+                    };
+
                     let spill_opcode = match kind {
                         SpillEditKind::Store => SPILL_STORE_OPCODE,
                         SpillEditKind::Load => SPILL_LOAD_OPCODE,
                     };
+
                     let mut pseudo = MachineInstr::new(spill_opcode);
-                    pseudo.operands.push(MachineOperand::FrameIndex(slot));
-                    // Stores go after the defining instruction; loads go before
-                    // the using instruction.
+                    pseudo.operands.push(MachineOperand::Register(scratch));
+                    pseudo
+                        .operands
+                        .push(MachineOperand::FrameIndex(byte_offset));
+
                     match kind {
                         SpillEditKind::Store => {
                             let insert_pos = (instr_idx + 1).min(block.instructions.len());
@@ -964,7 +1482,9 @@ impl RegisterAllocator {
             }
         }
 
+        // ---------------------------------------------------------------
         // Pass 3: Propagate metadata to the MachineFunction.
+        // ---------------------------------------------------------------
         mf.frame_size += self.frame_size;
         for &reg in &self.used_callee_saved {
             mf.used_callee_saved.push(reg);
@@ -1083,6 +1603,35 @@ impl RegisterAllocator {
 
     /// Return a physical register to the appropriate free pool.
     ///
+    /// Extend (or create) a physical-register live range at `instr_idx`.
+    ///
+    /// This is used during `compute_live_intervals` to collect the
+    /// instruction positions where a physical register is explicitly or
+    /// implicitly referenced.  Ranges that are adjacent (within 1
+    /// instruction gap) are merged into a single range so that the
+    /// resulting fixed interval covers the entire window during which the
+    /// register must be reserved.
+    fn extend_phys_range(
+        phys_reg_ranges: &mut FxHashMap<u16, Vec<(u32, u32)>>,
+        phys_reg_id: u16,
+        instr_idx: u32,
+    ) {
+        let ranges = phys_reg_ranges.entry(phys_reg_id).or_insert_with(Vec::new);
+        if let Some(last) = ranges.last_mut() {
+            // Extend if the new position is adjacent or overlapping
+            // (within 1 instruction gap).
+            if instr_idx <= last.1 + 1 {
+                if instr_idx + 1 > last.1 {
+                    last.1 = instr_idx + 1;
+                }
+            } else {
+                ranges.push((instr_idx, instr_idx + 1));
+            }
+        } else {
+            ranges.push((instr_idx, instr_idx + 1));
+        }
+    }
+
     /// Vector, StackPointer, and FramePointer register classes are routed to the
     /// integer pool since the architecture backends provide their availability
     /// constraints through the register sets they expose.
@@ -1091,18 +1640,24 @@ impl RegisterAllocator {
         class: RegisterClass,
         free_int: &mut Vec<PhysReg>,
         free_float: &mut Vec<PhysReg>,
+        allocatable_int: &[PhysReg],
+        allocatable_float: &[PhysReg],
     ) {
         match class {
             RegisterClass::GeneralPurpose
             | RegisterClass::Vector
             | RegisterClass::StackPointer
             | RegisterClass::FramePointer => {
-                if !free_int.contains(&reg) {
+                // CRITICAL: Only return a register to the free pool if it was
+                // originally in the allocatable set.  Reserved registers (SP,
+                // FP, scratch GPR, link register) must NEVER enter the pool,
+                // even if a fixed interval for them expires.
+                if allocatable_int.contains(&reg) && !free_int.contains(&reg) {
                     free_int.push(reg);
                 }
             }
             RegisterClass::FloatingPoint => {
-                if !free_float.contains(&reg) {
+                if allocatable_float.contains(&reg) && !free_float.contains(&reg) {
                     free_float.push(reg);
                 }
             }
@@ -1269,6 +1824,7 @@ mod tests {
             spill_slot: None,
             is_fixed: false,
             reg_class: RegisterClass::GeneralPurpose,
+            crosses_call: false,
         }
     }
 

@@ -141,13 +141,14 @@ pub fn lower_global_variable(
     decl: &CheckedDeclaration,
 ) -> Result<(), LoweringError> {
     // Destructure the Variable variant; other variants are programming errors.
-    let (symbol_id, ty, init, linkage, storage_class, attrs, span) = match decl {
+    let (symbol_id, ty, init, linkage, storage_class, is_const, attrs, span) = match decl {
         CheckedDeclaration::Variable {
             symbol_id,
             ty,
             init,
             linkage,
             storage_class,
+            is_const,
             attrs,
             span,
         } => (
@@ -156,6 +157,7 @@ pub fn lower_global_variable(
             init.as_ref(),
             *linkage,
             *storage_class,
+            *is_const,
             attrs,
             *span,
         ),
@@ -199,6 +201,9 @@ pub fn lower_global_variable(
 
     // Determine linkage from sema linkage + attributes.
     global.linkage = map_sema_linkage_to_ir(linkage, entry.attributes.is_weak, entry.is_tentative);
+
+    // Set const qualifier — places the variable in .rodata instead of .data.
+    global.is_const = is_const;
 
     // Propagate custom section from __attribute__((section("..."))).
     global.section = get_section_attr(attrs);
@@ -314,6 +319,11 @@ pub fn lower_function_definition(
 
     // --- 2. Create the IrFunction ---
     let mut ir_func = IrFunction::new(func_name.clone(), ir_return_ty.clone(), ir_params);
+
+    // Propagate the variadic flag from the AST function declaration.
+    // This is essential for the backend to generate the register save area
+    // required by the x86-64 System V ABI for variadic functions.
+    ir_func.is_variadic = variadic;
 
     // Apply function attributes from validated GCC attributes.
     let func_attrs = build_function_attributes(attrs);
@@ -447,6 +457,7 @@ pub fn lower_local_declaration(
             init,
             linkage,
             storage_class,
+            is_const: _,
             attrs,
             span,
         } => {
@@ -477,7 +488,9 @@ pub fn lower_local_declaration(
 
             // --- Automatic local variable ---
             let target = &ctx.module_ctx.target;
+            // eprintln!("[DEBUG DECL_LOWER] local var symbol_id={} c_type={:?}", symbol_id.as_u32(), ty);
             let ir_type = c_type_to_ir_type(ty, target)?;
+            // eprintln!("[DEBUG DECL_LOWER] local var symbol_id={} ir_type={:?}", symbol_id.as_u32(), ir_type);
 
             // Construct a unique local name from the symbol ID.
             // The original Symbol handle was registered by the sema pass;
@@ -492,6 +505,16 @@ pub fn lower_local_declaration(
 
             // Lower the initializer if present.
             if let Some(checked_init) = init {
+                eprintln!(
+                    "[LOCAL_VAR_INIT] sym={} ir_type={:?} init_kind={}",
+                    symbol_id.as_u32(),
+                    ir_type,
+                    match checked_init {
+                        CheckedInitializer::Scalar(_) => "Scalar",
+                        CheckedInitializer::Aggregate { .. } => "Aggregate",
+                        CheckedInitializer::ZeroInit => "ZeroInit",
+                    }
+                );
                 lower_local_initializer(ctx, alloca, checked_init, &ir_type, ty)?;
             }
 
@@ -979,10 +1002,30 @@ fn lower_local_initializer(
     ir_type: &IrType,
     _c_type: &CType,
 ) -> Result<(), LoweringError> {
+    // eprintln!("[LOCAL_INIT] alloca={:?} ir_type={:?} init_variant={}", alloca.0, ir_type, match init {
+    // CheckedInitializer::Scalar(_) => "Scalar",
+    // CheckedInitializer::Aggregate { .. } => "Aggregate",
+    // CheckedInitializer::ZeroInit => "ZeroInit",
+    // });
     match init {
         CheckedInitializer::Scalar(typed_expr) => {
             // Lower the runtime expression and store into the alloca.
             let val = expr_lowering::lower_expression(ctx, &typed_expr.expr)?;
+
+            // CRITICAL: Coerce the value to match the target element type
+            // before storing.  Integer literals (e.g. 0x80 in
+            // `unsigned char s[] = {0x80}`) are lowered as I32 by the
+            // expression lowering, but the alloca element may be I8/I16.
+            // Without this truncation, the backend emits a 32-bit
+            // (DWORD) store that overwrites adjacent bytes in the stack
+            // frame — corrupting neighbouring variables.
+            let val_ty = ctx.function.get_value_type(val).clone();
+            eprintln!(
+                "[INIT_COERCE] val_ty={:?} target ir_type={:?}",
+                val_ty, ir_type
+            );
+            let val = expr_lowering::coerce_value(ctx, val, &val_ty, ir_type);
+
             ctx.builder.build_store(ctx.function, val, alloca);
             Ok(())
         }
@@ -1006,16 +1049,24 @@ fn lower_local_initializer(
             for (idx, field_init) in fields.iter().enumerate() {
                 let field_ir_type = c_type_to_ir_type(&field_init.ty, &ctx.module_ctx.target)?;
 
-                // Compute the GEP index for this field.
-                // For structs, the index is the field position.
-                // For arrays, the index is the element index.
+                // Compute the GEP to the field/element address.
+                //
+                // LLVM-style GEP semantics for aggregate access through
+                // a pointer require TWO indices:
+                //   [0]          — dereference the pointer (array-level)
+                //   [field_idx]  — select the struct field or array element
+                //
+                // With only ONE index, the GEP multiplies by sizeof(aggregate),
+                // treating it as an "array of aggregates" stride — which is
+                // wrong for struct field access.
+                let zero = ctx.builder.build_const_int(ctx.function, IrType::I32, 0);
                 let index_val = ctx
                     .builder
                     .build_const_int(ctx.function, IrType::I32, idx as i64);
                 let field_ptr = ctx.builder.build_gep(
                     ctx.function,
                     alloca,
-                    vec![index_val],
+                    vec![zero, index_val],
                     ir_type.clone(),
                     true, // in_bounds
                 );

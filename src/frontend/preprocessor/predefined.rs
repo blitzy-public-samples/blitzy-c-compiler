@@ -315,6 +315,12 @@ pub fn register_predefined_macros(pp: &mut Preprocessor, target: &Target) {
 
     // Phase 7 — Compiler version identification strings.
     register_compiler_version_macros(pp);
+
+    // Phase 8 — GCC built-in type compatibility macros.
+    //   `__float128` is used in system headers (stddef.h max_align_t) on i386.
+    //   Map it to `long double` for compatibility since we don't have a native
+    //   128-bit float type.
+    register_gcc_type_compat_macros(pp);
 }
 
 /// Registers command-line `-D` macro definitions into the preprocessor.
@@ -602,6 +608,17 @@ fn register_compiler_version_macros(pp: &mut Preprocessor) {
     // __VERSION__ — GCC-compatible composite version string.
     let version_display = format!("BCC {}", BCC_VERSION);
     define_str(pp, "__VERSION__", version_display.as_bytes());
+}
+
+/// Registers GCC built-in type compatibility macros.
+///
+/// `__float128` is a GCC built-in type used in system headers (e.g., in
+/// `stddef.h`'s `max_align_t` definition when `__i386__` is defined).
+/// Since we do not implement a native 128-bit floating-point type, we
+/// map `__float128` to `long double` for source-level compatibility.
+fn register_gcc_type_compat_macros(pp: &mut Preprocessor) {
+    // Map __float128 → long double (closest approximation we support).
+    define_from_str_pair(pp, "__float128", "long double");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -921,6 +921,15 @@ impl RiscV64Linker {
         };
 
         let mut dynamic_builder = DynamicSectionBuilder::new();
+        // RISC-V glibc convention (elf_machine_runtime_setup):
+        //   gotplt[0] = _dl_runtime_resolve;  // resolver
+        //   gotplt[1] = l;                     // link_map
+        // where gotplt = (ElfW(Addr)*)DT_PLTGOT.
+        // No pltgot_adjust needed — DT_PLTGOT points directly at GOT[0].
+        //
+        // GCC defaults to BIND_NOW on RISC-V; we follow suit so that all
+        // PLT entries are resolved eagerly at load time.
+        dynamic_builder.set_bind_now(true);
         for lib in &self.config.libraries {
             dynamic_builder.add_needed(lib);
         }

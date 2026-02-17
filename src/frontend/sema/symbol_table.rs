@@ -382,6 +382,9 @@ pub struct SymbolEntry {
     pub span: Span,
     /// GCC attribute annotations.
     pub attributes: SymbolAttributes,
+    /// Compile-time constant value for enum constants.
+    /// Set when the symbol represents an enumerator with a known integer value.
+    pub const_value: Option<i128>,
 }
 
 impl SymbolEntry {
@@ -404,6 +407,7 @@ impl SymbolEntry {
             is_tentative: false,
             span,
             attributes: SymbolAttributes::default(),
+            const_value: None,
         }
     }
 
@@ -428,6 +432,7 @@ impl SymbolEntry {
             is_tentative: true,
             span,
             attributes: SymbolAttributes::default(),
+            const_value: None,
         }
     }
 
@@ -487,6 +492,7 @@ impl SymbolEntry {
             is_tentative: false,
             span: Span::DUMMY,
             attributes: SymbolAttributes::default(),
+            const_value: None,
         }
     }
 }

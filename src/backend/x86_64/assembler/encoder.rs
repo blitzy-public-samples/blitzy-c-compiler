@@ -22,6 +22,7 @@
 //!
 //! Zero external dependencies — all encoding is implemented internally.
 
+use crate::backend::register_allocator::{SPILL_LOAD_OPCODE, SPILL_STORE_OPCODE};
 use crate::backend::traits::{MachineFunction, MachineInstr, MachineOperand, PhysReg};
 use crate::backend::x86_64::assembler::relocations::X86_64RelocationType;
 use crate::backend::x86_64::opcodes;
@@ -983,16 +984,112 @@ fn encode_lea_symbol(ctx: &mut EncodingContext, dst: PhysReg, symbol: &str) {
     ctx.emit_byte(encode_modrm(0b00, registers::gpr_encoding(dst), 0b101));
     // 32-bit displacement (placeholder, patched by relocation)
     emit_disp32(ctx, 0);
-    ctx.record_relocation(
-        symbol.to_string(),
-        X86_64RelocationType::R_X86_64_PC32,
-        -4,
-    );
+    ctx.record_relocation(symbol.to_string(), X86_64RelocationType::R_X86_64_PC32, -4);
+}
+
+/// MOV reg, [rip + symbol] — RIP-relative load from a global variable.
+///
+/// Encodes the x86-64 instruction that reads a value from a global
+/// symbol's address using RIP-relative addressing.  The displacement is
+/// filled in by the linker via an R_X86_64_PC32 relocation.
+///
+/// Encoding:  [optional 66h prefix] [REX] 8B /r ModRM(00, reg, 101) disp32
+fn encode_mov_rm_symbol(ctx: &mut EncodingContext, dst: PhysReg, symbol: &str, size: OperandSize) {
+    // 16-bit operand-size override prefix
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
+    // REX prefix: W=1 for 64-bit, R for dst reg extension, B=0 (RIP uses rm=101)
+    let w = size == OperandSize::QWord;
+    let rex_r = registers::needs_rex(dst);
+    if w || rex_r || size == OperandSize::Byte {
+        ctx.emit_byte(encode_rex(w, rex_r, false, false));
+    }
+    // MOV r, r/m opcode
+    if size == OperandSize::Byte {
+        ctx.emit_byte(0x8A); // MOV r8, r/m8
+    } else {
+        ctx.emit_byte(0x8B); // MOV r16/32/64, r/m16/32/64
+    }
+    // ModRM: mod=00, reg=dst, r/m=101 (RIP-relative)
+    ctx.emit_byte(encode_modrm(0b00, registers::gpr_encoding(dst), 0b101));
+    // 32-bit displacement placeholder (patched by relocation)
+    emit_disp32(ctx, 0);
+    ctx.record_relocation(symbol.to_string(), X86_64RelocationType::R_X86_64_PC32, -4);
+}
+
+/// MOV [rip + symbol], reg — RIP-relative store to a global variable.
+///
+/// Encoding:  [optional 66h prefix] [REX] 89 /r ModRM(00, reg, 101) disp32
+fn encode_mov_mr_symbol(ctx: &mut EncodingContext, symbol: &str, src: PhysReg, size: OperandSize) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
+    let w = size == OperandSize::QWord;
+    let rex_r = registers::needs_rex(src);
+    if w || rex_r || size == OperandSize::Byte {
+        ctx.emit_byte(encode_rex(w, rex_r, false, false));
+    }
+    if size == OperandSize::Byte {
+        ctx.emit_byte(0x88); // MOV r/m8, r8
+    } else {
+        ctx.emit_byte(0x89); // MOV r/m16/32/64, r16/32/64
+    }
+    ctx.emit_byte(encode_modrm(0b00, registers::gpr_encoding(src), 0b101));
+    emit_disp32(ctx, 0);
+    ctx.record_relocation(symbol.to_string(), X86_64RelocationType::R_X86_64_PC32, -4);
+}
+
+/// MOV [rip + symbol], imm32 — RIP-relative store of immediate to global.
+///
+/// Encoding:  [optional 66h prefix] [REX] C7 /0 ModRM(00, 0, 101) disp32 imm32
+fn encode_mov_mi_symbol(ctx: &mut EncodingContext, symbol: &str, imm: i64, size: OperandSize) {
+    if size == OperandSize::Word {
+        ctx.emit_byte(0x66);
+    }
+    let w = size == OperandSize::QWord;
+    if w {
+        ctx.emit_byte(encode_rex(true, false, false, false));
+    }
+    if size == OperandSize::Byte {
+        ctx.emit_byte(0xC6); // MOV r/m8, imm8
+    } else {
+        ctx.emit_byte(0xC7); // MOV r/m16/32/64, imm16/32
+    }
+    ctx.emit_byte(encode_modrm(0b00, 0, 0b101)); // /0 for MOV immediate
+    emit_disp32(ctx, 0);
+    ctx.record_relocation(symbol.to_string(), X86_64RelocationType::R_X86_64_PC32, -4);
+    // Immediate value
+    if size == OperandSize::Byte {
+        ctx.emit_byte(imm as u8);
+    } else if size == OperandSize::Word {
+        let bytes = (imm as u16).to_le_bytes();
+        for b in &bytes {
+            ctx.emit_byte(*b);
+        }
+    } else {
+        // 32-bit immediate for both DWord and QWord (sign-extended by CPU)
+        let bytes = (imm as u32).to_le_bytes();
+        for b in &bytes {
+            ctx.emit_byte(*b);
+        }
+    }
 }
 
 /// MOVZX reg, r/m8 (0F B6) or r/m16 (0F B7).
 fn encode_movzx(ctx: &mut EncodingContext, dst: PhysReg, src: PhysReg, src_size: OperandSize) {
-    if let Some(rex) = compute_rex(OperandSize::DWord, Some(dst), Some(src), None) {
+    // For byte-source MOVZX, we must compute the REX prefix using the *source*
+    // operand size (Byte), not the destination size.  This is critical because
+    // registers RSP/RBP/RSI/RDI (encodings 4-7) map to AH/CH/DH/BH in legacy
+    // byte mode but to SPL/BPL/SIL/DIL when a REX prefix is present.  Without
+    // passing Byte here, `compute_rex` never triggers the byte-disambiguation
+    // logic and we silently read from the wrong register.
+    let rex_size = if src_size == OperandSize::Byte {
+        OperandSize::Byte
+    } else {
+        OperandSize::DWord
+    };
+    if let Some(rex) = compute_rex(rex_size, Some(dst), Some(src), None) {
         ctx.emit_byte(rex);
     }
     ctx.emit_byte(0x0F);
@@ -1013,7 +1110,15 @@ fn encode_movsx(
     src_size: OperandSize,
     dst_size: OperandSize,
 ) {
-    if let Some(rex) = compute_rex(dst_size, Some(dst), Some(src), None) {
+    // When the source is a byte register, we must ensure the REX prefix is
+    // emitted for byte-register disambiguation (SPL/BPL/SIL/DIL vs AH/CH/DH/BH).
+    // Use the larger of dst_size and the byte-source requirement.
+    let rex_size = if src_size == OperandSize::Byte && dst_size != OperandSize::QWord {
+        OperandSize::Byte
+    } else {
+        dst_size
+    };
+    if let Some(rex) = compute_rex(rex_size, Some(dst), Some(src), None) {
         ctx.emit_byte(rex);
     }
     ctx.emit_byte(0x0F);
@@ -1817,14 +1922,26 @@ fn extract_mem(op: &MachineOperand) -> Option<MemoryOperand> {
             scale: *scale,
             displacement: *offset,
         }),
-        MachineOperand::FrameIndex(idx) => {
-            // FrameIndex → [RSP + idx*8].  The multiplier may vary depending
-            // on the slot size, but 8 (QWord) is the default for x86-64.
+        MachineOperand::FrameIndex(byte_offset) => {
+            // FrameIndex stores the positive byte displacement from RBP.
+            // The effective address is [RBP - byte_offset].
+            //
+            // Each alloca's FrameIndex value is pre-computed by the codegen
+            // based on the actual type size, not a fixed 8-byte slot.
+            //
+            // Stack layout after prologue:
+            //   [RBP+8]          = return address
+            //   [RBP]            = saved RBP
+            //   [RBP - offset]   = base of alloca (variable-size)
+            //
+            // Using RBP-relative addressing is essential because RSP changes
+            // dynamically during the function body (call argument pushes,
+            // alignment adjustments), making RSP-relative offsets unreliable.
             Some(MemoryOperand {
-                base: Some(RSP),
+                base: Some(RBP),
                 index: None,
                 scale: 1,
-                displacement: (*idx as i32) * 8,
+                displacement: -(*byte_offset as i32),
             })
         }
         _ => None,
@@ -2000,10 +2117,19 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             }
         }
         opcodes::MOV_RM => {
-            if let (Some(dst), Some(mem)) = (
-                ops.first().and_then(extract_phys_reg),
-                ops.get(1).and_then(extract_mem),
-            ) {
+            // Second operand can be Memory, FrameIndex, or a PhysReg
+            // holding a pointer (treat as [reg] indirect load).
+            let mem_opt = ops.get(1).and_then(|op| {
+                extract_mem(op).or_else(|| {
+                    extract_phys_reg(op).map(|r| MemoryOperand {
+                        base: Some(r),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                    })
+                })
+            });
+            if let (Some(dst), Some(mem)) = (ops.first().and_then(extract_phys_reg), mem_opt) {
                 if registers::is_sse(dst) {
                     // SSE load: determine SS vs SD from operand size flags
                     let prefix = if size == OperandSize::DWord {
@@ -2018,10 +2144,20 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             }
         }
         opcodes::MOV_MR => {
-            if let (Some(mem), Some(src)) = (
-                ops.first().and_then(extract_mem),
-                ops.get(1).and_then(extract_phys_reg),
-            ) {
+            // First operand can be Memory, FrameIndex, or a PhysReg holding
+            // a pointer (e.g., result of GEP).
+            let mem_opt = ops.first().and_then(|op| {
+                extract_mem(op).or_else(|| {
+                    // If the operand is a register, treat it as [reg] (indirect).
+                    extract_phys_reg(op).map(|r| MemoryOperand {
+                        base: Some(r),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                    })
+                })
+            });
+            if let (Some(mem), Some(src)) = (mem_opt, ops.get(1).and_then(extract_phys_reg)) {
                 if registers::is_sse(src) {
                     let prefix = if size == OperandSize::DWord {
                         0xF3
@@ -2035,10 +2171,19 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             }
         }
         opcodes::MOV_MI => {
-            if let (Some(mem), Some(imm)) = (
-                ops.first().and_then(extract_mem),
-                ops.get(1).and_then(extract_imm),
-            ) {
+            // First operand can be Memory, FrameIndex, or a PhysReg holding
+            // a pointer (e.g., result of GEP for array element stores).
+            let mem_opt = ops.first().and_then(|op| {
+                extract_mem(op).or_else(|| {
+                    extract_phys_reg(op).map(|r| MemoryOperand {
+                        base: Some(r),
+                        index: None,
+                        scale: 1,
+                        displacement: 0,
+                    })
+                })
+            });
+            if let (Some(mem), Some(imm)) = (mem_opt, ops.get(1).and_then(extract_imm)) {
                 encode_mov_mem_imm(ctx, &mem, imm, size);
             }
         }
@@ -2065,6 +2210,73 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             }
         }
 
+        // LEA_LABEL — load the address of a local basic block label into
+        // a register.  Used by computed gotos (`&&label`).
+        // Operands: [dst_reg, Label(block_id)]
+        // Encodes: lea <label>(%rip), %reg
+        opcodes::LEA_LABEL => {
+            if let (Some(dst), Some(label)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_label),
+            ) {
+                // Encode as REX.W LEA with RIP-relative addressing, then
+                // record a fixup so the linker (label resolver) patches the
+                // displacement to the target block's offset.
+                let rex_r = registers::needs_rex(dst);
+                ctx.emit_byte(encode_rex(true, rex_r, false, false));
+                ctx.emit_byte(0x8D); // LEA opcode
+                                     // ModRM: mod=00, reg=dst, r/m=101 (RIP-relative)
+                ctx.emit_byte(encode_modrm(0b00, registers::gpr_encoding(dst), 0b101));
+                emit_disp32(ctx, 0); // placeholder displacement
+                ctx.record_fixup(label, 4);
+            }
+        }
+
+        // JMP_INDIRECT — indirect jump through a register (computed goto).
+        // Operands: [reg]
+        // Encodes: jmp *%reg (FF /4)
+        opcodes::JMP_INDIRECT => {
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
+                encode_jmp_reg(ctx, reg);
+            }
+        }
+
+        // MOV_RM_SYM — load from global via RIP-relative addressing.
+        // Operands: [dst_reg, Symbol(name)]
+        // Encodes: mov reg, [rip + symbol]
+        opcodes::MOV_RM_SYM => {
+            if let (Some(dst), Some(sym)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_symbol),
+            ) {
+                encode_mov_rm_symbol(ctx, dst, sym, size);
+            }
+        }
+
+        // MOV_MR_SYM — store to global via RIP-relative addressing.
+        // Operands: [Symbol(name), src_reg]
+        // Encodes: mov [rip + symbol], reg
+        opcodes::MOV_MR_SYM => {
+            if let (Some(sym), Some(src)) = (
+                ops.first().and_then(extract_symbol),
+                ops.get(1).and_then(extract_phys_reg),
+            ) {
+                encode_mov_mr_symbol(ctx, sym, src, size);
+            }
+        }
+
+        // MOV_MI_SYM — store immediate to global via RIP-relative addressing.
+        // Operands: [Symbol(name), Immediate(val)]
+        // Encodes: mov [rip + symbol], imm32
+        opcodes::MOV_MI_SYM => {
+            if let (Some(sym), Some(imm)) = (
+                ops.first().and_then(extract_symbol),
+                ops.get(1).and_then(extract_imm),
+            ) {
+                encode_mov_mi_symbol(ctx, sym, imm, size);
+            }
+        }
+
         // ------------------------------------------------------------------
         // MOVZX — zero-extend move.
         // Operands: [dst_reg, src_reg_or_mem, src_width_imm?]
@@ -2073,15 +2285,34 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         opcodes::MOVZX => {
             let dst = ops.first().and_then(extract_phys_reg);
             let src_width = ops.last().and_then(extract_imm).unwrap_or(8) as u8;
-            if let (Some(d), Some(src_reg)) = (dst, ops.get(1).and_then(extract_phys_reg)) {
+            // First try memory form (FrameIndex, Memory operands)
+            if let (Some(d), Some(mem)) = (dst, ops.get(1).and_then(extract_mem)) {
+                encode_movzx_rm(ctx, d, &mem, src_width);
+            } else if let (Some(d), Some(src_reg)) = (dst, ops.get(1).and_then(extract_phys_reg)) {
+                // PhysReg source — could be a register or a pointer to
+                // dereference.  We check the opcode context: if a width
+                // immediate is provided AND the instruction came from a
+                // Load lowering path, the PhysReg is a pointer and we
+                // need `movzx reg, BYTE PTR [reg]`.  However, the
+                // encoder cannot reliably distinguish "load from [reg]"
+                // vs "zero-extend reg".  The convention is:
+                //   - From lower_load: treat PhysReg as [reg] (memory)
+                //   - From lower_zext: treat PhysReg as register value
+                //
+                // We use a heuristic: if ops.len() == 3 (has width imm)
+                // and the PhysReg is a GPR, and the src reg is the SAME
+                // class (GPR), we check whether this looks like a "load
+                // via pointer" pattern.
+                //
+                // For safety, always do reg-to-reg MOVZX here — the
+                // caller (lower_load) has been updated to convert VirtualReg
+                // sources to [reg] memory form when needed.
                 let src_size = if src_width == 16 {
                     OperandSize::Word
                 } else {
                     OperandSize::Byte
                 };
                 encode_movzx(ctx, d, src_reg, src_size);
-            } else if let (Some(d), Some(mem)) = (dst, ops.get(1).and_then(extract_mem)) {
-                encode_movzx_rm(ctx, d, &mem, src_width);
             }
         }
 
@@ -2252,13 +2483,24 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
 
         // SETcc — set byte on condition.  Operands: [cc_imm, dst_reg]
         opcodes::SET_CC => {
-            if let (Some(cc_val), Some(dst)) = (
+            // Accept both orderings:
+            //   (1) codegen convention: (PhysReg dst, Immediate cc)
+            //   (2) legacy convention:  (Immediate cc, PhysReg dst)
+            let (cc_val, dst) = if let (Some(dst), Some(cc_val)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_imm),
+            ) {
+                (cc_val, dst)
+            } else if let (Some(cc_val), Some(dst)) = (
                 ops.first().and_then(extract_imm),
                 ops.get(1).and_then(extract_phys_reg),
             ) {
-                if let Some(cc) = ConditionCode::from_encoding(cc_val as u8) {
-                    encode_setcc(ctx, cc, dst);
-                }
+                (cc_val, dst)
+            } else {
+                return; // cannot encode
+            };
+            if let Some(cc) = ConditionCode::from_encoding(cc_val as u8) {
+                encode_setcc(ctx, cc, dst);
             }
         }
 
@@ -2278,13 +2520,24 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
             }
         }
         opcodes::JCC => {
-            if let (Some(cc_val), Some(label)) = (
+            // Accept both orderings:
+            //   (1) codegen convention: (Label target, Immediate cc)
+            //   (2) legacy convention:  (Immediate cc, Label target)
+            let (cc_val, label) = if let (Some(label), Some(cc_val)) = (
+                ops.first().and_then(extract_label),
+                ops.get(1).and_then(extract_imm),
+            ) {
+                (cc_val, label)
+            } else if let (Some(cc_val), Some(label)) = (
                 ops.first().and_then(extract_imm),
                 ops.get(1).and_then(extract_label),
             ) {
-                if let Some(cc) = ConditionCode::from_encoding(cc_val as u8) {
-                    encode_jcc_label(ctx, cc, label);
-                }
+                (cc_val, label)
+            } else {
+                return; // cannot encode
+            };
+            if let Some(cc) = ConditionCode::from_encoding(cc_val as u8) {
+                encode_jcc_label(ctx, cc, label);
             }
         }
         opcodes::CALL => {
@@ -2335,21 +2588,26 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         opcodes::DIVSD => encode_sse_binop_dispatch(ctx, 0xF2, 0x5E, ops),
 
         // UCOMISS: bare 0F 2E /r (no mandatory prefix)
+        // Supports:  UCOMISS xmm, xmm   and   UCOMISS xmm, m32
         opcodes::UCOMISS => {
-            if let (Some(a), Some(b)) = (
-                ops.first().and_then(extract_phys_reg),
-                ops.get(1).and_then(extract_phys_reg),
-            ) {
-                encode_ucomiss_rr(ctx, a, b);
+            if let Some(a) = ops.first().and_then(extract_phys_reg) {
+                if let Some(b) = ops.get(1).and_then(extract_phys_reg) {
+                    encode_ucomiss_rr(ctx, a, b);
+                } else if let Some(mem) = ops.get(1).and_then(extract_mem) {
+                    // UCOMISS xmm, [mem] — bare 0F 2E /r (no mandatory prefix)
+                    encode_ucomiss_rm(ctx, a, &mem);
+                }
             }
         }
         // UCOMISD: 66 0F 2E /r
+        // Supports:  UCOMISD xmm, xmm   and   UCOMISD xmm, m64
         opcodes::UCOMISD => {
-            if let (Some(a), Some(b)) = (
-                ops.first().and_then(extract_phys_reg),
-                ops.get(1).and_then(extract_phys_reg),
-            ) {
-                encode_sse_rr(ctx, 0x66, 0x2E, a, b);
+            if let Some(a) = ops.first().and_then(extract_phys_reg) {
+                if let Some(b) = ops.get(1).and_then(extract_phys_reg) {
+                    encode_sse_rr(ctx, 0x66, 0x2E, a, b);
+                } else if let Some(mem) = ops.get(1).and_then(extract_mem) {
+                    encode_sse_rm(ctx, 0x66, 0x2E, a, &mem);
+                }
             }
         }
 
@@ -2443,6 +2701,63 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         opcodes::ENDBR64 => encode_endbr64(ctx),
         opcodes::LFENCE => encode_lfence(ctx),
         opcodes::PAUSE => encode_pause(ctx),
+
+        // ==================================================================
+        // Bit manipulation instructions (BSR, BSF, POPCNT, BSWAP)
+        // ==================================================================
+        opcodes::BSR_RR => {
+            // BSR dst, src — 0F BD /r
+            if let (Some(dst), Some(src)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_phys_reg),
+            ) {
+                if let Some(rex) = compute_rex(size, Some(dst), Some(src), None) {
+                    ctx.emit_byte(rex);
+                }
+                ctx.emit_byte(0x0F);
+                ctx.emit_byte(0xBD);
+                ctx.emit_byte(modrm_reg_reg(dst, src));
+            }
+        }
+        opcodes::BSF_RR => {
+            // BSF dst, src — 0F BC /r
+            if let (Some(dst), Some(src)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_phys_reg),
+            ) {
+                if let Some(rex) = compute_rex(size, Some(dst), Some(src), None) {
+                    ctx.emit_byte(rex);
+                }
+                ctx.emit_byte(0x0F);
+                ctx.emit_byte(0xBC);
+                ctx.emit_byte(modrm_reg_reg(dst, src));
+            }
+        }
+        opcodes::POPCNT_RR => {
+            // POPCNT dst, src — F3 0F B8 /r
+            if let (Some(dst), Some(src)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_phys_reg),
+            ) {
+                ctx.emit_byte(0xF3);
+                if let Some(rex) = compute_rex(size, Some(dst), Some(src), None) {
+                    ctx.emit_byte(rex);
+                }
+                ctx.emit_byte(0x0F);
+                ctx.emit_byte(0xB8);
+                ctx.emit_byte(modrm_reg_reg(dst, src));
+            }
+        }
+        opcodes::BSWAP_R => {
+            // BSWAP reg — 0F C8+rd
+            if let Some(reg) = ops.first().and_then(extract_phys_reg) {
+                if let Some(rex) = compute_rex(size, None, Some(reg), None) {
+                    ctx.emit_byte(rex);
+                }
+                ctx.emit_byte(0x0F);
+                ctx.emit_byte(0xC8 | reg_hw_encoding(reg));
+            }
+        }
 
         // ==================================================================
         // Inline assembly — raw bytes stored in the first operand
@@ -2571,6 +2886,46 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncodingContext) {
         }
 
         // ==================================================================
+        // ==================================================================
+        // Spill pseudo-ops — lowered to real MOV / MOVSD by encoder
+        //
+        // The register allocator emits these with two operands:
+        //   [0] Register(scratch)    — the reserved scratch register
+        //   [1] FrameIndex(offset)   — byte offset from RBP
+        //
+        // SPILL_LOAD:  scratch ← [RBP - offset]
+        // SPILL_STORE: [RBP - offset] ← scratch
+        // ==================================================================
+        x if x == (SPILL_LOAD_OPCODE & 0x00FF_FFFF) || x == SPILL_LOAD_OPCODE => {
+            // Load from stack slot into scratch register.
+            if let (Some(scratch), Some(mem)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_mem),
+            ) {
+                if registers::is_sse(scratch) {
+                    // MOVSD xmm, [RBP - offset]
+                    encode_sse_rm(ctx, 0xF2, 0x10, scratch, &mem);
+                } else {
+                    // MOV r64, [RBP - offset]
+                    encode_mov_reg_mem(ctx, scratch, &mem, OperandSize::QWord);
+                }
+            }
+        }
+        x if x == (SPILL_STORE_OPCODE & 0x00FF_FFFF) || x == SPILL_STORE_OPCODE => {
+            // Store scratch register into stack slot.
+            if let (Some(scratch), Some(mem)) = (
+                ops.first().and_then(extract_phys_reg),
+                ops.get(1).and_then(extract_mem),
+            ) {
+                if registers::is_sse(scratch) {
+                    // MOVSD [RBP - offset], xmm
+                    encode_sse_mr(ctx, 0xF2, 0x11, &mem, scratch);
+                } else {
+                    // MOV [RBP - offset], r64
+                    encode_mov_mem_reg(ctx, &mem, scratch, OperandSize::QWord);
+                }
+            }
+        }
         // Unknown/unhandled opcode — emit a defensive NOP
         // ==================================================================
         _ => {
@@ -2754,6 +3109,21 @@ fn encode_ucomiss_rr(ctx: &mut EncodingContext, a: PhysReg, b: PhysReg) {
     ctx.emit_byte(0x0F);
     ctx.emit_byte(0x2E);
     ctx.emit_byte(modrm_reg_reg(a, b));
+}
+
+/// Encode UCOMISS xmm, [mem] (bare 0F 2E /r with memory operand —
+/// no mandatory prefix, unlike MOVSS which uses 0xF3).
+fn encode_ucomiss_rm(ctx: &mut EncodingContext, dst: PhysReg, mem: &MemoryOperand) {
+    // No mandatory prefix for UCOMISS (unlike UCOMISD which uses 0x66).
+    let r = registers::needs_rex(dst);
+    let b = mem.base.is_some_and(registers::needs_rex);
+    let x = mem.index.is_some_and(registers::needs_rex);
+    if r || b || x {
+        ctx.emit_byte(encode_rex(false, r, x, b));
+    }
+    ctx.emit_byte(0x0F);
+    ctx.emit_byte(0x2E);
+    emit_memory_operand(ctx, reg_hw_encoding(dst), mem);
 }
 
 // ============================================================================

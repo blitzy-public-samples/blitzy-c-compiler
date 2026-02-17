@@ -328,10 +328,38 @@ pub mod opcodes {
     /// LEA with a symbol operand — encodes `lea reg, [rip + symbol]`
     /// (RIP-relative addressing for loading the address of a global symbol).
     pub const LEA_SYM: u32 = 0x00A3;
+    /// MOV reg, [rip + symbol] — RIP-relative load from a global symbol.
+    /// Operands: [dst_reg, Symbol(name)]
+    pub const MOV_RM_SYM: u32 = 0x00A4;
+    /// MOV [rip + symbol], reg — RIP-relative store to a global symbol.
+    /// Operands: [Symbol(name), src_reg]
+    pub const MOV_MR_SYM: u32 = 0x00A5;
+    /// MOV [rip + symbol], imm32 — RIP-relative store of immediate to global.
+    /// Operands: [Symbol(name), Immediate(val)]
+    pub const MOV_MI_SYM: u32 = 0x00A6;
+
+    // -- Bit manipulation instructions --------------------------------------
+    /// BSR (Bit Scan Reverse) — finds the index of the highest set bit.
+    /// Operand order: dst_reg, src_reg. For CLZ: clz = 31 - bsr(x).
+    pub const BSR_RR: u32 = 0x00B0;
+    /// BSF (Bit Scan Forward) — finds the index of the lowest set bit.
+    /// Operand order: dst_reg, src_reg. Implements CTZ directly.
+    pub const BSF_RR: u32 = 0x00B1;
+    /// POPCNT — counts the number of set bits.
+    /// Operand order: dst_reg, src_reg.
+    pub const POPCNT_RR: u32 = 0x00B2;
+    /// BSWAP — reverses bytes in a register.
+    /// Single operand: reg (both source and destination).
+    pub const BSWAP_R: u32 = 0x00B3;
 
     // -- Inline assembly placeholder ----------------------------------------
     /// Placeholder for inline assembly blocks. The actual bytes are
     /// emitted verbatim by the assembler without interpretation.
+    /// LEA reg, [rip + label] — load the address of a local basic block
+    /// label into a register.  Used by computed gotos (`&&label`).
+    pub const LEA_LABEL: u32 = 0x00F1;
+    /// JMP *reg — indirect jump through a register (computed goto).
+    pub const JMP_INDIRECT: u32 = 0x00F2;
     pub const INLINE_ASM: u32 = 0x00F0;
 
     // -- Pseudo-ops (expanded by assembler/prologue-epilogue pass) ----------
@@ -1102,6 +1130,22 @@ impl ArchCodegen for X86_64Codegen {
         registers::RBP
     }
 
+    /// Returns R11 — the GPR reserved as a scratch register for spill code.
+    /// R11 is caller-saved and not used for argument passing, making it safe
+    /// for temporary use during memory-to-memory spill lowering.
+    #[inline]
+    fn spill_scratch_gpr(&self) -> PhysReg {
+        registers::SPILL_SCRATCH_GPR
+    }
+
+    /// Returns XMM15 — the SSE register reserved as a scratch register for
+    /// floating-point spill code. XMM15 is caller-saved and the least
+    /// commonly used XMM register.
+    #[inline]
+    fn spill_scratch_sse(&self) -> PhysReg {
+        registers::SPILL_SCRATCH_SSE
+    }
+
     /// Returns 8 — x86-64 pointers are 64-bit (8 bytes) in the LP64 model.
     ///
     /// Derived from [`Target::X86_64::pointer_width()`] to maintain
@@ -1451,8 +1495,8 @@ mod tests {
     fn caller_saved_register_set() {
         let backend = X86_64Codegen::new(test_config());
         let regs = backend.caller_saved_registers();
-        // System V AMD64: RAX, RCX, RDX, RSI, RDI, R8-R11 (9 registers)
-        assert_eq!(regs.len(), 9);
+        // System V AMD64: 9 GPRs + 16 XMMs = 25 caller-saved registers
+        assert_eq!(regs.len(), 25);
         assert!(regs.contains(&registers::RAX));
         assert!(regs.contains(&registers::RCX));
         assert!(regs.contains(&registers::RDX));

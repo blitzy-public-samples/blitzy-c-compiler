@@ -25,10 +25,11 @@
 
 use crate::backend::i686::abi::I686Abi;
 use crate::backend::i686::registers::{
-    self, AL, CALLEE_SAVED, CALLER_SAVED, CL, EAX, EBP, EBX, ECX, EDI, EDX, EFLAGS, ESI, ESP, ST0,
+    self, parse_i686_reg_name, reg_name_32, AL, CALLEE_SAVED, CALLER_SAVED, CL, EAX, EBP, EBX, ECX,
+    EDI, EDX, EFLAGS, ESI, ESP, ST0,
 };
 use crate::backend::traits::{
-    CodegenConfig, MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand, PhysReg,
+    CodegenConfig, MachineBasicBlock, MachineFunction, MachineInstr, MachineOperand,
 };
 use crate::common::diagnostics::DiagnosticEngine;
 use crate::common::fx_hash::FxHashMap;
@@ -54,7 +55,7 @@ use crate::ir::types::IrType;
 #[repr(u32)]
 pub enum I686Opcode {
     // -- Data movement --
-    /// MOV dst, src — general-purpose register/memory/immediate move.
+    /// MOV dst, src — general-purpose 32-bit register/memory/immediate move.
     Mov = 0,
     /// MOVSX dst, src — sign-extending move (8→32 or 16→32).
     MovSx = 1,
@@ -66,6 +67,10 @@ pub enum I686Opcode {
     Push = 4,
     /// POP dst — pop 32-bit value from stack (ESP += 4).
     Pop = 5,
+    /// MOV byte [mem], r8 — 8-bit store (uses opcode 0x88 / 0xC6).
+    MovByte = 6,
+    /// MOV word [mem], r16 — 16-bit store (uses 0x66 prefix + opcode 0x89 / 0xC7).
+    MovWord = 7,
 
     // -- Integer arithmetic --
     /// ADD dst, src — integer addition.
@@ -177,6 +182,44 @@ pub enum I686Opcode {
     /// FXCH ST(i) — exchange ST(0) and ST(i).
     Fxch = 89,
 
+    // -- Register-indirect addressing --
+    /// MOV dst, [reg+offset] — load through pointer in register.
+    ///
+    /// Unlike `Mov` with a `Memory` operand, this form keeps the pointer
+    /// address in a `VirtualReg` / `Register` operand that the register
+    /// allocator can rewrite. The encoder interprets operand[1] as
+    /// `[reg + optional_offset]`.
+    ///
+    /// Operands: `[Register(dst), Register(addr)]`
+    ///           or `[Register(dst), Register(addr), Immediate(offset)]`
+    MovLoad = 250,
+    /// MOV [reg+offset], src — store through pointer in register.
+    ///
+    /// Operands: `[Register(addr), Register(src)]`
+    ///           or `[Register(addr), Register(src), Immediate(offset)]`
+    MovStore = 251,
+    /// LEA dst, [mem] — load effective address from Memory operand.
+    ///
+    /// Used by GEP to compute addresses of stack variables without
+    /// loading the value.
+    LeaMem = 252,
+
+    // -- Bit manipulation --
+    /// BSR dst, src — Bit Scan Reverse (find highest set bit).
+    Bsr = 200,
+    /// BSF dst, src — Bit Scan Forward (find lowest set bit).
+    Bsf = 201,
+    /// POPCNT dst, src — Population Count (count set bits).
+    Popcnt = 202,
+    /// BSWAP reg — Byte Swap (reverse byte order of 32-bit register).
+    Bswap = 203,
+
+    // -- Block address / indirect branch (computed goto) --
+    /// LEA dst, label — load effective address of a basic-block label.
+    LeaLabel = 253,
+    /// JMP *reg — indirect jump through a register (computed goto).
+    JmpIndirect = 254,
+
     // -- Misc --
     /// NOP — no operation (for alignment padding).
     Nop = 255,
@@ -200,6 +243,8 @@ impl I686Opcode {
             3 => Some(Self::Lea),
             4 => Some(Self::Push),
             5 => Some(Self::Pop),
+            6 => Some(Self::MovByte),
+            7 => Some(Self::MovWord),
             10 => Some(Self::Add),
             11 => Some(Self::Adc),
             12 => Some(Self::Sub),
@@ -249,6 +294,15 @@ impl I686Opcode {
             87 => Some(Self::Fild),
             88 => Some(Self::Fistp),
             89 => Some(Self::Fxch),
+            200 => Some(Self::Bsr),
+            201 => Some(Self::Bsf),
+            202 => Some(Self::Popcnt),
+            203 => Some(Self::Bswap),
+            250 => Some(Self::MovLoad),
+            251 => Some(Self::MovStore),
+            252 => Some(Self::LeaMem),
+            253 => Some(Self::LeaLabel),
+            254 => Some(Self::JmpIndirect),
             255 => Some(Self::Nop),
             _ => None,
         }
@@ -264,6 +318,8 @@ impl std::fmt::Display for I686Opcode {
             Self::Lea => "lea",
             Self::Push => "push",
             Self::Pop => "pop",
+            Self::MovByte => "movb",
+            Self::MovWord => "movw",
             Self::Add => "add",
             Self::Adc => "adc",
             Self::Sub => "sub",
@@ -313,6 +369,15 @@ impl std::fmt::Display for I686Opcode {
             Self::Fild => "fild",
             Self::Fistp => "fistp",
             Self::Fxch => "fxch",
+            Self::Bsr => "bsr",
+            Self::Bsf => "bsf",
+            Self::Popcnt => "popcnt",
+            Self::Bswap => "bswap",
+            Self::MovLoad => "movload",
+            Self::MovStore => "movstore",
+            Self::LeaMem => "leamem",
+            Self::LeaLabel => "lealabel",
+            Self::JmpIndirect => "jmpindirect",
             Self::Nop => "nop",
         };
         f.write_str(name)
@@ -507,6 +572,10 @@ pub struct I686InstrSel<'a> {
     /// Next virtual register ID for temporary values that don't yet have
     /// a physical register assigned.
     next_vreg: u32,
+
+    /// Tracks the high 32-bit word for 64-bit (I64) values.
+    /// Key: ValueId index of the I64 value, Value: MachineOperand for the high word.
+    i64_high_map: FxHashMap<u32, MachineOperand>,
 }
 
 impl<'a> I686InstrSel<'a> {
@@ -527,6 +596,7 @@ impl<'a> I686InstrSel<'a> {
             frame_size: 0,
             has_calls: false,
             next_vreg: 0,
+            i64_high_map: FxHashMap::default(),
         }
     }
 
@@ -547,6 +617,7 @@ impl<'a> I686InstrSel<'a> {
         // Reset per-function state.
         self.value_map.clear();
         self.block_map.clear();
+        self.i64_high_map.clear();
         self.next_frame_index = 0;
         self.frame_size = 0;
         self.has_calls = false;
@@ -554,6 +625,67 @@ impl<'a> I686InstrSel<'a> {
 
         let stack_align = self.config.target.stack_alignment();
         let mut mf = MachineFunction::new(func.name.clone(), stack_align);
+
+        // Phase 0b: Pre-populate value_map for special IR values.
+        //
+        // The IR builder encodes certain value kinds (global references,
+        // integer constants, float constants, null pointers) by naming
+        // convention in the ValueInfo table rather than emitting dedicated
+        // instructions.  The codegen must recognise these names and map
+        // them to the appropriate MachineOperand *before* instruction
+        // selection begins — otherwise get_operand() returns a VirtualReg
+        // which produces incorrect code (e.g. indirect calls instead of
+        // direct PLT calls for printf).
+        //
+        // Naming conventions (see ir::builder):
+        //   "global.<name>"        → Symbol("<name>")  — external function / global var
+        //   "const.int.<value>"    → Immediate(<value>) — integer constant
+        //   "const.float.<value>"  → Immediate(f64 bits) — float constant
+        //   "const.null"           → Immediate(0)        — null pointer
+        for vi in &func.local_values {
+            if let Some(ref n) = vi.name {
+                if let Some(sym_name) = n.strip_prefix("global.") {
+                    self.value_map
+                        .insert(vi.id.index(), MachineOperand::Symbol(sym_name.to_string()));
+                } else if let Some(int_str) = n.strip_prefix("const.int.") {
+                    if let Ok(val) = int_str.parse::<i64>() {
+                        // On i686, split 64-bit constants into lo/hi halves.
+                        let lo = val as i32 as i64; // sign-extend the low 32 bits
+                        let hi = (val >> 32) as i32 as i64;
+                        self.value_map
+                            .insert(vi.id.index(), MachineOperand::Immediate(lo));
+                        // Track the high word for I64 types.
+                        if matches!(&vi.ty, crate::ir::types::IrType::I64) {
+                            self.i64_high_map
+                                .insert(vi.id.index(), MachineOperand::Immediate(hi));
+                        }
+                    }
+                } else if let Some(flt_str) = n.strip_prefix("const.float.") {
+                    if let Ok(val) = flt_str.parse::<f64>() {
+                        // On i686, 32-bit immediates are the maximum MOV width.
+                        // F32 constants: convert to 32-bit float bit pattern.
+                        // F64 constants: split into lo/hi 32-bit halves (like I64).
+                        if matches!(&vi.ty, crate::ir::types::IrType::F32) {
+                            let f32_bits = (val as f32).to_bits() as i64;
+                            self.value_map
+                                .insert(vi.id.index(), MachineOperand::Immediate(f32_bits));
+                        } else {
+                            // F64: store as lo/hi 32-bit halves.
+                            let bits = val.to_bits();
+                            let lo = (bits as u32) as i32 as i64;
+                            let hi = ((bits >> 32) as u32) as i32 as i64;
+                            self.value_map
+                                .insert(vi.id.index(), MachineOperand::Immediate(lo));
+                            self.i64_high_map
+                                .insert(vi.id.index(), MachineOperand::Immediate(hi));
+                        }
+                    }
+                } else if n == "const.null" {
+                    self.value_map
+                        .insert(vi.id.index(), MachineOperand::Immediate(0));
+                }
+            }
+        }
 
         // Phase 1: Pre-assign block IDs so forward branches can reference them.
         for (idx, bb) in func.basic_blocks.iter().enumerate() {
@@ -596,14 +728,16 @@ impl<'a> I686InstrSel<'a> {
                     self.frame_size = align_up(self.frame_size, align);
                     self.frame_size += size;
                     // Local variables are at negative offsets from EBP.
+                    // Use FrameIndex (not Memory) so that:
+                    //   • Load/Store via safe_to_memory → encoder handles [EBP+off]
+                    //   • ensure_in_register → LEA (gives address, not contents)
+                    // This matches the x86-64 backend's approach and correctly
+                    // implements array-to-pointer decay and pass-by-reference.
                     let offset = -(self.frame_size as i32);
-                    let mem_op = MachineOperand::Memory {
-                        base: EBP,
-                        offset,
-                        index: None,
-                        scale: 1,
-                    };
-                    self.value_map.insert(result.index(), mem_op);
+                    let fi_op = MachineOperand::FrameIndex(offset as u32);
+                    // eprintln!("[I686_ALLOCA] value={} type={:?} size={} align={} frame_size={} offset={} fi=0x{:08x}",
+                    // result.index(), ty, size, align, self.frame_size, offset, offset as u32);
+                    self.value_map.insert(result.index(), fi_op);
                     self.next_frame_index += 1;
                 }
             }
@@ -612,17 +746,24 @@ impl<'a> I686InstrSel<'a> {
         // Align total frame size to stack alignment.
         self.frame_size = align_up(self.frame_size, stack_align);
 
-        // Phase 4: Generate prologue in the entry block.
+        // Phase 4: Create the entry block (prologue is NOT emitted here;
+        // it will be injected later by ArchCodegen::emit_prologue via
+        // compile_function in generation.rs, matching the x86-64 pattern).
         let entry_id = 0u32;
-        let mut entry_block =
+        let entry_block =
             MachineBasicBlock::with_label(entry_id, format!(".L{}_{}", func.name, entry_id));
-        self.emit_prologue(&mut entry_block);
         mf.add_block(entry_block);
 
         // Phase 5: Lower each IR basic block's instructions.
+        // Debug: dump IR instructions for the first basic block
+        if let Some(bb0) = func.basic_blocks.first() {
+            for (_ii, _inst) in bb0.instructions().iter().enumerate() {
+                // eprintln!("[I686_IR] func={} bb0 inst[{}]: {:?}", func.name, ii, inst);
+            }
+        }
         for (idx, bb) in func.basic_blocks.iter().enumerate() {
             let mbb_id = idx as u32;
-            // For the entry block (idx 0), we already created it with prologue;
+            // For the entry block (idx 0), we already created it above;
             // append instructions to it. For other blocks, create new ones.
             if idx == 0 {
                 // Append to the entry block already in mf.
@@ -752,6 +893,7 @@ impl<'a> I686InstrSel<'a> {
                 callee,
                 args,
                 is_tail,
+                ..
             } => {
                 self.select_call(*result, *callee, args, *is_tail, mbb, func);
             }
@@ -842,25 +984,97 @@ impl<'a> I686InstrSel<'a> {
                 self.emit_mov(dst, src, mbb);
             }
 
+            // --- Floating-point conversion instructions ---
+            Instruction::SIToFP {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.select_si_to_fp(*result, *value, to_ty, mbb, func);
+            }
+            Instruction::UIToFP {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.select_ui_to_fp(*result, *value, to_ty, mbb, func);
+            }
+            Instruction::FPToSI {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.select_fp_to_si(*result, *value, to_ty, mbb, func);
+            }
+            Instruction::FPToUI {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.select_fp_to_ui(*result, *value, to_ty, mbb, func);
+            }
+            Instruction::FPExt {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.select_fp_ext(*result, *value, to_ty, mbb, func);
+            }
+            Instruction::FPTrunc {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.select_fp_trunc(*result, *value, to_ty, mbb, func);
+            }
+
             // -- Inline assembly --
             Instruction::InlineAsm {
                 result,
-                template: _,
-                constraints: _,
-                operands: _,
-                clobbers: _,
+                template,
+                constraints,
+                operands,
+                clobbers,
                 has_side_effects: _,
                 is_align_stack: _,
+                goto_targets,
             } => {
-                // Inline assembly is passed through as-is; the assembler handles it.
-                // For now, emit a NOP placeholder and record the result if any.
-                let nop = MachineInstr::new(I686Opcode::Nop.as_u32());
-                mbb.push_instr(nop);
-                if let Some(res) = result {
-                    // Map result to EAX as a convention for inline asm output.
-                    self.value_map
-                        .insert(res.index(), MachineOperand::Register(EAX));
+                let instrs = self.lower_inline_asm(
+                    result.as_ref().copied(),
+                    template,
+                    constraints,
+                    operands,
+                    clobbers,
+                    goto_targets,
+                    func,
+                );
+                for instr in instrs {
+                    mbb.push_instr(instr);
                 }
+            }
+
+            // -- Computed goto --
+            Instruction::BlockAddress { result, block } => {
+                // LEA dst, label — load address of a basic-block label.
+                let dst = self.alloc_vreg(*result);
+                // Map IR block ID → machine block ID via block_map
+                let target_id = self.block_map.get(&block.index()).copied().unwrap_or(0);
+                let mut mi = MachineInstr::new(I686Opcode::LeaLabel.as_u32());
+                mi.add_operand(dst);
+                mi.add_operand(MachineOperand::Label(target_id));
+                mbb.push_instr(mi);
+            }
+
+            Instruction::IndirectBranch {
+                addr,
+                possible_targets: _,
+            } => {
+                // JMP *reg — indirect jump through a register.
+                let op = self.get_operand(*addr, func);
+                let mut mi = MachineInstr::new(I686Opcode::JmpIndirect.as_u32());
+                mi.add_operand(op);
+                mi.set_terminator();
+                mbb.push_instr(mi);
             }
         }
     }
@@ -881,74 +1095,155 @@ impl<'a> I686InstrSel<'a> {
         let addr = self.get_operand(ptr, func);
         let dst = self.alloc_vreg(result);
 
-        if ty.is_floating() {
-            // Use FLD to load float/double onto x87 stack, then FSTP to store
-            // into a virtual spill location. For simplicity in the initial
-            // selector, we represent FP values as frame-index operands.
-            let mem = self.operand_to_memory(addr, mbb);
-            let mut fld = MachineInstr::new(I686Opcode::Fld.as_u32());
-            fld.add_operand(mem);
-            fld.add_implicit_def(ST0);
-            mbb.push_instr(fld);
-            // The result is on ST(0); record it.
-            self.value_map
-                .insert(result.index(), MachineOperand::Register(ST0));
+        // --- F32 GPR CLASSIFICATION FIX ---
+        // The register allocator classifies VirtualRegs by IR type.  F32
+        // values would be classified as FloatingPoint → assigned x87
+        // registers (ST0-ST7).  On i686, x87 register encoding indices
+        // 0-7 COLLIDE with GPR encoding indices (EAX-EDI).  Integer
+        // instructions like MOV use the opcode to select the GPR file,
+        // but if the operand register encodes to the same value as a GPR
+        // (e.g., ST5 encodes as 5 = EBP), the CPU interprets it as a
+        // GPR access, corrupting the frame pointer.
+        //
+        // Fix: create a synthetic VirtualReg whose ValueId is not in the
+        // IR function.  `classify_value` returns GP for unknown IDs.
+        let dst = if matches!(ty, IrType::F32) {
+            let raw_id = self.alloc_vreg_raw();
+            let gpr_dst = MachineOperand::VirtualReg(ValueId(raw_id));
+            self.value_map.insert(result.index(), gpr_dst.clone());
+            gpr_dst
+        } else {
+            dst
+        };
+
+        // --- GLOBAL VARIABLE FIX ---
+        // When the address is a Symbol (global variable reference), we must
+        // first load the symbol's absolute address into a register, then use
+        // that register as a base for the indirect load.  If we pass the Symbol
+        // through to the encoder directly, encode_mov sees (Register, Symbol)
+        // and emits MOV reg, imm32(addr) — loading the ADDRESS, not the VALUE.
+        // By converting to a VirtualReg here, we fall into the VirtualReg path
+        // which correctly uses MovLoad (indirect load through pointer register).
+        if matches!(&addr, MachineOperand::Symbol(_)) {
+            let addr_vreg = self.alloc_vreg_raw();
+            let addr_op = MachineOperand::VirtualReg(ValueId(addr_vreg));
+            self.emit_mov(addr_op.clone(), addr, mbb);
+            // Now recurse with the address in a VirtualReg — this hits the
+            // VirtualReg path below which correctly uses indirect load.
+            self.value_map.insert(ptr.index(), addr_op.clone());
+            // Fall through to VirtualReg handling below.
+            return self.select_load_vreg_addr(result, addr_op, ty, dst, mbb, func);
+        }
+
+        if matches!(ty, IrType::F64 | IrType::F80) {
+            // F64: load as two 32-bit halves into GPRs (same layout as I64).
+            return self.select_load_f64_to_gprs(result, addr, ty, mbb, func);
+        }
+        // F32: fall through to the normal 32-bit load logic below (same as int).
+        // The F32 bits are stored in a GPR, matching conversion function expectations.
+
+        // If the address is a VirtualReg, we cannot embed it in a Memory
+        // operand (register allocator only rewrites top-level operands).
+        // Use MovLoad which keeps the address as a top-level Register operand.
+        if matches!(&addr, MachineOperand::VirtualReg(_)) {
+            let size_bits = self.type_size_bits(ty);
+            if size_bits == 8 || size_bits == 16 {
+                // For 8/16-bit loads, we still need MovLoad then MovZx from
+                // a temporary. Use MovLoad for 32-bit, then mask.
+                let tmp = self.alloc_vreg_raw();
+                let mut inst = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+                inst.add_operand(MachineOperand::VirtualReg(ValueId(tmp)));
+                inst.add_operand(addr);
+                mbb.push_instr(inst);
+                // Mask to the correct size.
+                let mask: i64 = if size_bits == 8 { 0xFF } else { 0xFFFF };
+                self.emit_mov(dst.clone(), MachineOperand::VirtualReg(ValueId(tmp)), mbb);
+                let mut and_inst = MachineInstr::new(I686Opcode::And.as_u32());
+                and_inst.add_operand(dst);
+                and_inst.add_operand(MachineOperand::Immediate(mask));
+                and_inst.add_implicit_def(EFLAGS);
+                mbb.push_instr(and_inst);
+            } else if size_bits == 64 {
+                // 64-bit load through pointer: two 32-bit MovLoads.
+                let lo_dst = self.alloc_vreg_raw();
+                let mut lo_inst = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+                lo_inst.add_operand(MachineOperand::VirtualReg(ValueId(lo_dst)));
+                lo_inst.add_operand(addr.clone());
+                mbb.push_instr(lo_inst);
+                // For hi half, add 4 to addr.
+                let addr_plus4 = self.alloc_vreg_raw();
+                self.emit_mov(MachineOperand::VirtualReg(ValueId(addr_plus4)), addr, mbb);
+                let mut add = MachineInstr::new(I686Opcode::Add.as_u32());
+                add.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+                add.add_operand(MachineOperand::Immediate(4));
+                add.add_implicit_def(EFLAGS);
+                mbb.push_instr(add);
+                let hi_dst = self.alloc_vreg_raw();
+                let mut hi_inst = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+                hi_inst.add_operand(MachineOperand::VirtualReg(ValueId(hi_dst)));
+                hi_inst.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+                mbb.push_instr(hi_inst);
+                self.value_map
+                    .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_dst)));
+                // Track the high 32-bit word for this I64 value.
+                self.i64_high_map
+                    .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_dst)));
+            } else {
+                // 32-bit or pointer load.
+                let mut inst = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+                inst.add_operand(dst);
+                inst.add_operand(addr);
+                mbb.push_instr(inst);
+            }
             return;
         }
 
+        // For FrameIndex, Memory, Symbol, Register — these can be handled
+        // directly by the encoder via existing patterns.
         let size_bits = self.type_size_bits(ty);
         match size_bits {
             8 => {
-                // MOVZX for 8-bit loads into 32-bit register.
-                let mem = self.operand_to_memory(addr, mbb);
+                let mem = self.safe_to_memory(addr, mbb);
                 let mut inst = MachineInstr::new(I686Opcode::MovZx.as_u32());
                 inst.add_operand(dst);
                 inst.add_operand(mem);
                 mbb.push_instr(inst);
             }
             16 => {
-                // MOVZX for 16-bit loads into 32-bit register.
-                let mem = self.operand_to_memory(addr, mbb);
+                let mem = self.safe_to_memory(addr, mbb);
                 let mut inst = MachineInstr::new(I686Opcode::MovZx.as_u32());
                 inst.add_operand(dst);
                 inst.add_operand(mem);
                 mbb.push_instr(inst);
             }
             32 => {
-                // Standard 32-bit MOV load.
-                let mem = self.operand_to_memory(addr, mbb);
+                let mem = self.safe_to_memory(addr, mbb);
                 let mut inst = MachineInstr::new(I686Opcode::Mov.as_u32());
                 inst.add_operand(dst);
                 inst.add_operand(mem);
                 mbb.push_instr(inst);
             }
             64 => {
-                // 64-bit load: two 32-bit loads into a register pair.
-                let base_mem = self.operand_to_memory(addr.clone(), mbb);
-                // Load low 32 bits.
+                let base_mem = self.safe_to_memory(addr.clone(), mbb);
                 let lo_dst = self.alloc_vreg_raw();
                 let mut lo_inst = MachineInstr::new(I686Opcode::Mov.as_u32());
                 lo_inst.add_operand(MachineOperand::VirtualReg(ValueId(lo_dst)));
                 lo_inst.add_operand(base_mem.clone());
                 mbb.push_instr(lo_inst);
-
-                // Load high 32 bits at offset+4.
                 let hi_mem = self.offset_memory(base_mem, 4);
                 let hi_dst = self.alloc_vreg_raw();
                 let mut hi_inst = MachineInstr::new(I686Opcode::Mov.as_u32());
                 hi_inst.add_operand(MachineOperand::VirtualReg(ValueId(hi_dst)));
                 hi_inst.add_operand(hi_mem);
                 mbb.push_instr(hi_inst);
-
-                // Record lo:hi pair under the original result.
-                // We use the lo register as the primary operand; the hi is
-                // accessible via the convention that vreg N+1 is the high half.
                 self.value_map
                     .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_dst)));
+                // Track the high 32-bit word for this I64 value.
+                self.i64_high_map
+                    .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_dst)));
             }
             _ => {
-                // Pointer or other 32-bit equivalent.
-                let mem = self.operand_to_memory(addr, mbb);
+                let mem = self.safe_to_memory(addr, mbb);
                 let mut inst = MachineInstr::new(I686Opcode::Mov.as_u32());
                 inst.add_operand(dst);
                 inst.add_operand(mem);
@@ -958,8 +1253,141 @@ impl<'a> I686InstrSel<'a> {
     }
 
     // -----------------------------------------------------------------------
+    // Load via VirtualReg address (factored out for Symbol reuse)
+    // -----------------------------------------------------------------------
+
+    /// Performs a load through a pointer held in a VirtualReg.
+    /// This is extracted from select_load so that the Symbol path
+    /// (which converts a global symbol to a vreg address) can reuse it.
+    /// Load an F64 value from memory into two GPR halves (lo + hi).
+    fn select_load_f64_to_gprs(
+        &mut self,
+        result: ValueId,
+        addr: MachineOperand,
+        _ty: &IrType,
+        mbb: &mut MachineBasicBlock,
+        _func: &IrFunction,
+    ) {
+        if matches!(&addr, MachineOperand::VirtualReg(_)) {
+            // Load through pointer register.
+            let lo_idx = self.alloc_vreg_raw();
+            let mut lo_ld = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+            lo_ld.add_operand(MachineOperand::VirtualReg(ValueId(lo_idx)));
+            lo_ld.add_operand(addr.clone());
+            mbb.push_instr(lo_ld);
+            // addr+4 for hi half.
+            let addr_p4 = self.alloc_vreg_raw();
+            self.emit_mov(MachineOperand::VirtualReg(ValueId(addr_p4)), addr, mbb);
+            let mut add4 = MachineInstr::new(I686Opcode::Add.as_u32());
+            add4.add_operand(MachineOperand::VirtualReg(ValueId(addr_p4)));
+            add4.add_operand(MachineOperand::Immediate(4));
+            add4.add_implicit_def(EFLAGS);
+            mbb.push_instr(add4);
+            let hi_idx = self.alloc_vreg_raw();
+            let mut hi_ld = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+            hi_ld.add_operand(MachineOperand::VirtualReg(ValueId(hi_idx)));
+            hi_ld.add_operand(MachineOperand::VirtualReg(ValueId(addr_p4)));
+            mbb.push_instr(hi_ld);
+            self.value_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_idx)));
+            self.i64_high_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_idx)));
+        } else {
+            // Memory or FrameIndex address.
+            let mem = self.safe_to_memory(addr.clone(), mbb);
+            let lo_idx = self.alloc_vreg_raw();
+            let mut lo_ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+            lo_ld.add_operand(MachineOperand::VirtualReg(ValueId(lo_idx)));
+            lo_ld.add_operand(mem.clone());
+            mbb.push_instr(lo_ld);
+            let hi_mem = self.offset_memory(mem, 4);
+            let hi_idx = self.alloc_vreg_raw();
+            let mut hi_ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+            hi_ld.add_operand(MachineOperand::VirtualReg(ValueId(hi_idx)));
+            hi_ld.add_operand(hi_mem);
+            mbb.push_instr(hi_ld);
+            self.value_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_idx)));
+            self.i64_high_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_idx)));
+        }
+    }
+
+    fn select_load_vreg_addr(
+        &mut self,
+        result: ValueId,
+        addr: MachineOperand,
+        ty: &IrType,
+        dst: MachineOperand,
+        mbb: &mut MachineBasicBlock,
+        _func: &IrFunction,
+    ) {
+        // Floating-point through vreg pointer: F32 = 4-byte GPR load (fall through),
+        // F64 = two 32-bit halves.
+        if matches!(ty, IrType::F64 | IrType::F80) {
+            return self.select_load_f64_to_gprs(result, addr, ty, mbb, _func);
+        }
+        // F32: falls through to the 32-bit load path below.
+
+        let size_bits = self.type_size_bits(ty);
+        if size_bits == 8 || size_bits == 16 {
+            let tmp = self.alloc_vreg_raw();
+            let mut inst = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+            inst.add_operand(MachineOperand::VirtualReg(ValueId(tmp)));
+            inst.add_operand(addr);
+            mbb.push_instr(inst);
+            let mask: i64 = if size_bits == 8 { 0xFF } else { 0xFFFF };
+            self.emit_mov(dst.clone(), MachineOperand::VirtualReg(ValueId(tmp)), mbb);
+            let mut and_inst = MachineInstr::new(I686Opcode::And.as_u32());
+            and_inst.add_operand(dst);
+            and_inst.add_operand(MachineOperand::Immediate(mask));
+            and_inst.add_implicit_def(EFLAGS);
+            mbb.push_instr(and_inst);
+        } else if size_bits == 64 {
+            let lo_dst = self.alloc_vreg_raw();
+            let mut lo_inst = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+            lo_inst.add_operand(MachineOperand::VirtualReg(ValueId(lo_dst)));
+            lo_inst.add_operand(addr.clone());
+            mbb.push_instr(lo_inst);
+            let addr_plus4 = self.alloc_vreg_raw();
+            self.emit_mov(MachineOperand::VirtualReg(ValueId(addr_plus4)), addr, mbb);
+            let mut add = MachineInstr::new(I686Opcode::Add.as_u32());
+            add.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+            add.add_operand(MachineOperand::Immediate(4));
+            add.add_implicit_def(EFLAGS);
+            mbb.push_instr(add);
+            let hi_dst = self.alloc_vreg_raw();
+            let mut hi_inst = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+            hi_inst.add_operand(MachineOperand::VirtualReg(ValueId(hi_dst)));
+            hi_inst.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+            mbb.push_instr(hi_inst);
+            self.value_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_dst)));
+            self.i64_high_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_dst)));
+        } else {
+            let mut inst = MachineInstr::new(I686Opcode::MovLoad.as_u32());
+            inst.add_operand(dst);
+            inst.add_operand(addr);
+            mbb.push_instr(inst);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Store selection
     // -----------------------------------------------------------------------
+
+    /// Returns the correct MOV opcode for the given IR type width:
+    ///  - I1 / I8  → MovByte  (8-bit store, opcode 0x88 / 0xC6)
+    ///  - I16      → MovWord  (16-bit store, 0x66 prefix + 0x89 / 0xC7)
+    ///  - I32 / Ptr / everything else → Mov (32-bit store, 0x89 / 0xC7)
+    fn store_opcode_for_type(ty: &crate::ir::types::IrType) -> I686Opcode {
+        match ty {
+            crate::ir::types::IrType::I1 | crate::ir::types::IrType::I8 => I686Opcode::MovByte,
+            crate::ir::types::IrType::I16 => I686Opcode::MovWord,
+            _ => I686Opcode::Mov,
+        }
+    }
 
     /// Selects instructions for an IR Store.
     fn select_store(
@@ -971,12 +1399,32 @@ impl<'a> I686InstrSel<'a> {
     ) {
         let val_op = self.get_operand(value, func);
         let addr_op = self.get_operand(ptr, func);
+        // Store instruction selection — the address operand type governs
+        // the memory access pattern used below.
 
-        // Check if the value is an x87 FP value.
+        // --- GLOBAL VARIABLE FIX ---
+        // When the address is a Symbol (global variable reference), we must
+        // first load the symbol's absolute address into a register, then
+        // use indirect store through that register.  The encoder's Mov handler
+        // for (Symbol, Register) is missing, so without this conversion the
+        // store would be silently dropped.
+        if matches!(&addr_op, MachineOperand::Symbol(_)) {
+            let addr_vreg = self.alloc_vreg_raw();
+            let vr_op = MachineOperand::VirtualReg(ValueId(addr_vreg));
+            self.emit_mov(vr_op.clone(), addr_op, mbb);
+            // Redirect to VirtualReg address path.
+            self.value_map.insert(ptr.index(), vr_op);
+            return self.select_store(value, ptr, mbb, func);
+        }
+
+        // Determine the width of the value being stored.
+        let val_ty = func.get_value_type(value).clone();
+
+        // Check if the value is an x87 FP value (result of FP operation).
         if let MachineOperand::Register(reg) = &val_op {
             if registers::is_fpu(*reg) {
                 // FSTP to store from x87 stack to memory.
-                let mem = self.operand_to_memory(addr_op, mbb);
+                let mem = self.safe_to_memory(addr_op, mbb);
                 let mut fstp = MachineInstr::new(I686Opcode::Fstp.as_u32());
                 fstp.add_operand(mem);
                 fstp.add_implicit_use(ST0);
@@ -985,10 +1433,239 @@ impl<'a> I686InstrSel<'a> {
             }
         }
 
-        let mem = self.operand_to_memory(addr_op, mbb);
+        // Handle float constants stored as Immediate (f64 bit patterns).
+        // CRITICAL: F64 constants are pre-split into lo/hi halves during
+        // constant pre-population.  The value_map holds only the lo 32
+        // bits, and i64_high_map holds the hi 32 bits.  We MUST NOT try
+        // to reconstruct f64 from the lo Immediate alone (that gives 0.0
+        // for many doubles whose lo half happens to be 0).
+        //
+        // Strategy:
+        // 1. If value has an i64_high_map entry → use GPR pair path (below)
+        // 2. Else if F32 Immediate → convert and store as 32-bit
+        // 3. Else if F64 Immediate without split → reconstruct (legacy)
+        if val_ty.is_floating() {
+            // Check for pre-split F64 first — if hi half exists, fall
+            // through to the GPR pair path below rather than
+            // reconstructing from a truncated immediate.
+            let has_hi = self.i64_high_map.contains_key(&value.index());
+            if !has_hi {
+                if let MachineOperand::Immediate(bits) = &val_op {
+                    if matches!(&val_ty, IrType::F32) {
+                        // F32: the immediate already holds 32-bit f32 bits
+                        let src = self.ensure_in_register(MachineOperand::Immediate(*bits), mbb);
+                        if matches!(&addr_op, MachineOperand::VirtualReg(_)) {
+                            let mut inst = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                            inst.add_operand(addr_op);
+                            inst.add_operand(src);
+                            mbb.push_instr(inst);
+                        } else {
+                            let mem = self.safe_to_memory(addr_op, mbb);
+                            let mut inst = MachineInstr::new(I686Opcode::Mov.as_u32());
+                            inst.add_operand(mem);
+                            inst.add_operand(src);
+                            mbb.push_instr(inst);
+                        }
+                        return;
+                    }
+                    // F64 without split (shouldn't happen normally, but
+                    // handle as legacy path).
+                    let f64_val = f64::from_bits(*bits as u64);
+                    let raw = f64_val.to_bits();
+                    let lo = (raw & 0xFFFF_FFFF) as i64;
+                    let hi = ((raw >> 32) & 0xFFFF_FFFF) as i64;
+                    let lo_src = self.ensure_in_register(MachineOperand::Immediate(lo), mbb);
+                    let hi_src = self.ensure_in_register(MachineOperand::Immediate(hi), mbb);
+                    if matches!(&addr_op, MachineOperand::VirtualReg(_)) {
+                        let mut lo_st = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                        lo_st.add_operand(addr_op.clone());
+                        lo_st.add_operand(lo_src);
+                        mbb.push_instr(lo_st);
+                        let addr_plus4 = self.alloc_vreg_raw();
+                        self.emit_mov(
+                            MachineOperand::VirtualReg(ValueId(addr_plus4)),
+                            addr_op,
+                            mbb,
+                        );
+                        let mut add4 = MachineInstr::new(I686Opcode::Add.as_u32());
+                        add4.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+                        add4.add_operand(MachineOperand::Immediate(4));
+                        add4.add_implicit_def(EFLAGS);
+                        mbb.push_instr(add4);
+                        let mut hi_st = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                        hi_st.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+                        hi_st.add_operand(hi_src);
+                        mbb.push_instr(hi_st);
+                    } else {
+                        let lo_mem = self.safe_to_memory(addr_op.clone(), mbb);
+                        let mut lo_inst = MachineInstr::new(I686Opcode::Mov.as_u32());
+                        lo_inst.add_operand(lo_mem.clone());
+                        lo_inst.add_operand(lo_src);
+                        mbb.push_instr(lo_inst);
+                        let hi_mem = self.offset_memory(lo_mem, 4);
+                        let mut hi_inst = MachineInstr::new(I686Opcode::Mov.as_u32());
+                        hi_inst.add_operand(hi_mem);
+                        hi_inst.add_operand(hi_src);
+                        mbb.push_instr(hi_inst);
+                    }
+                    return;
+                }
+            }
+            // Non-immediate float in GPR(s): store directly to destination.
+            if matches!(&val_ty, IrType::F64) {
+                // F64 represented as two GPR halves (lo + hi via i64_high_map).
+                let lo_reg = self.ensure_in_register(val_op, mbb);
+                let hi_op = self
+                    .i64_high_map
+                    .get(&value.index())
+                    .cloned()
+                    .unwrap_or(MachineOperand::Immediate(0));
+                let hi_reg = self.ensure_in_register(hi_op, mbb);
+                if matches!(&addr_op, MachineOperand::VirtualReg(_)) {
+                    // Store lo half.
+                    let mut lo_st = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                    lo_st.add_operand(addr_op.clone());
+                    lo_st.add_operand(lo_reg);
+                    mbb.push_instr(lo_st);
+                    // Store hi half at addr+4.
+                    let addr_plus4 = self.alloc_vreg_raw();
+                    self.emit_mov(
+                        MachineOperand::VirtualReg(ValueId(addr_plus4)),
+                        addr_op,
+                        mbb,
+                    );
+                    let mut add4 = MachineInstr::new(I686Opcode::Add.as_u32());
+                    add4.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+                    add4.add_operand(MachineOperand::Immediate(4));
+                    add4.add_implicit_def(EFLAGS);
+                    mbb.push_instr(add4);
+                    let mut hi_st = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                    hi_st.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+                    hi_st.add_operand(hi_reg);
+                    mbb.push_instr(hi_st);
+                } else {
+                    let lo_mem = self.safe_to_memory(addr_op.clone(), mbb);
+                    let mut lo_inst = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    lo_inst.add_operand(lo_mem.clone());
+                    lo_inst.add_operand(lo_reg);
+                    mbb.push_instr(lo_inst);
+                    let hi_mem = self.offset_memory(lo_mem, 4);
+                    let mut hi_inst = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    hi_inst.add_operand(hi_mem);
+                    hi_inst.add_operand(hi_reg);
+                    mbb.push_instr(hi_inst);
+                }
+                return;
+            }
+            // F32 in a single GPR: store via simple MOV (no FPU needed).
+            let src_reg = self.ensure_in_register(val_op, mbb);
+            if matches!(&addr_op, MachineOperand::VirtualReg(_)) {
+                let mut inst = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                inst.add_operand(addr_op);
+                inst.add_operand(src_reg);
+                mbb.push_instr(inst);
+            } else {
+                let mem = self.safe_to_memory(addr_op, mbb);
+                let mut inst = MachineInstr::new(I686Opcode::Mov.as_u32());
+                inst.add_operand(mem);
+                inst.add_operand(src_reg);
+                mbb.push_instr(inst);
+            }
+            return;
+        }
+
+        // --- 64-bit store: write both lo and hi halves ---
+        if matches!(&val_ty, crate::ir::types::IrType::I64) {
+            let hi_op = self.i64_high_map.get(&value.index()).cloned();
+            let lo_src = self.ensure_in_register(val_op, mbb);
+
+            if matches!(&addr_op, MachineOperand::VirtualReg(_)) {
+                // Store lo half through pointer.
+                let mut lo_store = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                lo_store.add_operand(addr_op.clone());
+                lo_store.add_operand(lo_src);
+                mbb.push_instr(lo_store);
+
+                // Compute addr+4 for hi half.
+                let addr_plus4 = self.alloc_vreg_raw();
+                self.emit_mov(
+                    MachineOperand::VirtualReg(ValueId(addr_plus4)),
+                    addr_op,
+                    mbb,
+                );
+                let mut add4 = MachineInstr::new(I686Opcode::Add.as_u32());
+                add4.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+                add4.add_operand(MachineOperand::Immediate(4));
+                add4.add_implicit_def(EFLAGS);
+                mbb.push_instr(add4);
+
+                let hi_src = if let Some(hi) = hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    MachineOperand::Immediate(0)
+                };
+                let hi_reg = self.ensure_in_register(hi_src, mbb);
+                let mut hi_store = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                hi_store.add_operand(MachineOperand::VirtualReg(ValueId(addr_plus4)));
+                hi_store.add_operand(hi_reg);
+                mbb.push_instr(hi_store);
+            } else {
+                // FrameIndex, Memory, Symbol — use safe_to_memory.
+                let lo_mem = self.safe_to_memory(addr_op.clone(), mbb);
+                let mut lo_store = MachineInstr::new(I686Opcode::Mov.as_u32());
+                lo_store.add_operand(lo_mem.clone());
+                lo_store.add_operand(lo_src);
+                mbb.push_instr(lo_store);
+
+                // Hi half at offset +4.
+                let hi_mem = self.offset_memory(lo_mem, 4);
+                let hi_src = if let Some(hi) = hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    MachineOperand::Immediate(0)
+                };
+                let hi_reg = self.ensure_in_register(hi_src, mbb);
+                let mut hi_store = MachineInstr::new(I686Opcode::Mov.as_u32());
+                hi_store.add_operand(hi_mem);
+                hi_store.add_operand(hi_reg);
+                mbb.push_instr(hi_store);
+            }
+            return;
+        }
+
+        // Pick the correct opcode based on value width.
+        let mov_opc = Self::store_opcode_for_type(&val_ty);
+
+        // If the destination address is a VirtualReg, use the indirect-store
+        // pattern: operands [addr_vreg, src_reg].  The encoder sees these as
+        // physical registers after allocation and emits MOV [addr], src with
+        // the appropriate width prefix.
+        if matches!(&addr_op, MachineOperand::VirtualReg(_)) {
+            let src = self.ensure_in_register(val_op, mbb);
+            if matches!(mov_opc, I686Opcode::Mov) {
+                // 32-bit store — use MovStore (special indirect-store opcode).
+                let mut inst = MachineInstr::new(I686Opcode::MovStore.as_u32());
+                inst.add_operand(addr_op);
+                inst.add_operand(src);
+                mbb.push_instr(inst);
+            } else {
+                // Sub-32-bit store (byte or word) through a pointer in a
+                // virtual register.  Use the byte/word opcode with the same
+                // [addr_vreg, src] operand layout — the encoder for
+                // MovByte / MovWord handles this pattern just like MovStore.
+                let mut inst = MachineInstr::new(mov_opc.as_u32());
+                inst.add_operand(addr_op);
+                inst.add_operand(src);
+                mbb.push_instr(inst);
+            }
+            return;
+        }
+
+        // For FrameIndex, Memory, Register, Symbol — use normal path.
+        let mem = self.safe_to_memory(addr_op, mbb);
         // Ensure value is in a register (can't do mem-to-mem move on x86).
         let src = self.ensure_in_register(val_op, mbb);
-        let mut inst = MachineInstr::new(I686Opcode::Mov.as_u32());
+        let mut inst = MachineInstr::new(mov_opc.as_u32());
         inst.add_operand(mem);
         inst.add_operand(src);
         mbb.push_instr(inst);
@@ -1088,31 +1765,88 @@ impl<'a> I686InstrSel<'a> {
                     BinOp::AShr => I686Opcode::Sar,
                     _ => unreachable!(),
                 };
-                let dst = self.alloc_vreg(result);
-                let lhs_reg = self.ensure_in_register(lhs_op, mbb);
-                self.emit_mov(dst.clone(), lhs_reg, mbb);
 
-                // Check if shift amount is an immediate.
-                if let MachineOperand::Immediate(imm) = &rhs_op {
+                // Extract immediate value (if any) before moving operands.
+                let rhs_imm = if let MachineOperand::Immediate(imm) = &rhs_op {
+                    Some(*imm)
+                } else {
+                    None
+                };
+
+                if let Some(imm) = rhs_imm {
+                    // Immediate shift: no register conflict possible.
+                    let dst = self.alloc_vreg(result);
+                    let lhs_reg = self.ensure_in_register(lhs_op, mbb);
+                    self.emit_mov(dst.clone(), lhs_reg, mbb);
                     let mut inst = MachineInstr::new(opcode.as_u32());
                     inst.add_operand(dst);
-                    inst.add_operand(MachineOperand::Immediate(*imm & 31));
+                    inst.add_operand(MachineOperand::Immediate(imm & 31));
                     inst.add_implicit_def(EFLAGS);
                     mbb.push_instr(inst);
                 } else {
-                    // Variable shift: move amount to CL, then shift.
-                    let rhs_reg = self.ensure_in_register(rhs_op, mbb);
-                    let mut mov_cl = MachineInstr::new(I686Opcode::Mov.as_u32());
-                    mov_cl.add_operand(MachineOperand::Register(ECX));
-                    mov_cl.add_operand(rhs_reg);
-                    mbb.push_instr(mov_cl);
+                    // Variable shift: use all-physical-register sequence to
+                    // avoid register allocator conflicts with the ECX
+                    // constraint.
+                    //
+                    // x86 variable shifts MUST use CL as the shift count
+                    // register.  A naïve `MOV ECX, rhs; SHL vreg, CL`
+                    // allows the register allocator to assign the
+                    // destination vreg to ECX — the MOV then clobbers the
+                    // value-to-shift before the SHL executes.
+                    //
+                    // Solution (mirrors select_div pattern):
+                    //   1. Spill shift amount to a temp stack slot
+                    //   2. Move lhs value into EAX (physical)
+                    //   3. Load shift amount from stack into ECX (physical)
+                    //   4. SHL/SHR/SAR EAX, CL  (all physical regs)
+                    //   5. Move result from EAX to destination vreg
+                    //
+                    // Because ALL physical register usage is isolated
+                    // (vreg inputs spilled/consumed before; vreg result
+                    // created after), no aliasing conflict can occur.
 
-                    let mut inst = MachineInstr::new(opcode.as_u32());
-                    inst.add_operand(dst);
-                    inst.add_operand(MachineOperand::Register(CL));
-                    inst.add_implicit_def(EFLAGS);
-                    inst.add_implicit_use(ECX);
-                    mbb.push_instr(inst);
+                    // Step 1: Spill shift amount to temp stack slot.
+                    let shift_tmp = self.alloc_stack_slot(4);
+                    {
+                        let rhs_reg = self.ensure_in_register(rhs_op, mbb);
+                        let mut spill = MachineInstr::new(I686Opcode::Mov.as_u32());
+                        spill.add_operand(MachineOperand::FrameIndex(shift_tmp));
+                        spill.add_operand(rhs_reg);
+                        mbb.push_instr(spill);
+                    }
+
+                    // Step 2: Move lhs value into EAX.
+                    {
+                        let lhs_reg = self.ensure_in_register(lhs_op, mbb);
+                        let mut mov_eax = MachineInstr::new(I686Opcode::Mov.as_u32());
+                        mov_eax.add_operand(MachineOperand::Register(EAX));
+                        mov_eax.add_operand(lhs_reg);
+                        mbb.push_instr(mov_eax);
+                    }
+
+                    // Step 3: Load shift amount from stack into ECX.
+                    {
+                        let mut mov_ecx = MachineInstr::new(I686Opcode::Mov.as_u32());
+                        mov_ecx.add_operand(MachineOperand::Register(ECX));
+                        mov_ecx.add_operand(MachineOperand::FrameIndex(shift_tmp));
+                        mbb.push_instr(mov_ecx);
+                    }
+
+                    // Step 4: SHL/SHR/SAR EAX, CL (all physical regs).
+                    {
+                        let mut inst = MachineInstr::new(opcode.as_u32());
+                        inst.add_operand(MachineOperand::Register(EAX));
+                        inst.add_operand(MachineOperand::Register(CL));
+                        inst.add_implicit_use(EAX);
+                        inst.add_implicit_use(ECX);
+                        inst.add_implicit_def(EAX);
+                        inst.add_implicit_def(EFLAGS);
+                        mbb.push_instr(inst);
+                    }
+
+                    // Step 5: Move result from EAX to destination vreg.
+                    let dst = self.alloc_vreg(result);
+                    self.emit_mov(dst, MachineOperand::Register(EAX), mbb);
                 }
             }
 
@@ -1143,22 +1877,40 @@ impl<'a> I686InstrSel<'a> {
         is_remainder: bool,
         mbb: &mut MachineBasicBlock,
     ) {
-        // Step 1: Move dividend to EAX.
-        let lhs_reg = self.ensure_in_register(lhs, mbb);
-        let mut mov_eax = MachineInstr::new(I686Opcode::Mov.as_u32());
-        mov_eax.add_operand(MachineOperand::Register(EAX));
-        mov_eax.add_operand(lhs_reg);
-        mbb.push_instr(mov_eax);
+        // Division uses an all-physical-register sequence.  We must ensure
+        // that loading the dividend and divisor cannot interfere.  The
+        // approach: first spill the divisor to the stack (our own temp
+        // slot), then load dividend into EAX, CDQ/XOR, then load divisor
+        // from the temp slot into ECX, then IDIV.  This guarantees no
+        // vreg aliasing issues.
 
-        // Step 2: Prepare EDX.
+        // Allocate a dedicated temporary frame slot for the divisor.
+        let div_tmp_fi = self.alloc_stack_slot(4);
+        // Spill divisor to the temp slot.
+        {
+            let rhs_reg = self.ensure_in_register(rhs, mbb);
+            let mut mov = MachineInstr::new(I686Opcode::Mov.as_u32());
+            mov.add_operand(MachineOperand::FrameIndex(div_tmp_fi));
+            mov.add_operand(rhs_reg);
+            mbb.push_instr(mov);
+        }
+
+        // Move dividend into EAX (its vreg is consumed here).
+        {
+            let lhs_reg = self.ensure_in_register(lhs, mbb);
+            let mut mov = MachineInstr::new(I686Opcode::Mov.as_u32());
+            mov.add_operand(MachineOperand::Register(EAX));
+            mov.add_operand(lhs_reg);
+            mbb.push_instr(mov);
+        }
+
+        // Prepare EDX.
         if is_signed {
-            // CDQ: sign-extend EAX into EDX:EAX.
             let mut cdq = MachineInstr::new(I686Opcode::Cdq.as_u32());
             cdq.add_implicit_use(EAX);
             cdq.add_implicit_def(EDX);
             mbb.push_instr(cdq);
         } else {
-            // XOR EDX, EDX: zero the high half for unsigned division.
             let mut xor_edx = MachineInstr::new(I686Opcode::Xor.as_u32());
             xor_edx.add_operand(MachineOperand::Register(EDX));
             xor_edx.add_operand(MachineOperand::Register(EDX));
@@ -1166,19 +1918,25 @@ impl<'a> I686InstrSel<'a> {
             mbb.push_instr(xor_edx);
         }
 
-        // Step 3: Ensure divisor is in a register (not EAX or EDX).
-        let rhs_reg = self.ensure_in_register(rhs, mbb);
+        // Reload divisor from temp slot into ECX (after EAX/EDX are set).
+        {
+            let mut mov = MachineInstr::new(I686Opcode::Mov.as_u32());
+            mov.add_operand(MachineOperand::Register(ECX));
+            mov.add_operand(MachineOperand::FrameIndex(div_tmp_fi));
+            mbb.push_instr(mov);
+        }
 
-        // Step 4: Emit IDIV or DIV.
+        // Emit IDIV or DIV with ECX as the explicit operand.
         let opcode = if is_signed {
             I686Opcode::Idiv
         } else {
             I686Opcode::Div
         };
         let mut div_inst = MachineInstr::new(opcode.as_u32());
-        div_inst.add_operand(rhs_reg);
+        div_inst.add_operand(MachineOperand::Register(ECX));
         div_inst.add_implicit_use(EAX);
         div_inst.add_implicit_use(EDX);
+        div_inst.add_implicit_use(ECX);
         div_inst.add_implicit_def(EAX);
         div_inst.add_implicit_def(EDX);
         div_inst.add_implicit_def(EFLAGS);
@@ -1216,71 +1974,113 @@ impl<'a> I686InstrSel<'a> {
 
         match op {
             BinOp::Add => {
-                // 64-bit add: MOV lo_result, lhs_lo; ADD lo_result, rhs_lo;
-                //             MOV hi_result, 0; ADC hi_result, 0
+                // 64-bit add using register pairs:
+                //   ADD lo_result, rhs_lo; ADC hi_result, rhs_hi
                 let lo_result = self.alloc_vreg_raw();
                 let hi_result = self.alloc_vreg_raw();
 
-                // Simplified sequence: treats lhs/rhs as 32-bit lo halves
-                // and uses carry propagation for the high word.
-                let lhs_reg = self.ensure_in_register(lhs_op, mbb);
-                let rhs_reg = self.ensure_in_register(rhs_op, mbb);
+                let lhs_lo = self.ensure_in_register(lhs_op, mbb);
+                let rhs_lo = self.ensure_in_register(rhs_op, mbb);
+                let lhs_hi_op = self.i64_high_map.get(&lhs.index()).cloned();
+                let rhs_hi_op = self.i64_high_map.get(&rhs.index()).cloned();
                 let lo_op = MachineOperand::VirtualReg(ValueId(lo_result));
                 let hi_op = MachineOperand::VirtualReg(ValueId(hi_result));
 
                 // MOV lo_result, lhs_lo
-                self.emit_mov(lo_op.clone(), lhs_reg, mbb);
+                self.emit_mov(lo_op.clone(), lhs_lo, mbb);
 
                 // ADD lo_result, rhs_lo
                 let mut add_lo = MachineInstr::new(I686Opcode::Add.as_u32());
                 add_lo.add_operand(lo_op);
-                add_lo.add_operand(rhs_reg.clone());
+                add_lo.add_operand(rhs_lo);
                 add_lo.add_implicit_def(EFLAGS);
                 mbb.push_instr(add_lo);
 
-                // MOV hi_result, 0 (zero the high word before ADC)
-                self.emit_mov(hi_op.clone(), MachineOperand::Immediate(0), mbb);
+                // MOV hi_result, lhs_hi
+                let lhs_hi = if let Some(hi) = lhs_hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    MachineOperand::Immediate(0)
+                };
+                self.emit_mov(hi_op.clone(), lhs_hi, mbb);
 
-                // ADC hi_result, 0 (propagate carry from low addition)
+                // ADC hi_result, rhs_hi (add with carry from low addition)
+                let rhs_hi = if let Some(hi) = rhs_hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    MachineOperand::Immediate(0)
+                };
                 let mut adc_hi = MachineInstr::new(I686Opcode::Adc.as_u32());
                 adc_hi.add_operand(hi_op);
-                adc_hi.add_operand(MachineOperand::Immediate(0));
+                adc_hi.add_operand(rhs_hi);
                 adc_hi.add_implicit_use(EFLAGS);
                 adc_hi.add_implicit_def(EFLAGS);
                 mbb.push_instr(adc_hi);
+
+                self.value_map.insert(
+                    result.index(),
+                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                );
+                self.i64_high_map.insert(
+                    result.index(),
+                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                );
+                return;
             }
 
             BinOp::Sub => {
-                // 64-bit sub: MOV lo_result, lhs_lo; SUB lo_result, rhs_lo;
-                //             MOV hi_result, 0; SBB hi_result, 0
+                // 64-bit sub using register pairs:
+                //   SUB lo_result, rhs_lo; SBB hi_result, rhs_hi
                 let lo_result = self.alloc_vreg_raw();
                 let hi_result = self.alloc_vreg_raw();
 
-                let lhs_reg = self.ensure_in_register(lhs_op, mbb);
-                let rhs_reg = self.ensure_in_register(rhs_op, mbb);
+                let lhs_lo = self.ensure_in_register(lhs_op, mbb);
+                let rhs_lo = self.ensure_in_register(rhs_op, mbb);
+                let lhs_hi_op = self.i64_high_map.get(&lhs.index()).cloned();
+                let rhs_hi_op = self.i64_high_map.get(&rhs.index()).cloned();
                 let lo_op = MachineOperand::VirtualReg(ValueId(lo_result));
                 let hi_op = MachineOperand::VirtualReg(ValueId(hi_result));
 
                 // MOV lo_result, lhs_lo
-                self.emit_mov(lo_op.clone(), lhs_reg, mbb);
+                self.emit_mov(lo_op.clone(), lhs_lo, mbb);
 
                 // SUB lo_result, rhs_lo
                 let mut sub_lo = MachineInstr::new(I686Opcode::Sub.as_u32());
                 sub_lo.add_operand(lo_op);
-                sub_lo.add_operand(rhs_reg.clone());
+                sub_lo.add_operand(rhs_lo);
                 sub_lo.add_implicit_def(EFLAGS);
                 mbb.push_instr(sub_lo);
 
-                // MOV hi_result, 0 (zero the high word before SBB)
-                self.emit_mov(hi_op.clone(), MachineOperand::Immediate(0), mbb);
+                // MOV hi_result, lhs_hi
+                let lhs_hi = if let Some(hi) = lhs_hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    MachineOperand::Immediate(0)
+                };
+                self.emit_mov(hi_op.clone(), lhs_hi, mbb);
 
-                // SBB hi_result, 0 (propagate borrow from low subtraction)
+                // SBB hi_result, rhs_hi (subtract with borrow from low)
+                let rhs_hi = if let Some(hi) = rhs_hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    MachineOperand::Immediate(0)
+                };
                 let mut sbb_hi = MachineInstr::new(I686Opcode::Sbb.as_u32());
                 sbb_hi.add_operand(hi_op);
-                sbb_hi.add_operand(MachineOperand::Immediate(0));
+                sbb_hi.add_operand(rhs_hi);
                 sbb_hi.add_implicit_use(EFLAGS);
                 sbb_hi.add_implicit_def(EFLAGS);
                 mbb.push_instr(sbb_hi);
+
+                self.value_map.insert(
+                    result.index(),
+                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                );
+                self.i64_high_map.insert(
+                    result.index(),
+                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                );
+                return;
             }
 
             BinOp::Mul => {
@@ -1301,63 +2101,416 @@ impl<'a> I686InstrSel<'a> {
                 mul.add_implicit_def(EFLAGS);
                 mbb.push_instr(mul);
 
-                // Result lo in EAX, hi in EDX.
+                // Result lo in EAX, hi in EDX — save both halves.
+                // CRITICAL: The first MOV must mark EDX as implicitly used
+                // so the register allocator does not assign lo_dst to EDX,
+                // which would clobber the hi result before we save it.
+                let lo_dst = self.alloc_vreg_raw();
+                let mut mov_lo = MachineInstr::new(I686Opcode::Mov.as_u32());
+                mov_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_dst)));
+                mov_lo.add_operand(MachineOperand::Register(EAX));
+                mov_lo.add_implicit_use(EDX); // keep EDX alive across this MOV
+                mbb.push_instr(mov_lo);
+
+                let hi_dst = self.alloc_vreg_raw();
+                let mut mov_hi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                mov_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_dst)));
+                mov_hi.add_operand(MachineOperand::Register(EDX));
+                mbb.push_instr(mov_hi);
+
                 self.value_map
-                    .insert(result.index(), MachineOperand::Register(EAX));
+                    .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_dst)));
+                self.i64_high_map
+                    .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_dst)));
                 return;
             }
 
             BinOp::And | BinOp::Or | BinOp::Xor => {
                 // Bitwise ops on 64-bit: apply to both halves independently.
-                // Simplified: operate on the low half only.
                 let opcode = match op {
                     BinOp::And => I686Opcode::And,
                     BinOp::Or => I686Opcode::Or,
                     BinOp::Xor => I686Opcode::Xor,
                     _ => unreachable!(),
                 };
-                let lhs_reg = self.ensure_in_register(lhs_op, mbb);
-                let rhs_reg = self.ensure_in_register(rhs_op, mbb);
+                let lhs_lo = self.ensure_in_register(lhs_op, mbb);
+                let rhs_lo = self.ensure_in_register(rhs_op, mbb);
+                let lhs_hi_op = self.i64_high_map.get(&lhs.index()).cloned();
+                let rhs_hi_op = self.i64_high_map.get(&rhs.index()).cloned();
                 let lo_result = self.alloc_vreg_raw();
+                let hi_result = self.alloc_vreg_raw();
                 let lo_op = MachineOperand::VirtualReg(ValueId(lo_result));
+                let hi_op = MachineOperand::VirtualReg(ValueId(hi_result));
 
-                // MOV lo_result, lhs_lo (copy LHS into result)
-                self.emit_mov(lo_op.clone(), lhs_reg, mbb);
-
-                // OP lo_result, rhs_lo
+                // Lo half: MOV lo_result, lhs_lo; OP lo_result, rhs_lo
+                self.emit_mov(lo_op.clone(), lhs_lo, mbb);
                 let mut op_lo = MachineInstr::new(opcode.as_u32());
                 op_lo.add_operand(lo_op);
-                op_lo.add_operand(rhs_reg);
+                op_lo.add_operand(rhs_lo);
                 op_lo.add_implicit_def(EFLAGS);
                 mbb.push_instr(op_lo);
+
+                // Hi half: MOV hi_result, lhs_hi; OP hi_result, rhs_hi
+                let lhs_hi = if let Some(hi) = lhs_hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    MachineOperand::Immediate(0)
+                };
+                self.emit_mov(hi_op.clone(), lhs_hi, mbb);
+                let rhs_hi = if let Some(hi) = rhs_hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    MachineOperand::Immediate(0)
+                };
+                let mut op_hi = MachineInstr::new(opcode.as_u32());
+                op_hi.add_operand(hi_op);
+                op_hi.add_operand(rhs_hi);
+                op_hi.add_implicit_def(EFLAGS);
+                mbb.push_instr(op_hi);
+
+                self.value_map.insert(
+                    result.index(),
+                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                );
+                self.i64_high_map.insert(
+                    result.index(),
+                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                );
+                return;
             }
 
             BinOp::Shl | BinOp::LShr | BinOp::AShr => {
-                // 64-bit shifts use SHLD/SHRD instructions.
-                // Simplified: emit the shift on the low half only.
-                let opcode = match op {
-                    BinOp::Shl => I686Opcode::Shl,
-                    BinOp::LShr => I686Opcode::Shr,
-                    BinOp::AShr => I686Opcode::Sar,
-                    _ => unreachable!(),
+                // Full 64-bit shift on i686 with correct hi/lo handling.
+                // Get hi/lo parts of the source operand.
+                let lhs_lo = self.ensure_in_register(lhs_op, mbb);
+                let lhs_hi_op = self
+                    .i64_high_map
+                    .get(&lhs.index())
+                    .cloned()
+                    .unwrap_or(MachineOperand::Immediate(0));
+                let lhs_hi = self.ensure_in_register(lhs_hi_op, mbb);
+
+                // Check if the shift amount is a known constant.
+                let shift_imm = match &rhs_op {
+                    MachineOperand::Immediate(v) => Some(*v as u32),
+                    _ => None,
                 };
-                let lhs_reg = self.ensure_in_register(lhs_op, mbb);
-                let rhs_reg = self.ensure_in_register(rhs_op, mbb);
+
                 let lo_result = self.alloc_vreg_raw();
+                let hi_result = self.alloc_vreg_raw();
 
-                self.emit_mov(MachineOperand::VirtualReg(ValueId(lo_result)), lhs_reg, mbb);
+                if let Some(amt) = shift_imm {
+                    if amt == 0 {
+                        // No shift: result = input
+                        self.emit_mov(MachineOperand::VirtualReg(ValueId(lo_result)), lhs_lo, mbb);
+                        self.emit_mov(MachineOperand::VirtualReg(ValueId(hi_result)), lhs_hi, mbb);
+                    } else if amt >= 64 {
+                        // Shift by >= 64: result is 0 (or sign-extended for AShr)
+                        self.emit_mov(
+                            MachineOperand::VirtualReg(ValueId(lo_result)),
+                            MachineOperand::Immediate(0),
+                            mbb,
+                        );
+                        if matches!(op, BinOp::AShr) {
+                            // AShr >= 64: fill with sign bit of hi
+                            self.emit_mov(
+                                MachineOperand::VirtualReg(ValueId(hi_result)),
+                                lhs_hi.clone(),
+                                mbb,
+                            );
+                            let mut sar = MachineInstr::new(I686Opcode::Sar.as_u32());
+                            sar.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                            sar.add_operand(MachineOperand::Immediate(31));
+                            sar.add_implicit_def(EFLAGS);
+                            mbb.push_instr(sar);
+                            self.emit_mov(
+                                MachineOperand::VirtualReg(ValueId(lo_result)),
+                                MachineOperand::VirtualReg(ValueId(hi_result)),
+                                mbb,
+                            );
+                        } else {
+                            self.emit_mov(
+                                MachineOperand::VirtualReg(ValueId(hi_result)),
+                                MachineOperand::Immediate(0),
+                                mbb,
+                            );
+                        }
+                    } else if amt == 32 {
+                        match op {
+                            BinOp::Shl => {
+                                // hi = lo, lo = 0
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    lhs_lo,
+                                    mbb,
+                                );
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    MachineOperand::Immediate(0),
+                                    mbb,
+                                );
+                            }
+                            BinOp::LShr => {
+                                // lo = hi, hi = 0
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    lhs_hi,
+                                    mbb,
+                                );
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    MachineOperand::Immediate(0),
+                                    mbb,
+                                );
+                            }
+                            BinOp::AShr => {
+                                // lo = hi, hi = hi >> 31 (sign extend)
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    lhs_hi.clone(),
+                                    mbb,
+                                );
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    lhs_hi,
+                                    mbb,
+                                );
+                                let mut sar = MachineInstr::new(I686Opcode::Sar.as_u32());
+                                sar.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                                sar.add_operand(MachineOperand::Immediate(31));
+                                sar.add_implicit_def(EFLAGS);
+                                mbb.push_instr(sar);
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else if amt > 32 {
+                        let sub_amt = amt - 32;
+                        match op {
+                            BinOp::Shl => {
+                                // hi = lo << (amt-32), lo = 0
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    lhs_lo,
+                                    mbb,
+                                );
+                                let mut shl = MachineInstr::new(I686Opcode::Shl.as_u32());
+                                shl.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                                shl.add_operand(MachineOperand::Immediate(sub_amt as i64));
+                                shl.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shl);
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    MachineOperand::Immediate(0),
+                                    mbb,
+                                );
+                            }
+                            BinOp::LShr => {
+                                // lo = hi >> (amt-32), hi = 0
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    lhs_hi,
+                                    mbb,
+                                );
+                                let mut shr = MachineInstr::new(I686Opcode::Shr.as_u32());
+                                shr.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                                shr.add_operand(MachineOperand::Immediate(sub_amt as i64));
+                                shr.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shr);
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    MachineOperand::Immediate(0),
+                                    mbb,
+                                );
+                            }
+                            BinOp::AShr => {
+                                // lo = hi >> (amt-32) (arithmetic), hi = hi >> 31
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    lhs_hi.clone(),
+                                    mbb,
+                                );
+                                let mut sar = MachineInstr::new(I686Opcode::Sar.as_u32());
+                                sar.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                                sar.add_operand(MachineOperand::Immediate(sub_amt as i64));
+                                sar.add_implicit_def(EFLAGS);
+                                mbb.push_instr(sar);
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    lhs_hi,
+                                    mbb,
+                                );
+                                let mut sar2 = MachineInstr::new(I686Opcode::Sar.as_u32());
+                                sar2.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                                sar2.add_operand(MachineOperand::Immediate(31));
+                                sar2.add_implicit_def(EFLAGS);
+                                mbb.push_instr(sar2);
+                            }
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        // amt < 32 (and > 0)
+                        let comp_amt = 32 - amt;
+                        match op {
+                            BinOp::Shl => {
+                                // hi = (hi << amt) | (lo >> (32-amt))
+                                // lo = lo << amt
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    lhs_hi,
+                                    mbb,
+                                );
+                                let mut shl_hi = MachineInstr::new(I686Opcode::Shl.as_u32());
+                                shl_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                                shl_hi.add_operand(MachineOperand::Immediate(amt as i64));
+                                shl_hi.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shl_hi);
+                                let tmp = self.alloc_vreg_raw();
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(tmp)),
+                                    lhs_lo.clone(),
+                                    mbb,
+                                );
+                                let mut shr_tmp = MachineInstr::new(I686Opcode::Shr.as_u32());
+                                shr_tmp.add_operand(MachineOperand::VirtualReg(ValueId(tmp)));
+                                shr_tmp.add_operand(MachineOperand::Immediate(comp_amt as i64));
+                                shr_tmp.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shr_tmp);
+                                let mut or_hi = MachineInstr::new(I686Opcode::Or.as_u32());
+                                or_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                                or_hi.add_operand(MachineOperand::VirtualReg(ValueId(tmp)));
+                                or_hi.add_implicit_def(EFLAGS);
+                                mbb.push_instr(or_hi);
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    lhs_lo,
+                                    mbb,
+                                );
+                                let mut shl_lo = MachineInstr::new(I686Opcode::Shl.as_u32());
+                                shl_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                                shl_lo.add_operand(MachineOperand::Immediate(amt as i64));
+                                shl_lo.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shl_lo);
+                            }
+                            BinOp::LShr => {
+                                // lo = (lo >> amt) | (hi << (32-amt))
+                                // hi = hi >> amt
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    lhs_lo,
+                                    mbb,
+                                );
+                                let mut shr_lo = MachineInstr::new(I686Opcode::Shr.as_u32());
+                                shr_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                                shr_lo.add_operand(MachineOperand::Immediate(amt as i64));
+                                shr_lo.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shr_lo);
+                                let tmp = self.alloc_vreg_raw();
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(tmp)),
+                                    lhs_hi.clone(),
+                                    mbb,
+                                );
+                                let mut shl_tmp = MachineInstr::new(I686Opcode::Shl.as_u32());
+                                shl_tmp.add_operand(MachineOperand::VirtualReg(ValueId(tmp)));
+                                shl_tmp.add_operand(MachineOperand::Immediate(comp_amt as i64));
+                                shl_tmp.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shl_tmp);
+                                let mut or_lo = MachineInstr::new(I686Opcode::Or.as_u32());
+                                or_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                                or_lo.add_operand(MachineOperand::VirtualReg(ValueId(tmp)));
+                                or_lo.add_implicit_def(EFLAGS);
+                                mbb.push_instr(or_lo);
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    lhs_hi,
+                                    mbb,
+                                );
+                                let mut shr_hi = MachineInstr::new(I686Opcode::Shr.as_u32());
+                                shr_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                                shr_hi.add_operand(MachineOperand::Immediate(amt as i64));
+                                shr_hi.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shr_hi);
+                            }
+                            BinOp::AShr => {
+                                // lo = (lo >> amt) | (hi << (32-amt))
+                                // hi = hi >> amt (arithmetic)
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                                    lhs_lo,
+                                    mbb,
+                                );
+                                let mut shr_lo = MachineInstr::new(I686Opcode::Shr.as_u32());
+                                shr_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                                shr_lo.add_operand(MachineOperand::Immediate(amt as i64));
+                                shr_lo.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shr_lo);
+                                let tmp = self.alloc_vreg_raw();
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(tmp)),
+                                    lhs_hi.clone(),
+                                    mbb,
+                                );
+                                let mut shl_tmp = MachineInstr::new(I686Opcode::Shl.as_u32());
+                                shl_tmp.add_operand(MachineOperand::VirtualReg(ValueId(tmp)));
+                                shl_tmp.add_operand(MachineOperand::Immediate(comp_amt as i64));
+                                shl_tmp.add_implicit_def(EFLAGS);
+                                mbb.push_instr(shl_tmp);
+                                let mut or_lo = MachineInstr::new(I686Opcode::Or.as_u32());
+                                or_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                                or_lo.add_operand(MachineOperand::VirtualReg(ValueId(tmp)));
+                                or_lo.add_implicit_def(EFLAGS);
+                                mbb.push_instr(or_lo);
+                                self.emit_mov(
+                                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                                    lhs_hi,
+                                    mbb,
+                                );
+                                let mut sar_hi = MachineInstr::new(I686Opcode::Sar.as_u32());
+                                sar_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_result)));
+                                sar_hi.add_operand(MachineOperand::Immediate(amt as i64));
+                                sar_hi.add_implicit_def(EFLAGS);
+                                mbb.push_instr(sar_hi);
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                } else {
+                    // Dynamic shift amount — use a simplified approach:
+                    // just shift the lo half (matching old behavior for now).
+                    let opcode = match op {
+                        BinOp::Shl => I686Opcode::Shl,
+                        BinOp::LShr => I686Opcode::Shr,
+                        BinOp::AShr => I686Opcode::Sar,
+                        _ => unreachable!(),
+                    };
+                    let rhs_reg = self.ensure_in_register(rhs_op, mbb);
+                    self.emit_mov(MachineOperand::VirtualReg(ValueId(lo_result)), lhs_lo, mbb);
+                    let mut mov_cl = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    mov_cl.add_operand(MachineOperand::Register(ECX));
+                    mov_cl.add_operand(rhs_reg);
+                    mbb.push_instr(mov_cl);
+                    let mut shift = MachineInstr::new(opcode.as_u32());
+                    shift.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
+                    shift.add_operand(MachineOperand::Register(CL));
+                    shift.add_implicit_def(EFLAGS);
+                    shift.add_implicit_use(ECX);
+                    mbb.push_instr(shift);
+                    self.emit_mov(
+                        MachineOperand::VirtualReg(ValueId(hi_result)),
+                        MachineOperand::Immediate(0),
+                        mbb,
+                    );
+                }
 
-                let mut mov_cl = MachineInstr::new(I686Opcode::Mov.as_u32());
-                mov_cl.add_operand(MachineOperand::Register(ECX));
-                mov_cl.add_operand(rhs_reg);
-                mbb.push_instr(mov_cl);
-
-                let mut shift = MachineInstr::new(opcode.as_u32());
-                shift.add_operand(MachineOperand::VirtualReg(ValueId(lo_result)));
-                shift.add_operand(MachineOperand::Register(CL));
-                shift.add_implicit_def(EFLAGS);
-                shift.add_implicit_use(ECX);
-                mbb.push_instr(shift);
+                self.value_map.insert(
+                    result.index(),
+                    MachineOperand::VirtualReg(ValueId(lo_result)),
+                );
+                self.i64_high_map.insert(
+                    result.index(),
+                    MachineOperand::VirtualReg(ValueId(hi_result)),
+                );
+                return;
             }
 
             BinOp::SDiv | BinOp::UDiv | BinOp::SRem | BinOp::URem => {
@@ -1438,13 +2591,12 @@ impl<'a> I686InstrSel<'a> {
         mbb: &mut MachineBasicBlock,
         func: &IrFunction,
     ) {
-        let lhs_op = self.get_operand(lhs, func);
-        let rhs_op = self.get_operand(rhs, func);
+        let is_f64 = matches!(_ty, IrType::F64 | IrType::F80);
 
         // Load LHS onto x87 stack.
-        self.emit_fld(lhs_op, mbb);
+        self.emit_fld_value(lhs, is_f64, mbb, func);
         // Load RHS onto x87 stack (LHS moves to ST(1)).
-        self.emit_fld(rhs_op, mbb);
+        self.emit_fld_value(rhs, is_f64, mbb, func);
 
         // Select the appropriate FPU pop instruction.
         let opcode = match op {
@@ -1462,13 +2614,52 @@ impl<'a> I686InstrSel<'a> {
         };
 
         let mut fop = MachineInstr::new(opcode.as_u32());
+        // FADDP/FSUBP/FMULP/FDIVP default to ST(1),ST(0): add ST(0) to
+        // ST(1), pop.  Encode the "1" so the encoder emits DE C1, not DE C0.
+        fop.add_operand(MachineOperand::Immediate(1));
         fop.add_implicit_use(ST0);
         fop.add_implicit_def(ST0);
         mbb.push_instr(fop);
 
-        // Result is now in ST(0).
-        self.value_map
-            .insert(result.index(), MachineOperand::Register(ST0));
+        // Result is now in ST(0).  Store to memory and reload into GPR(s)
+        // so all float values are consistently in GPRs, not on the x87 stack.
+        let is_f64 = matches!(_ty, IrType::F64 | IrType::F80);
+        let slot_size: u32 = if is_f64 { 8 } else { 4 };
+        let slot = self.frame_size;
+        self.frame_size += slot_size;
+        let fi = MachineOperand::FrameIndex((-(slot as i32 + slot_size as i32)) as u32);
+        let mut fstp = MachineInstr::new(I686Opcode::Fstp.as_u32());
+        fstp.add_operand(fi.clone());
+        if is_f64 {
+            fstp.add_operand(MachineOperand::Immediate(64));
+        }
+        fstp.add_implicit_use(ST0);
+        mbb.push_instr(fstp);
+        if is_f64 {
+            let lo_idx = self.alloc_vreg_raw();
+            let mut lo_ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+            lo_ld.add_operand(MachineOperand::VirtualReg(ValueId(lo_idx)));
+            lo_ld.add_operand(fi.clone());
+            mbb.push_instr(lo_ld);
+            let hi_fi = self.offset_memory(fi, 4);
+            let hi_idx = self.alloc_vreg_raw();
+            let mut hi_ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+            hi_ld.add_operand(MachineOperand::VirtualReg(ValueId(hi_idx)));
+            hi_ld.add_operand(hi_fi);
+            mbb.push_instr(hi_ld);
+            self.value_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_idx)));
+            self.i64_high_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_idx)));
+        } else {
+            let dst_idx = self.alloc_vreg_raw();
+            let mut ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+            ld.add_operand(MachineOperand::VirtualReg(ValueId(dst_idx)));
+            ld.add_operand(fi);
+            mbb.push_instr(ld);
+            self.value_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(dst_idx)));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1530,16 +2721,23 @@ impl<'a> I686InstrSel<'a> {
         mbb: &mut MachineBasicBlock,
         func: &IrFunction,
     ) {
-        let lhs_op = self.get_operand(lhs, func);
-        let rhs_op = self.get_operand(rhs, func);
+        // Determine operand type for correct F32/F64 FLD encoding.
+        let is_f64 = self.i64_high_map.contains_key(&lhs.index())
+            || self.i64_high_map.contains_key(&rhs.index())
+            || matches!(func.get_value_type(lhs), IrType::F64 | IrType::F80);
 
         // Load both operands onto x87 stack.
-        self.emit_fld(lhs_op, mbb);
-        self.emit_fld(rhs_op, mbb);
+        // FUCOMIP compares ST(0) vs ST(1), so we need lhs in ST(0).
+        // Load rhs first (goes to ST(0)), then lhs (pushes rhs to ST(1)).
+        // Result: ST(0)=lhs, ST(1)=rhs → FUCOMIP compares lhs vs rhs.
+        self.emit_fld_value(rhs, is_f64, mbb, func);
+        self.emit_fld_value(lhs, is_f64, mbb, func);
 
         // FUCOMIP ST(0), ST(1) — unordered compare, pop ST(0), set EFLAGS.
+        // The explicit operand specifies the ST(i) register to compare
+        // against.  ST(0) is always the implicit first operand.
         let mut fucomip = MachineInstr::new(I686Opcode::Fucomip.as_u32());
-        fucomip.add_operand(MachineOperand::Register(ST0));
+        fucomip.add_operand(MachineOperand::Register(registers::ST1));
         fucomip.add_implicit_use(ST0);
         fucomip.add_implicit_def(EFLAGS);
         mbb.push_instr(fucomip);
@@ -1715,9 +2913,22 @@ impl<'a> I686InstrSel<'a> {
         self.has_calls = true;
 
         // Step 1: Push arguments in reverse order (right-to-left for cdecl).
-        let arg_bytes = (args.len() as u32) * 4;
+        // Calculate total argument bytes accounting for I64 (8 bytes) and
+        // FP double (8 bytes) arguments.
+        let mut arg_bytes: u32 = 0;
+        for &arg_vid in args.iter() {
+            let arg_ty = self.get_value_type(arg_vid, func);
+            match &arg_ty {
+                crate::ir::types::IrType::I64 => arg_bytes += 8,
+                crate::ir::types::IrType::F64 => arg_bytes += 8,
+                crate::ir::types::IrType::F32 => arg_bytes += 4,
+                _ => arg_bytes += 4,
+            }
+        }
+
         for &arg_vid in args.iter().rev() {
             let arg_op = self.get_operand(arg_vid, func);
+            let arg_ty = self.get_value_type(arg_vid, func);
 
             // Check if this is an x87 FP value.
             if let MachineOperand::Register(reg) = &arg_op {
@@ -1740,6 +2951,41 @@ impl<'a> I686InstrSel<'a> {
                     mbb.push_instr(fstp);
                     continue;
                 }
+            }
+
+            // 64-bit value (I64 or F64): push high word first, then low word.
+            if matches!(
+                &arg_ty,
+                crate::ir::types::IrType::I64 | crate::ir::types::IrType::F64
+            ) {
+                // Push high 32 bits first (higher address in memory).
+                let hi_op = self.i64_high_map.get(&arg_vid.index()).cloned();
+                let hi_src = if let Some(hi) = hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    // No tracked high word — push zero (common for small constants).
+                    let tmp = self.alloc_vreg_raw();
+                    self.emit_mov(
+                        MachineOperand::VirtualReg(ValueId(tmp)),
+                        MachineOperand::Immediate(0),
+                        mbb,
+                    );
+                    MachineOperand::VirtualReg(ValueId(tmp))
+                };
+                let mut push_hi = MachineInstr::new(I686Opcode::Push.as_u32());
+                push_hi.add_operand(hi_src);
+                push_hi.add_implicit_use(ESP);
+                push_hi.add_implicit_def(ESP);
+                mbb.push_instr(push_hi);
+
+                // Push low 32 bits (will be at lower address = first word read).
+                let lo_src = self.ensure_in_register(arg_op, mbb);
+                let mut push_lo = MachineInstr::new(I686Opcode::Push.as_u32());
+                push_lo.add_operand(lo_src);
+                push_lo.add_implicit_use(ESP);
+                push_lo.add_implicit_def(ESP);
+                mbb.push_instr(push_lo);
+                continue;
             }
 
             let arg_reg = self.ensure_in_register(arg_op, mbb);
@@ -1779,8 +3025,100 @@ impl<'a> I686InstrSel<'a> {
             let res_type = self.get_value_type(res_vid, func);
             if res_type.is_floating() {
                 // Return value is in ST(0).
+                if matches!(&res_type, IrType::F64 | IrType::F80) {
+                    // F64: ST(0) is volatile — spill to GPR pair immediately.
+                    // SUB ESP, 8 / FSTP QWORD [ESP] / POP lo / POP hi
+                    let mut sub = MachineInstr::new(I686Opcode::Sub.as_u32());
+                    sub.add_operand(MachineOperand::Register(ESP));
+                    sub.add_operand(MachineOperand::Immediate(8));
+                    sub.add_implicit_def(EFLAGS);
+                    mbb.push_instr(sub);
+
+                    let mut fstp = MachineInstr::new(I686Opcode::Fstp.as_u32());
+                    fstp.add_operand(MachineOperand::Memory {
+                        base: ESP,
+                        offset: 0,
+                        index: None,
+                        scale: 1,
+                    });
+                    fstp.add_operand(MachineOperand::Immediate(64));
+                    fstp.add_implicit_use(ST0);
+                    mbb.push_instr(fstp);
+
+                    let lo_vreg = self.alloc_vreg_raw();
+                    let mut pop_lo = MachineInstr::new(I686Opcode::Pop.as_u32());
+                    pop_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_vreg)));
+                    pop_lo.add_implicit_use(ESP);
+                    pop_lo.add_implicit_def(ESP);
+                    mbb.push_instr(pop_lo);
+
+                    let hi_vreg = self.alloc_vreg_raw();
+                    let mut pop_hi = MachineInstr::new(I686Opcode::Pop.as_u32());
+                    pop_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_vreg)));
+                    pop_hi.add_implicit_use(ESP);
+                    pop_hi.add_implicit_def(ESP);
+                    mbb.push_instr(pop_hi);
+
+                    self.value_map.insert(
+                        res_vid.index(),
+                        MachineOperand::VirtualReg(ValueId(lo_vreg)),
+                    );
+                    self.i64_high_map.insert(
+                        res_vid.index(),
+                        MachineOperand::VirtualReg(ValueId(hi_vreg)),
+                    );
+                } else {
+                    // F32: ST(0) is volatile — spill to GPR immediately.
+                    // Multiple consecutive calls would push prior results
+                    // down the x87 stack, corrupting positional ST(0) refs.
+                    // SUB ESP, 4 / FSTP DWORD [ESP] / POP vreg
+                    let mut sub = MachineInstr::new(I686Opcode::Sub.as_u32());
+                    sub.add_operand(MachineOperand::Register(ESP));
+                    sub.add_operand(MachineOperand::Immediate(4));
+                    sub.add_implicit_def(EFLAGS);
+                    mbb.push_instr(sub);
+
+                    let mut fstp = MachineInstr::new(I686Opcode::Fstp.as_u32());
+                    fstp.add_operand(MachineOperand::Memory {
+                        base: ESP,
+                        offset: 0,
+                        index: None,
+                        scale: 1,
+                    });
+                    fstp.add_implicit_use(ST0);
+                    mbb.push_instr(fstp);
+
+                    let vreg = self.alloc_vreg_raw();
+                    let mut pop = MachineInstr::new(I686Opcode::Pop.as_u32());
+                    pop.add_operand(MachineOperand::VirtualReg(ValueId(vreg)));
+                    pop.add_implicit_use(ESP);
+                    pop.add_implicit_def(ESP);
+                    mbb.push_instr(pop);
+
+                    self.value_map
+                        .insert(res_vid.index(), MachineOperand::VirtualReg(ValueId(vreg)));
+                }
+            } else if matches!(&res_type, crate::ir::types::IrType::I64) {
+                // 64-bit integer return value in EDX:EAX.
+                // Mark EDX as implicitly used in the first MOV to prevent
+                // the register allocator from clobbering it.
+                let lo_dst = self.alloc_vreg_raw();
+                let mut mov_lo = MachineInstr::new(I686Opcode::Mov.as_u32());
+                mov_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_dst)));
+                mov_lo.add_operand(MachineOperand::Register(EAX));
+                mov_lo.add_implicit_use(EDX);
+                mbb.push_instr(mov_lo);
+
+                let hi_dst = self.alloc_vreg_raw();
+                let mut mov_hi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                mov_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_dst)));
+                mov_hi.add_operand(MachineOperand::Register(EDX));
+                mbb.push_instr(mov_hi);
+
                 self.value_map
-                    .insert(res_vid.index(), MachineOperand::Register(ST0));
+                    .insert(res_vid.index(), MachineOperand::VirtualReg(ValueId(lo_dst)));
+                self.i64_high_map
+                    .insert(res_vid.index(), MachineOperand::VirtualReg(ValueId(hi_dst)));
             } else {
                 // Integer return value in EAX.
                 let dst = self.alloc_vreg(res_vid);
@@ -1809,10 +3147,40 @@ impl<'a> I686InstrSel<'a> {
             let val_type = self.get_value_type(val_vid, func);
 
             if val_type.is_floating() {
-                // Ensure the FP value is in ST(0). If it's already there, nothing to do.
-                if !matches!(&val_op, MachineOperand::Register(r) if registers::is_fpu(*r)) {
+                // Ensure the FP value is in ST(0) for the caller to
+                // receive via the x87 return convention.
+                let is_f64_ret = matches!(&val_type, IrType::F64 | IrType::F80);
+                if is_f64_ret {
+                    // F64: use emit_fld_value which handles both
+                    // GPR pairs and FrameIndex/Memory with QWORD hint.
+                    self.emit_fld_value(val_vid, true, mbb, func);
+                } else if !matches!(&val_op, MachineOperand::Register(r) if registers::is_fpu(*r)) {
                     self.emit_fld(val_op, mbb);
                 }
+            } else if matches!(&val_type, crate::ir::types::IrType::I64) {
+                // 64-bit return: lo in EAX, hi in EDX.
+                let lo_src = self.ensure_in_register(val_op, mbb);
+                let mut mov_eax = MachineInstr::new(I686Opcode::Mov.as_u32());
+                mov_eax.add_operand(MachineOperand::Register(EAX));
+                mov_eax.add_operand(lo_src);
+                mbb.push_instr(mov_eax);
+
+                let hi_op = self.i64_high_map.get(&val_vid.index()).cloned();
+                let hi_src = if let Some(hi) = hi_op {
+                    self.ensure_in_register(hi, mbb)
+                } else {
+                    let tmp = self.alloc_vreg_raw();
+                    self.emit_mov(
+                        MachineOperand::VirtualReg(ValueId(tmp)),
+                        MachineOperand::Immediate(0),
+                        mbb,
+                    );
+                    MachineOperand::VirtualReg(ValueId(tmp))
+                };
+                let mut mov_edx = MachineInstr::new(I686Opcode::Mov.as_u32());
+                mov_edx.add_operand(MachineOperand::Register(EDX));
+                mov_edx.add_operand(hi_src);
+                mbb.push_instr(mov_edx);
             } else {
                 // Move integer result to EAX.
                 let src = self.ensure_in_register(val_op, mbb);
@@ -1823,10 +3191,9 @@ impl<'a> I686InstrSel<'a> {
             }
         }
 
-        // Emit epilogue.
-        self.emit_epilogue(mbb);
-
-        // RET.
+        // Emit a bare RET marker. The full epilogue (pop callee-saved,
+        // mov esp/ebp, pop ebp) is injected by ArchCodegen::emit_epilogue
+        // in generation.rs, which replaces instructions with is_return=true.
         let mut ret = MachineInstr::new(I686Opcode::Ret.as_u32());
         ret.set_return();
         mbb.push_instr(ret);
@@ -1849,24 +3216,100 @@ impl<'a> I686InstrSel<'a> {
         func: &IrFunction,
     ) {
         let base_op = self.get_operand(base, func);
-        let base_reg = self.ensure_in_register(base_op, mbb);
         let dst = self.alloc_vreg(result);
 
-        // Start with base address.
-        self.emit_mov(dst.clone(), base_reg, mbb);
+        // FrameIndex (alloca): use LEA to compute the stack-slot address.
+        // Everything else (Memory for params, VirtualReg, Register, etc.):
+        // use ensure_in_register which loads/moves the *value* — that value
+        // is already a pointer for GEP to work with.
+        match &base_op {
+            MachineOperand::FrameIndex(_) => {
+                // LeaMem: dst = &stack_slot (load effective address)
+                let mut lea = MachineInstr::new(I686Opcode::LeaMem.as_u32());
+                lea.add_operand(dst.clone());
+                lea.add_operand(base_op);
+                mbb.push_instr(lea);
+            }
+            _ => {
+                // Memory (params, globals), VirtualReg, Register, Symbol, Immediate.
+                // ensure_in_register loads the value from Memory, or passes
+                // through VirtualReg/Register as-is.
+                let base_reg = self.ensure_in_register(base_op, mbb);
+                self.emit_mov(dst.clone(), base_reg, mbb);
+            }
+        };
 
-        // Process each index with the appropriate stride.
+        // Process each GEP index.
+        //
+        // LLVM-style GEP semantics:
+        //   - For Array types, the stride is the ELEMENT size (not the
+        //     whole array size), and current_type advances to the element.
+        //   - For Struct types (non-first index), the index is a constant
+        //     field selector; we compute the byte offset to that field.
+        //   - For Struct types (first index), treat as array-of-structs
+        //     with stride = sizeof(struct).
         let mut current_type = ty.clone();
-        for &idx_vid in indices.iter() {
-            let stride = self.type_size_bytes(&current_type);
+        for (idx_pos, &idx_vid) in indices.iter().enumerate() {
             let idx_op = self.get_operand(idx_vid, func);
+            let is_first_index = idx_pos == 0;
+
+            // Determine stride and advance current_type based on the type.
+            let stride: u64 = match &current_type {
+                IrType::Array { element, .. } => {
+                    // Array: stride = element size, advance to element type.
+                    let sz = self.type_size_bytes(element) as u64;
+                    current_type = (**element).clone();
+                    sz
+                }
+                IrType::Struct { fields, packed: _ } if !is_first_index => {
+                    // Subsequent index on struct: constant field selector.
+                    // Compute the byte offset to the selected field.
+                    if let MachineOperand::Immediate(field_idx) = &idx_op {
+                        let fi = *field_idx as usize;
+                        if fi < fields.len() {
+                            let mut offset: u64 = 0;
+                            for field in fields.iter().take(fi) {
+                                let f_size = self.type_size_bytes(field) as u64;
+                                let f_align = field.alignment(&self.config.target) as u64;
+                                if f_align > 0 {
+                                    offset = (offset + f_align - 1) & !(f_align - 1);
+                                }
+                                offset += f_size;
+                            }
+                            let field_align = fields[fi].alignment(&self.config.target) as u64;
+                            if field_align > 0 {
+                                offset = (offset + field_align - 1) & !(field_align - 1);
+                            }
+                            if offset > 0 {
+                                let mut add = MachineInstr::new(I686Opcode::Add.as_u32());
+                                add.add_operand(dst.clone());
+                                add.add_operand(MachineOperand::Immediate(offset as i64));
+                                add.add_implicit_def(EFLAGS);
+                                mbb.push_instr(add);
+                            }
+                            current_type = fields[fi].clone();
+                            continue; // Skip the generic stride handling below.
+                        }
+                    }
+                    // Fallback: use pointer size.
+                    4u64
+                }
+                IrType::Struct { .. } => {
+                    // First index on struct: array-of-structs indexing.
+                    // Stride = sizeof(struct), current_type stays struct.
+                    self.type_size_bytes(&current_type) as u64
+                }
+                _ => {
+                    // Pointer or other: use type size.
+                    self.type_size_bytes(&current_type) as u64
+                }
+            };
 
             if stride == 0 {
-                // Zero-size element, nothing to add.
                 continue;
             }
 
-            // Check if index is a constant.
+            // Apply index * stride to the running address.
             if let MachineOperand::Immediate(imm) = &idx_op {
                 let offset = *imm * (stride as i64);
                 if offset != 0 {
@@ -1890,37 +3333,16 @@ impl<'a> I686InstrSel<'a> {
                             stride as u8,
                         ));
                     } else {
-                        // Fallback: IMUL + ADD
-                        self.emit_gep_mul_add(dst.clone(), idx_reg, stride, mbb);
+                        self.emit_gep_mul_add(dst.clone(), idx_reg, stride as u32, mbb);
                     }
                     mbb.push_instr(lea);
                 } else {
-                    self.emit_gep_mul_add(dst.clone(), idx_reg, stride, mbb);
+                    self.emit_gep_mul_add(dst.clone(), idx_reg, stride as u32, mbb);
                 }
             } else {
-                // General case: IMUL index, stride; ADD dst, result.
                 let idx_reg = self.ensure_in_register(idx_op, mbb);
-                self.emit_gep_mul_add(dst.clone(), idx_reg, stride, mbb);
+                self.emit_gep_mul_add(dst.clone(), idx_reg, stride as u32, mbb);
             }
-
-            // Advance to the element type for the next index.
-            current_type = match &current_type {
-                IrType::Array { element, .. } => *element.clone(),
-                IrType::Struct { fields, .. } => {
-                    // For struct GEP, the index selects a field.
-                    if let MachineOperand::Immediate(field_idx) = &self.get_operand(idx_vid, func) {
-                        if let Some(field_ty) = fields.get(*field_idx as usize) {
-                            field_ty.clone()
-                        } else {
-                            IrType::I8
-                        }
-                    } else {
-                        IrType::I8
-                    }
-                }
-                IrType::Ptr => IrType::I8,
-                _ => IrType::I8,
-            };
         }
     }
 
@@ -1956,7 +3378,176 @@ impl<'a> I686InstrSel<'a> {
     // -----------------------------------------------------------------------
 
     /// BitCast: reinterpret without value change (same-width types).
+    ///
+    /// On i686, 64-bit values (F64, I64) live in a GPR pair
+    /// (lo in `value_map`, hi in `i64_high_map`).  Phi-elimination
+    /// generates BitCast (copy) instructions for control-flow merges,
+    /// so we must copy *both* halves to avoid data corruption.
+    ///
+    /// There are three possible source representations for a 64-bit value:
+    ///   1. GPR pair (has `i64_high_map` entry) — e.g. from a load or call
+    ///   2. Memory/FrameIndex (no high map) — e.g. F64 function parameter
+    ///   3. Immediate pair (has `i64_high_map` entry) — e.g. F64 constant
+    /// Cases 1 and 3 are handled by copying both halves.  Case 2 requires
+    /// splitting the memory read into lo+hi GPR pair.
     fn select_bitcast(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        mbb: &mut MachineBasicBlock,
+        func: &IrFunction,
+    ) {
+        let is_64bit = matches!(to_ty, IrType::F64 | IrType::F80 | IrType::I64);
+
+        if is_64bit {
+            // Phi-elimination can generate multiple BitCasts targeting the
+            // same result (one per predecessor block).  Both the lo and hi
+            // virtual registers MUST be consistent across all of them so
+            // the register allocator assigns the same physical register.
+            // Reuse existing VReg IDs when we've already seen this result.
+            let lo_id = match self.value_map.get(&result.index()) {
+                Some(MachineOperand::VirtualReg(vid)) => vid.index() as u32,
+                _ => self.alloc_vreg_raw(),
+            };
+            let hi_id = match self.i64_high_map.get(&result.index()) {
+                Some(MachineOperand::VirtualReg(vid)) => vid.index() as u32,
+                _ => self.alloc_vreg_raw(),
+            };
+            let lo_dst = MachineOperand::VirtualReg(ValueId(lo_id));
+            let hi_dst = MachineOperand::VirtualReg(ValueId(hi_id));
+
+            // Determine source representation and emit 64-bit copy.
+            let hi_src_opt = self.i64_high_map.get(&value.index()).cloned();
+            let src = self.get_operand(value, func);
+
+            if let Some(hi_src) = hi_src_opt {
+                // Case 1: source is a GPR pair — copy both halves.
+                self.emit_mov(lo_dst.clone(), src, mbb);
+                self.emit_mov(hi_dst.clone(), hi_src, mbb);
+            } else if matches!(
+                &src,
+                MachineOperand::Memory { .. } | MachineOperand::FrameIndex(_)
+            ) {
+                // Case 2: source is Memory/FrameIndex (e.g. F64 param at
+                // [EBP+8]) — split the 8-byte memory read into two halves.
+                let mem = self.safe_to_memory(src, mbb);
+                let mut lo_ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+                lo_ld.add_operand(lo_dst.clone());
+                lo_ld.add_operand(mem.clone());
+                mbb.push_instr(lo_ld);
+
+                let hi_mem = self.offset_memory(mem, 4);
+                let mut hi_ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+                hi_ld.add_operand(hi_dst.clone());
+                hi_ld.add_operand(hi_mem);
+                mbb.push_instr(hi_ld);
+            } else {
+                // Fallback: source is a single 32-bit value (shouldn't
+                // normally happen for F64 but handle gracefully).
+                self.emit_mov(lo_dst.clone(), src, mbb);
+            }
+
+            self.value_map.insert(result.index(), lo_dst);
+            self.i64_high_map.insert(result.index(), hi_dst);
+            return;
+        }
+
+        // Default: simple 32-bit copy (covers I32, F32, Ptr, etc.).
+        let src = self.get_operand(value, func);
+        let dst = self.alloc_vreg(result);
+        self.emit_mov(dst, src, mbb);
+    }
+
+    // -----------------------------------------------------------------------
+    // Floating-point conversion (i686)
+    // -----------------------------------------------------------------------
+
+    /// Signed integer → float using the x87 FPU.
+    ///
+    /// Sequence:  store int to mem → FILD → FSTP (as F32 or F64)
+    fn select_si_to_fp(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        mbb: &mut MachineBasicBlock,
+        func: &IrFunction,
+    ) {
+        let src = self.get_operand(value, func);
+        let src_reg = self.ensure_in_register(src, mbb);
+
+        // Spill integer to a 4-byte stack slot.
+        let int_slot = self.frame_size;
+        self.frame_size += 4;
+        let int_fi = MachineOperand::FrameIndex((-(int_slot as i32 + 4)) as u32);
+        let mut st_int = MachineInstr::new(I686Opcode::Mov.as_u32());
+        st_int.add_operand(int_fi.clone());
+        st_int.add_operand(src_reg);
+        mbb.push_instr(st_int);
+
+        // FILD: load integer, convert to x87 float.
+        let mut fild = MachineInstr::new(I686Opcode::Fild.as_u32());
+        fild.add_operand(int_fi);
+        fild.add_implicit_def(ST0);
+        mbb.push_instr(fild);
+
+        // FSTP to the appropriate float size.
+        let is_f64 = matches!(to_ty, IrType::F64 | IrType::F80);
+        let dst_slot = self.frame_size;
+        let dst_size: u32 = if is_f64 { 8 } else { 4 };
+        self.frame_size += dst_size;
+        let dst_fi = MachineOperand::FrameIndex((-(dst_slot as i32 + dst_size as i32)) as u32);
+        let mut fstp = MachineInstr::new(I686Opcode::Fstp.as_u32());
+        fstp.add_operand(dst_fi.clone());
+        if is_f64 {
+            fstp.add_operand(MachineOperand::Immediate(64));
+        }
+        fstp.add_implicit_use(ST0);
+        mbb.push_instr(fstp);
+
+        // Load result back into GPR(s).
+        if is_f64 {
+            // Load low 32 bits.
+            let lo_dst = self.alloc_vreg(result);
+            let mut ld_lo = MachineInstr::new(I686Opcode::Mov.as_u32());
+            ld_lo.add_operand(lo_dst.clone());
+            ld_lo.add_operand(dst_fi.clone());
+            mbb.push_instr(ld_lo);
+            // Load high 32 bits.
+            let hi_idx = self.alloc_vreg_raw();
+            let hi_fi = self.offset_memory(dst_fi, 4);
+            let mut ld_hi = MachineInstr::new(I686Opcode::Mov.as_u32());
+            ld_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_idx)));
+            ld_hi.add_operand(hi_fi);
+            mbb.push_instr(ld_hi);
+            self.i64_high_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_idx)));
+        } else {
+            let dst = self.alloc_vreg(result);
+            let mut ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+            ld.add_operand(dst.clone());
+            ld.add_operand(dst_fi);
+            mbb.push_instr(ld);
+        }
+    }
+
+    /// Unsigned integer → float.
+    fn select_ui_to_fp(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        mbb: &mut MachineBasicBlock,
+        func: &IrFunction,
+    ) {
+        // For values that fit in 31 bits, FILD works.  For full u32 range,
+        // we'd need to handle the sign bit, but for now delegate to signed.
+        self.select_si_to_fp(result, value, to_ty, mbb, func);
+    }
+
+    /// Float → signed integer using x87 FISTP.
+    fn select_fp_to_si(
         &mut self,
         result: ValueId,
         value: ValueId,
@@ -1965,8 +3556,198 @@ impl<'a> I686InstrSel<'a> {
         func: &IrFunction,
     ) {
         let src = self.get_operand(value, func);
+        let src_ty = func.get_value_type(value).clone();
+        let is_f64 = matches!(&src_ty, IrType::F64 | IrType::F80);
+
+        if is_f64 {
+            // F64 in two GPR halves.  Spill both to memory then FLD.
+            let src_reg = self.ensure_in_register(src, mbb);
+            let slot = self.frame_size;
+            self.frame_size += 8;
+            let fi = MachineOperand::FrameIndex((-(slot as i32 + 8)) as u32);
+            let mut st_lo = MachineInstr::new(I686Opcode::Mov.as_u32());
+            st_lo.add_operand(fi.clone());
+            st_lo.add_operand(src_reg);
+            mbb.push_instr(st_lo);
+            let hi_op = self
+                .i64_high_map
+                .get(&value.index())
+                .cloned()
+                .unwrap_or(MachineOperand::Immediate(0));
+            let hi_reg = self.ensure_in_register(hi_op, mbb);
+            let hi_fi = self.offset_memory(fi.clone(), 4);
+            let mut st_hi = MachineInstr::new(I686Opcode::Mov.as_u32());
+            st_hi.add_operand(hi_fi);
+            st_hi.add_operand(hi_reg);
+            mbb.push_instr(st_hi);
+            let mut fld = MachineInstr::new(I686Opcode::Fld.as_u32());
+            fld.add_operand(fi);
+            fld.add_operand(MachineOperand::Immediate(64));
+            fld.add_implicit_def(ST0);
+            mbb.push_instr(fld);
+        } else {
+            // F32 in single GPR.  Spill to memory then FLD.
+            let src_reg = self.ensure_in_register(src, mbb);
+            let slot = self.frame_size;
+            self.frame_size += 4;
+            let fi = MachineOperand::FrameIndex((-(slot as i32 + 4)) as u32);
+            let mut st = MachineInstr::new(I686Opcode::Mov.as_u32());
+            st.add_operand(fi.clone());
+            st.add_operand(src_reg);
+            mbb.push_instr(st);
+            let mut fld = MachineInstr::new(I686Opcode::Fld.as_u32());
+            fld.add_operand(fi);
+            fld.add_implicit_def(ST0);
+            mbb.push_instr(fld);
+        }
+
+        // FISTP: convert x87 top to integer and store.
+        let int_slot = self.frame_size;
+        self.frame_size += 4;
+        let int_fi = MachineOperand::FrameIndex((-(int_slot as i32 + 4)) as u32);
+        let mut fistp = MachineInstr::new(I686Opcode::Fistp.as_u32());
+        fistp.add_operand(int_fi.clone());
+        fistp.add_implicit_use(ST0);
+        mbb.push_instr(fistp);
+
+        // Load the integer result.
         let dst = self.alloc_vreg(result);
-        self.emit_mov(dst, src, mbb);
+        let mut ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+        ld.add_operand(dst.clone());
+        ld.add_operand(int_fi);
+        mbb.push_instr(ld);
+    }
+
+    /// Float → unsigned integer.
+    fn select_fp_to_ui(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        mbb: &mut MachineBasicBlock,
+        func: &IrFunction,
+    ) {
+        self.select_fp_to_si(result, value, to_ty, mbb, func);
+    }
+
+    /// Float widening (F32 → F64) using x87.
+    ///
+    /// Spill f32 → FLD mem32 → FSTP mem64 → load two 32-bit halves.
+    fn select_fp_ext(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        _to_ty: &IrType,
+        mbb: &mut MachineBasicBlock,
+        func: &IrFunction,
+    ) {
+        let src = self.get_operand(value, func);
+        let src_reg = self.ensure_in_register(src, mbb);
+
+        // Spill f32 bits to a 4-byte slot.
+        let f32_slot = self.frame_size;
+        self.frame_size += 4;
+        let f32_fi = MachineOperand::FrameIndex((-(f32_slot as i32 + 4)) as u32);
+        let mut st_f32 = MachineInstr::new(I686Opcode::Mov.as_u32());
+        st_f32.add_operand(f32_fi.clone());
+        st_f32.add_operand(src_reg);
+        mbb.push_instr(st_f32);
+
+        // FLD from 4-byte slot (loads single-precision onto x87 stack).
+        let mut fld = MachineInstr::new(I686Opcode::Fld.as_u32());
+        fld.add_operand(f32_fi);
+        // No size hint = 32-bit.
+        fld.add_implicit_def(ST0);
+        mbb.push_instr(fld);
+
+        // FSTP to 8-byte slot (stores as double-precision).
+        let f64_slot = self.frame_size;
+        self.frame_size += 8;
+        let f64_fi = MachineOperand::FrameIndex((-(f64_slot as i32 + 8)) as u32);
+        let mut fstp = MachineInstr::new(I686Opcode::Fstp.as_u32());
+        fstp.add_operand(f64_fi.clone());
+        fstp.add_operand(MachineOperand::Immediate(64)); // 64-bit hint
+        fstp.add_implicit_use(ST0);
+        mbb.push_instr(fstp);
+
+        // Load both 32-bit halves from the f64 slot into GPRs.
+        let lo_dst = self.alloc_vreg(result);
+        let mut ld_lo = MachineInstr::new(I686Opcode::Mov.as_u32());
+        ld_lo.add_operand(lo_dst.clone());
+        ld_lo.add_operand(f64_fi.clone());
+        mbb.push_instr(ld_lo);
+
+        let hi_idx = self.alloc_vreg_raw();
+        let hi_fi = self.offset_memory(f64_fi, 4);
+        let mut ld_hi = MachineInstr::new(I686Opcode::Mov.as_u32());
+        ld_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_idx)));
+        ld_hi.add_operand(hi_fi);
+        mbb.push_instr(ld_hi);
+
+        // Track the high word so the call path pushes both halves for F64.
+        self.i64_high_map
+            .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_idx)));
+    }
+
+    /// Float narrowing (F64 → F32) using x87.
+    ///
+    /// Store f64 halves → FLD mem64 → FSTP mem32 → load 32-bit result.
+    fn select_fp_trunc(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        _to_ty: &IrType,
+        mbb: &mut MachineBasicBlock,
+        func: &IrFunction,
+    ) {
+        let src = self.get_operand(value, func);
+        let src_reg = self.ensure_in_register(src, mbb);
+
+        // Store F64 low half.
+        let f64_slot = self.frame_size;
+        self.frame_size += 8;
+        let f64_fi = MachineOperand::FrameIndex((-(f64_slot as i32 + 8)) as u32);
+        let mut st_lo = MachineInstr::new(I686Opcode::Mov.as_u32());
+        st_lo.add_operand(f64_fi.clone());
+        st_lo.add_operand(src_reg);
+        mbb.push_instr(st_lo);
+
+        // Store F64 high half.
+        let hi_op = self
+            .i64_high_map
+            .get(&value.index())
+            .cloned()
+            .unwrap_or(MachineOperand::Immediate(0));
+        let hi_reg = self.ensure_in_register(hi_op, mbb);
+        let hi_fi = self.offset_memory(f64_fi.clone(), 4);
+        let mut st_hi = MachineInstr::new(I686Opcode::Mov.as_u32());
+        st_hi.add_operand(hi_fi);
+        st_hi.add_operand(hi_reg);
+        mbb.push_instr(st_hi);
+
+        // FLD from 8-byte slot (loads double onto x87 stack).
+        let mut fld = MachineInstr::new(I686Opcode::Fld.as_u32());
+        fld.add_operand(f64_fi);
+        fld.add_operand(MachineOperand::Immediate(64)); // 64-bit
+        fld.add_implicit_def(ST0);
+        mbb.push_instr(fld);
+
+        // FSTP to 4-byte slot (stores as single precision).
+        let f32_slot = self.frame_size;
+        self.frame_size += 4;
+        let f32_fi = MachineOperand::FrameIndex((-(f32_slot as i32 + 4)) as u32);
+        let mut fstp = MachineInstr::new(I686Opcode::Fstp.as_u32());
+        fstp.add_operand(f32_fi.clone());
+        // No size hint = 32-bit.
+        fstp.add_implicit_use(ST0);
+        mbb.push_instr(fstp);
+
+        // Load 32-bit f32 result back into a GPR.
+        let dst = self.alloc_vreg(result);
+        let mut ld = MachineInstr::new(I686Opcode::Mov.as_u32());
+        ld.add_operand(dst.clone());
+        ld.add_operand(f32_fi);
+        mbb.push_instr(ld);
     }
 
     /// Truncation: extract lower bits by using a smaller register / MOV.
@@ -2009,7 +3790,11 @@ impl<'a> I686InstrSel<'a> {
             mbb.push_instr(movzx);
         } else {
             // 32→64: zero-extend into a register pair (hi = 0).
-            self.emit_mov(dst, src, mbb);
+            let src_reg = self.ensure_in_register(src, mbb);
+            self.emit_mov(dst, src_reg, mbb);
+            // High word is zero for zero-extension.
+            self.i64_high_map
+                .insert(result.index(), MachineOperand::Immediate(0));
         }
     }
 
@@ -2048,9 +3833,26 @@ impl<'a> I686InstrSel<'a> {
             cdq.add_implicit_def(EDX);
             mbb.push_instr(cdq);
 
-            // Result lo=EAX, hi=EDX
+            // Result lo=EAX, hi=EDX — save both halves to vregs.
+            // Mark EDX as implicitly used in the first MOV to prevent
+            // the register allocator from clobbering it.
+            let lo_dst = self.alloc_vreg_raw();
+            let mut mov_lo = MachineInstr::new(I686Opcode::Mov.as_u32());
+            mov_lo.add_operand(MachineOperand::VirtualReg(ValueId(lo_dst)));
+            mov_lo.add_operand(MachineOperand::Register(EAX));
+            mov_lo.add_implicit_use(EDX);
+            mbb.push_instr(mov_lo);
+
+            let hi_dst = self.alloc_vreg_raw();
+            let mut mov_hi = MachineInstr::new(I686Opcode::Mov.as_u32());
+            mov_hi.add_operand(MachineOperand::VirtualReg(ValueId(hi_dst)));
+            mov_hi.add_operand(MachineOperand::Register(EDX));
+            mbb.push_instr(mov_hi);
+
             self.value_map
-                .insert(result.index(), MachineOperand::Register(EAX));
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(lo_dst)));
+            self.i64_high_map
+                .insert(result.index(), MachineOperand::VirtualReg(ValueId(hi_dst)));
         } else {
             self.emit_mov(dst, src, mbb);
         }
@@ -2070,6 +3872,7 @@ impl<'a> I686InstrSel<'a> {
     /// push esi        ; callee-saved (if used)
     /// push edi        ; callee-saved (if used)
     /// ```
+    #[allow(dead_code)]
     fn emit_prologue(&self, mbb: &mut MachineBasicBlock) {
         // PUSH EBP
         let mut push_ebp = MachineInstr::new(I686Opcode::Push.as_u32());
@@ -2112,6 +3915,7 @@ impl<'a> I686InstrSel<'a> {
     /// mov  esp, ebp
     /// pop  ebp
     /// ```
+    #[allow(dead_code)]
     fn emit_epilogue(&self, mbb: &mut MachineBasicBlock) {
         // POP callee-saved registers (reverse order of prologue).
         for &reg in &[EDI, ESI, EBX] {
@@ -2141,6 +3945,619 @@ impl<'a> I686InstrSel<'a> {
     // -----------------------------------------------------------------------
 
     /// Emits a MOV instruction from `src` to `dst`.
+    // ===================================================================
+    // Inline Assembly Lowering
+    // ===================================================================
+
+    /// Lowers an IR `InlineAsm` instruction into i686 machine instructions.
+    ///
+    /// Supports two paths:
+    /// 1. **Builtin asm** — templates using `$0`, `$1` (from `__builtin_*`
+    ///    lowering in `expr_lowering.rs`), with comma-separated constraints.
+    /// 2. **GCC user asm** — templates using `%0`, `%1`, `%[name]` with
+    ///    colon-separated constraints.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_inline_asm(
+        &mut self,
+        result: Option<ValueId>,
+        template: &str,
+        constraints: &str,
+        operands: &[ValueId],
+        _clobbers: &[String],
+        _goto_targets: &[crate::ir::basic_block::BasicBlockId],
+        func: &IrFunction,
+    ) -> Vec<MachineInstr> {
+        // Detect GCC user asm: templates containing %N or %[name].
+        let is_gcc_user_asm = {
+            let chars: Vec<char> = template.chars().collect();
+            let mut found = false;
+            for i in 0..chars.len() {
+                if chars[i] == '%' && i + 1 < chars.len() {
+                    let next = chars[i + 1];
+                    if next.is_ascii_digit() || next == '[' {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            found
+        };
+
+        if is_gcc_user_asm {
+            self.lower_gcc_user_asm_i686(result, template, constraints, operands, func)
+        } else {
+            self.lower_builtin_asm_i686(result, template, constraints, operands, func)
+        }
+    }
+
+    /// Lowers compiler-generated builtin inline assembly (from `__builtin_clz`,
+    /// `__builtin_ctz`, `__builtin_popcount`, etc.).
+    ///
+    /// These use `$0`/`$1` operand references with comma-separated constraints
+    /// like `"=r,r"`.
+    fn lower_builtin_asm_i686(
+        &mut self,
+        result: Option<ValueId>,
+        template: &str,
+        _constraints: &str,
+        operands: &[ValueId],
+        func: &IrFunction,
+    ) -> Vec<MachineInstr> {
+        let mut instrs = Vec::new();
+
+        // Allocate output vreg.
+        let out_vreg = if let Some(res_vid) = result {
+            self.alloc_vreg(res_vid)
+        } else {
+            MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()))
+        };
+
+        // Load input operand into a vreg.
+        let input_ops: Vec<MachineOperand> = operands
+            .iter()
+            .map(|v| self.get_operand(*v, func))
+            .collect();
+
+        let input0 = if let Some(op) = input_ops.first() {
+            match op {
+                MachineOperand::Immediate(_)
+                | MachineOperand::FrameIndex(_)
+                | MachineOperand::Memory { .. } => {
+                    let vreg = MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()));
+                    let mut mi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    mi.add_operand(vreg.clone());
+                    mi.add_operand(op.clone());
+                    instrs.push(mi);
+                    vreg
+                }
+                _ => op.clone(),
+            }
+        } else {
+            MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()))
+        };
+
+        // Split template into individual instructions.
+        let asm_lines: Vec<&str> = template
+            .trim()
+            .split('\n')
+            .flat_map(|l| l.split('\t'))
+            .flat_map(|l| l.split(';'))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        for line in &asm_lines {
+            let parts: Vec<&str> = line
+                .splitn(2, |c: char| c.is_whitespace())
+                .map(|s| s.trim())
+                .collect();
+            let mnemonic = parts[0].to_lowercase();
+
+            match mnemonic.as_str() {
+                "bsrl" => {
+                    let mut mi = MachineInstr::new(I686Opcode::Bsr.as_u32());
+                    mi.add_operand(out_vreg.clone());
+                    mi.add_operand(input0.clone());
+                    instrs.push(mi);
+                }
+                "bsfl" => {
+                    let mut mi = MachineInstr::new(I686Opcode::Bsf.as_u32());
+                    mi.add_operand(out_vreg.clone());
+                    mi.add_operand(input0.clone());
+                    instrs.push(mi);
+                }
+                "popcntl" => {
+                    let mut mi = MachineInstr::new(I686Opcode::Popcnt.as_u32());
+                    mi.add_operand(out_vreg.clone());
+                    mi.add_operand(input0.clone());
+                    instrs.push(mi);
+                }
+                "bswap" | "bswapl" => {
+                    // Move input to output, then bswap in-place.
+                    let mut mi_mov = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    mi_mov.add_operand(out_vreg.clone());
+                    mi_mov.add_operand(input0.clone());
+                    instrs.push(mi_mov);
+
+                    let mut mi = MachineInstr::new(I686Opcode::Bswap.as_u32());
+                    mi.add_operand(out_vreg.clone());
+                    instrs.push(mi);
+                }
+                "xorl" => {
+                    // Parse immediate: e.g., "xorl $$31, $0"
+                    if parts.len() > 1 {
+                        let xor_parts: Vec<&str> = parts[1].split(',').map(|s| s.trim()).collect();
+                        if let Some(imm_str) = xor_parts.first() {
+                            let imm_str = imm_str.trim_start_matches('$');
+                            if let Ok(imm_val) = imm_str.parse::<i64>() {
+                                let mut mi = MachineInstr::new(I686Opcode::Xor.as_u32());
+                                mi.add_operand(out_vreg.clone());
+                                mi.add_operand(MachineOperand::Immediate(imm_val));
+                                instrs.push(mi);
+                            }
+                        }
+                    }
+                }
+                "movl" => {
+                    // MOV between $-referenced operands.
+                    let mut mi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    mi.add_operand(out_vreg.clone());
+                    mi.add_operand(input0.clone());
+                    instrs.push(mi);
+                }
+                "leal" | "lea" => {
+                    // LEA dst, [mem] — used by va_start to compute pointer.
+                    // Template: "leal disp(%ebp), $0"
+                    // Parse the memory operand (first in AT&T), output is $0.
+                    if parts.len() > 1 {
+                        let operands_str = parts[1];
+                        // Split on comma: first is memory src, second is $0 (output)
+                        let comma_parts: Vec<&str> =
+                            operands_str.split(',').map(|s| s.trim()).collect();
+                        let mem_str = comma_parts[0].trim();
+                        // Parse "disp(%reg)" memory operand
+                        if mem_str.contains('(') && mem_str.contains(')') {
+                            if let Some(paren_pos) = mem_str.find('(') {
+                                let offset_str = &mem_str[..paren_pos];
+                                let reg_str = mem_str[paren_pos + 1..mem_str.len() - 1]
+                                    .trim_start_matches('%');
+                                let offset = offset_str.parse::<i32>().unwrap_or(0);
+                                let base = parse_i686_reg_name(reg_str).unwrap_or(EBP);
+                                let mut mi = MachineInstr::new(I686Opcode::LeaMem.as_u32());
+                                mi.add_operand(out_vreg.clone());
+                                mi.add_operand(MachineOperand::Memory {
+                                    base,
+                                    offset,
+                                    index: None,
+                                    scale: 1,
+                                });
+                                instrs.push(mi);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Unknown mnemonic — emit NOP as fallback.
+                    instrs.push(MachineInstr::new(I686Opcode::Nop.as_u32()));
+                }
+            }
+        }
+
+        instrs
+    }
+
+    /// Lowers GCC-style user inline assembly with `%N` operand references.
+    ///
+    /// This handles `asm("..." : "=r"(out) : "r"(in) : "memory")` patterns
+    /// from user C code, as used in `test_inline_asm` and kernel code.
+    fn lower_gcc_user_asm_i686(
+        &mut self,
+        result: Option<ValueId>,
+        template: &str,
+        constraints: &str,
+        operands: &[ValueId],
+        func: &IrFunction,
+    ) -> Vec<MachineInstr> {
+        let mut instrs = Vec::new();
+
+        // Parse constraint string: "outputs:inputs" or "outputs:inputs:gotos"
+        let sections: Vec<&str> = constraints.split(':').collect();
+        let output_str = sections.first().copied().unwrap_or("");
+        let input_str = sections.get(1).copied().unwrap_or("");
+
+        let output_constraints: Vec<&str> = if output_str.is_empty() {
+            Vec::new()
+        } else {
+            output_str
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+        let input_constraints: Vec<&str> = if input_str.is_empty() {
+            Vec::new()
+        } else {
+            input_str
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .collect()
+        };
+
+        let n_outputs = output_constraints.len();
+        let n_rw = output_constraints
+            .iter()
+            .filter(|c| c.starts_with('+'))
+            .count();
+
+        // Build output operands.
+        let mut output_ops: Vec<MachineOperand> = Vec::new();
+        for i in 0..n_outputs {
+            let stripped = output_constraints[i]
+                .trim_start_matches('=')
+                .trim_start_matches('+')
+                .trim_start_matches('&');
+            if stripped.contains('m') {
+                // Memory output
+                if i < operands.len() {
+                    output_ops.push(self.get_operand(operands[i], func));
+                } else {
+                    output_ops.push(MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw())));
+                }
+            } else {
+                // Register output
+                let vreg = if i == 0 {
+                    if let Some(res_vid) = result {
+                        self.alloc_vreg(res_vid)
+                    } else {
+                        MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()))
+                    }
+                } else {
+                    MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()))
+                };
+                output_ops.push(vreg);
+            }
+        }
+
+        if output_ops.is_empty() {
+            output_ops.push(if let Some(res_vid) = result {
+                self.alloc_vreg(res_vid)
+            } else {
+                MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()))
+            });
+        }
+
+        // Build input operands.
+        let input_start_idx = n_outputs + n_rw;
+        let mut input_ops: Vec<MachineOperand> = Vec::new();
+        for i in 0..input_constraints.len() {
+            let trimmed = input_constraints[i].trim();
+            let op_idx = input_start_idx + i;
+
+            // Matching constraint (e.g., "0")
+            if let Ok(match_idx) = trimmed.parse::<usize>() {
+                if match_idx < output_ops.len() {
+                    let out = output_ops[match_idx].clone();
+                    if op_idx < operands.len() {
+                        let inp_op = self.get_operand(operands[op_idx], func);
+                        let vreg = MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()));
+                        let mut mi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                        mi.add_operand(vreg.clone());
+                        mi.add_operand(inp_op);
+                        instrs.push(mi);
+                        let mut mi2 = MachineInstr::new(I686Opcode::Mov.as_u32());
+                        mi2.add_operand(out.clone());
+                        mi2.add_operand(vreg);
+                        instrs.push(mi2);
+                    }
+                    input_ops.push(out);
+                    continue;
+                }
+            }
+
+            if op_idx < operands.len() {
+                let op = self.get_operand(operands[op_idx], func);
+                if trimmed.contains('m') {
+                    input_ops.push(op);
+                } else {
+                    let vreg = MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()));
+                    let mut mi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    mi.add_operand(vreg.clone());
+                    mi.add_operand(op);
+                    instrs.push(mi);
+                    input_ops.push(vreg);
+                }
+            } else {
+                input_ops.push(MachineOperand::Immediate(0));
+            }
+        }
+
+        // Pre-load read-write outputs ("+r" constraints): load current value
+        // into the output vreg before the asm block.
+        for i in 0..n_outputs {
+            if output_constraints[i].starts_with('+') {
+                let rw_load_idx = n_outputs + i;
+                if rw_load_idx < operands.len() {
+                    let val_op = self.get_operand(operands[rw_load_idx], func);
+                    let vreg = MachineOperand::VirtualReg(ValueId(self.alloc_vreg_raw()));
+                    let mut mi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    mi.add_operand(vreg.clone());
+                    mi.add_operand(val_op);
+                    instrs.push(mi);
+                    let mut mi2 = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    mi2.add_operand(output_ops[i].clone());
+                    mi2.add_operand(vreg);
+                    instrs.push(mi2);
+                }
+            }
+        }
+
+        // Build operand map: [outputs..., inputs...]
+        let mut operand_map: Vec<MachineOperand> = Vec::new();
+        operand_map.extend(output_ops.iter().cloned());
+        operand_map.extend(input_ops.iter().cloned());
+
+        // Parse and emit each assembly instruction from the template.
+        let asm_lines: Vec<&str> = template
+            .trim()
+            .split('\n')
+            .flat_map(|l| l.split('\t'))
+            .flat_map(|l| l.split(';'))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        for line in &asm_lines {
+            let expanded = self.expand_gcc_operands(line, &operand_map);
+            let parts: Vec<&str> = expanded
+                .splitn(2, |c: char| c.is_whitespace())
+                .map(|s| s.trim())
+                .collect();
+            let mnemonic = parts[0].to_lowercase();
+
+            match mnemonic.as_str() {
+                "movl" | "mov" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "addl" | "add" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Add.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "subl" | "sub" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Sub.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "xorl" | "xor" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Xor.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "andl" | "and" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::And.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "orl" | "or" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Or.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "bsrl" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Bsr.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "bsfl" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Bsf.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "popcntl" => {
+                    if parts.len() > 1 {
+                        let (src_op, dst_op) = self.parse_two_att_operands(parts[1], &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Popcnt.as_u32());
+                        mi.add_operand(dst_op);
+                        mi.add_operand(src_op);
+                        instrs.push(mi);
+                    }
+                }
+                "bswap" | "bswapl" => {
+                    if parts.len() > 1 {
+                        let op = self.parse_single_att_operand(parts[1].trim(), &operand_map);
+                        let mut mi = MachineInstr::new(I686Opcode::Bswap.as_u32());
+                        mi.add_operand(op);
+                        instrs.push(mi);
+                    }
+                }
+                _ => {
+                    // Unknown — emit NOP.
+                    instrs.push(MachineInstr::new(I686Opcode::Nop.as_u32()));
+                }
+            }
+        }
+
+        // Store outputs to memory for "=m" constraints.
+        for i in 0..n_outputs {
+            let stripped = output_constraints[i]
+                .trim_start_matches('=')
+                .trim_start_matches('+')
+                .trim_start_matches('&');
+            if !stripped.contains('m') && i < operands.len() {
+                // For register outputs, store back to the target if operand is
+                // a memory location.
+                let target = self.get_operand(operands[i], func);
+                if matches!(
+                    target,
+                    MachineOperand::FrameIndex(_) | MachineOperand::Memory { .. }
+                ) {
+                    let mut mi = MachineInstr::new(I686Opcode::Mov.as_u32());
+                    mi.add_operand(target);
+                    mi.add_operand(output_ops[i].clone());
+                    instrs.push(mi);
+                }
+            }
+        }
+
+        instrs
+    }
+
+    /// Expands `%N` / `%[name]` operand references in an asm template to
+    /// register names or operand placeholders.
+    fn expand_gcc_operands(&self, line: &str, operand_map: &[MachineOperand]) -> String {
+        let mut result = String::new();
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '%' && i + 1 < chars.len() {
+                let next = chars[i + 1];
+                if next == '%' {
+                    // Escaped %%
+                    result.push('%');
+                    i += 2;
+                    continue;
+                }
+                if next.is_ascii_digit() {
+                    // %N reference
+                    let mut num_str = String::new();
+                    let mut j = i + 1;
+                    while j < chars.len() && chars[j].is_ascii_digit() {
+                        num_str.push(chars[j]);
+                        j += 1;
+                    }
+                    if let Ok(idx) = num_str.parse::<usize>() {
+                        if idx < operand_map.len() {
+                            result.push_str(&self.operand_to_asm_str(&operand_map[idx]));
+                        }
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+            result.push(chars[i]);
+            i += 1;
+        }
+        result
+    }
+
+    /// Converts a `MachineOperand` to its AT&T-syntax assembly string.
+    fn operand_to_asm_str(&self, op: &MachineOperand) -> String {
+        match op {
+            MachineOperand::Register(r) => {
+                format!("%{}", reg_name_32(*r))
+            }
+            MachineOperand::VirtualReg(v) => {
+                format!("%vreg{}", v)
+            }
+            MachineOperand::Immediate(v) => {
+                format!("${}", v)
+            }
+            MachineOperand::FrameIndex(off) => {
+                format!("{}(%ebp)", off)
+            }
+            MachineOperand::Memory { base, offset, .. } => {
+                format!("{}(%{})", offset, reg_name_32(*base))
+            }
+            _ => "%eax".to_string(),
+        }
+    }
+
+    /// Parses AT&T-syntax "src, dst" two-operand string into machine operands.
+    fn parse_two_att_operands(
+        &self,
+        operand_str: &str,
+        operand_map: &[MachineOperand],
+    ) -> (MachineOperand, MachineOperand) {
+        let parts: Vec<&str> = operand_str.split(',').map(|s| s.trim()).collect();
+        let src = if parts.len() > 0 {
+            self.parse_single_att_operand(parts[0], operand_map)
+        } else {
+            MachineOperand::Immediate(0)
+        };
+        let dst = if parts.len() > 1 {
+            self.parse_single_att_operand(parts[1], operand_map)
+        } else {
+            MachineOperand::Register(EAX)
+        };
+        (src, dst)
+    }
+
+    /// Parses a single AT&T-syntax operand string.
+    fn parse_single_att_operand(&self, s: &str, _operand_map: &[MachineOperand]) -> MachineOperand {
+        let s = s.trim();
+        // %vreg reference from expanded template
+        if s.starts_with("%vreg") {
+            if let Ok(v) = s[5..].parse::<u32>() {
+                return MachineOperand::VirtualReg(ValueId(v));
+            }
+        }
+        // Physical register reference: %eax, %ecx, etc.
+        if s.starts_with('%') {
+            let rname = &s[1..];
+            if let Some(r) = parse_i686_reg_name(rname) {
+                return MachineOperand::Register(r);
+            }
+        }
+        // Immediate: $N
+        if s.starts_with('$') {
+            if let Ok(v) = s[1..].parse::<i64>() {
+                return MachineOperand::Immediate(v);
+            }
+        }
+        // Memory: offset(%reg)
+        if s.contains('(') && s.contains(')') {
+            if let Some(paren_pos) = s.find('(') {
+                let offset_str = &s[..paren_pos];
+                let reg_str = &s[paren_pos + 1..s.len() - 1].trim_start_matches('%');
+                let offset = offset_str.parse::<i32>().unwrap_or(0);
+                let base = parse_i686_reg_name(reg_str).unwrap_or(EBP);
+                return MachineOperand::Memory {
+                    base,
+                    offset,
+                    index: None,
+                    scale: 1,
+                };
+            }
+        }
+        // Fallback: operand map index
+        MachineOperand::Register(EAX)
+    }
+
     fn emit_mov(&self, dst: MachineOperand, src: MachineOperand, mbb: &mut MachineBasicBlock) {
         let mut mov = MachineInstr::new(I686Opcode::Mov.as_u32());
         mov.add_operand(dst);
@@ -2205,6 +4622,80 @@ impl<'a> I686InstrSel<'a> {
     }
 
     // -----------------------------------------------------------------------
+    // Helper: emit FLD for a ValueId with type awareness (F32 vs F64)
+    // -----------------------------------------------------------------------
+
+    /// Loads an IR value onto the x87 FPU stack, handling both F32 (single
+    /// PUSH + FLD DWORD) and F64 (double PUSH hi/lo + FLD QWORD) correctly.
+    ///
+    /// On i686, F64 values are stored as GPR pairs (lo in value_map, hi in
+    /// i64_high_map).  A single PUSH only moves 4 bytes, which would load
+    /// half the double as a 32-bit float — producing garbage.  This function
+    /// detects F64 values and pushes both halves before using FLD QWORD.
+    fn emit_fld_value(
+        &self,
+        vid: ValueId,
+        is_f64: bool,
+        mbb: &mut MachineBasicBlock,
+        func: &IrFunction,
+    ) {
+        let op = self.get_operand(vid, func);
+
+        if is_f64 {
+            // Check if there's a high-half in i64_high_map (GPR pair storage).
+            if let Some(hi_op) = self.i64_high_map.get(&vid.index()).cloned() {
+                // F64 in GPR pair: PUSH hi, PUSH lo, FLD QWORD [ESP], ADD ESP,8
+                let mut push_hi = MachineInstr::new(I686Opcode::Push.as_u32());
+                push_hi.add_operand(hi_op);
+                push_hi.add_implicit_use(ESP);
+                push_hi.add_implicit_def(ESP);
+                mbb.push_instr(push_hi);
+
+                let mut push_lo = MachineInstr::new(I686Opcode::Push.as_u32());
+                push_lo.add_operand(op);
+                push_lo.add_implicit_use(ESP);
+                push_lo.add_implicit_def(ESP);
+                mbb.push_instr(push_lo);
+
+                let mut fld = MachineInstr::new(I686Opcode::Fld.as_u32());
+                fld.add_operand(MachineOperand::Memory {
+                    base: ESP,
+                    offset: 0,
+                    index: None,
+                    scale: 1,
+                });
+                fld.add_operand(MachineOperand::Immediate(64)); // 64-bit hint
+                fld.add_implicit_def(ST0);
+                mbb.push_instr(fld);
+
+                let mut add_esp = MachineInstr::new(I686Opcode::Add.as_u32());
+                add_esp.add_operand(MachineOperand::Register(ESP));
+                add_esp.add_operand(MachineOperand::Immediate(8));
+                add_esp.add_implicit_def(EFLAGS);
+                mbb.push_instr(add_esp);
+            } else {
+                // F64 from memory (global variable etc.) — FLD QWORD [mem]
+                match &op {
+                    MachineOperand::Memory { .. } | MachineOperand::FrameIndex(_) => {
+                        let mut fld = MachineInstr::new(I686Opcode::Fld.as_u32());
+                        fld.add_operand(op);
+                        fld.add_operand(MachineOperand::Immediate(64));
+                        fld.add_implicit_def(ST0);
+                        mbb.push_instr(fld);
+                    }
+                    _ => {
+                        // Single GPR with no high half — treat as F32 fallback
+                        self.emit_fld(op, mbb);
+                    }
+                }
+            }
+        } else {
+            // F32 — use existing emit_fld for single 32-bit values
+            self.emit_fld(op, mbb);
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Helper: get operand for a ValueId
     // -----------------------------------------------------------------------
 
@@ -2239,6 +4730,16 @@ impl<'a> I686InstrSel<'a> {
         id
     }
 
+    /// Allocate a temporary stack slot of the given `size` bytes (4-byte
+    /// aligned).  Returns the *negative* EBP offset as a `u32` suitable
+    /// for use in `MachineOperand::FrameIndex`.
+    fn alloc_stack_slot(&mut self, size: u32) -> u32 {
+        self.frame_size = align_up(self.frame_size, 4);
+        self.frame_size += size;
+        let offset = -(self.frame_size as i32);
+        offset as u32
+    }
+
     // -----------------------------------------------------------------------
     // Helper: ensure a value is in a register
     // -----------------------------------------------------------------------
@@ -2246,6 +4747,13 @@ impl<'a> I686InstrSel<'a> {
     /// Ensures the operand is in a register. If it's already a register,
     /// returns it as-is. If it's a memory operand, immediate, or symbol,
     /// emits a MOV to a fresh virtual register and returns that.
+    ///
+    /// **FrameIndex special handling:** A `FrameIndex` represents a stack
+    /// slot (alloca).  Using it as a *value* means we want the slot's
+    /// ADDRESS (pointer), not its contents.  We therefore emit LEA
+    /// instead of MOV (which would dereference the slot).  Load/Store
+    /// instructions access the slot's contents through `safe_to_memory`,
+    /// which keeps FrameIndex intact for the encoder.
     fn ensure_in_register(
         &mut self,
         op: MachineOperand,
@@ -2253,6 +4761,16 @@ impl<'a> I686InstrSel<'a> {
     ) -> MachineOperand {
         match &op {
             MachineOperand::Register(_) | MachineOperand::VirtualReg(_) => op,
+            MachineOperand::FrameIndex(_) => {
+                // FrameIndex as a value → compute address with LEA.
+                let tmp = self.alloc_vreg_raw();
+                let tmp_op = MachineOperand::VirtualReg(ValueId(tmp));
+                let mut lea = MachineInstr::new(I686Opcode::LeaMem.as_u32());
+                lea.add_operand(tmp_op.clone());
+                lea.add_operand(op);
+                mbb.push_instr(lea);
+                tmp_op
+            }
             _ => {
                 let tmp = self.alloc_vreg_raw();
                 let tmp_op = MachineOperand::VirtualReg(ValueId(tmp));
@@ -2266,68 +4784,50 @@ impl<'a> I686InstrSel<'a> {
     // Helper: convert operand to memory addressing mode
     // -----------------------------------------------------------------------
 
-    /// Converts an operand representing a pointer to a Memory operand for
-    /// load/store instructions.
+    /// Converts a non-VirtualReg operand to a form suitable for memory access.
     ///
-    /// If the operand is already a Memory, returns it unchanged. If it's a
-    /// register, wraps it as `[reg+0]`. If it's something else, moves it
-    /// to a register first.
-    fn operand_to_memory(
+    /// This helper is only called when the operand is known NOT to be a
+    /// VirtualReg (those are handled via MovLoad/MovStore). For FrameIndex
+    /// operands, they are kept as-is (the encoder handles [EBP+offset]).
+    /// For physical registers, they are wrapped in a Memory operand.
+    /// For Symbol operands, they are returned as-is (encoder resolves them).
+    fn safe_to_memory(
         &mut self,
         op: MachineOperand,
         mbb: &mut MachineBasicBlock,
     ) -> MachineOperand {
         match &op {
             MachineOperand::Memory { .. } => op,
+            MachineOperand::FrameIndex(_) => {
+                // FrameIndex is directly supported by the encoder as [EBP+n].
+                op
+            }
             MachineOperand::Register(reg) => MachineOperand::Memory {
                 base: *reg,
                 offset: 0,
                 index: None,
                 scale: 1,
             },
-            MachineOperand::VirtualReg(_) => {
-                // Virtual register — keep as-is for now; register allocator
-                // will assign a physical register which can then be used as base.
-                // For the memory addressing mode, we use EAX as a temporary.
-                let tmp = self.alloc_vreg_raw();
-                self.emit_mov(MachineOperand::VirtualReg(ValueId(tmp)), op, mbb);
-                MachineOperand::Memory {
-                    base: PhysReg::NONE,
-                    offset: 0,
-                    index: None,
-                    scale: 1,
-                }
+            MachineOperand::Symbol(_) => {
+                // Symbol is handled directly by the encoder for global access.
+                op
             }
-            MachineOperand::Symbol(_name) => {
-                // Global symbol: use symbol@GOT or direct addressing.
-                if self.config.requires_pic() {
-                    // PIC: MOV reg, [EBX + symbol@GOT]
-                    MachineOperand::Memory {
-                        base: EBX,
-                        offset: 0,
-                        index: None,
-                        scale: 1,
-                    }
-                } else {
-                    // Non-PIC: direct [symbol] addressing.
-                    MachineOperand::Memory {
-                        base: PhysReg::NONE,
-                        offset: 0,
-                        index: None,
-                        scale: 1,
-                    }
-                }
+            MachineOperand::VirtualReg(_) => {
+                // This should not happen — callers should use MovLoad/MovStore.
+                // Safety fallback: move to a register and use that.
+                let tmp = self.alloc_vreg_raw();
+                let tmp_op = MachineOperand::VirtualReg(ValueId(tmp));
+                self.emit_mov(tmp_op.clone(), op, mbb);
+                // Return the vreg itself — the caller should use MovLoad/MovStore.
+                // This path indicates a bug in the caller.
+                tmp_op
             }
             _ => {
-                // Label, Immediate, FrameIndex — move to register first.
+                // Label, Immediate — move to register first, then use as base.
                 let tmp = self.alloc_vreg_raw();
-                self.emit_mov(MachineOperand::VirtualReg(ValueId(tmp)), op, mbb);
-                MachineOperand::Memory {
-                    base: PhysReg::NONE,
-                    offset: 0,
-                    index: None,
-                    scale: 1,
-                }
+                let tmp_op = MachineOperand::VirtualReg(ValueId(tmp));
+                self.emit_mov(tmp_op.clone(), op, mbb);
+                tmp_op
             }
         }
     }
@@ -2346,6 +4846,12 @@ impl<'a> I686InstrSel<'a> {
                 index,
                 scale,
             },
+            MachineOperand::FrameIndex(idx) => {
+                // FrameIndex stores a byte offset from EBP as u32 (really i32).
+                // Add the delta to produce the adjusted offset.
+                let current_offset = idx as i32;
+                MachineOperand::FrameIndex((current_offset + delta) as u32)
+            }
             other => other,
         }
     }

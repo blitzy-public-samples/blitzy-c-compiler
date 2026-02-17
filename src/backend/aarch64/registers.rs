@@ -457,9 +457,10 @@ pub const CALLEE_SAVED_FP: [PhysReg; 8] = [V8, V9, V10, V11, V12, V13, V14, V15]
 /// by the caller if their values are needed after a call.
 ///
 /// Includes: X0–X18 (arguments, indirect result, temporaries, IP0/IP1,
-/// platform register) and X30 (LR, overwritten by BL).
-pub const CALLER_SAVED_INT: [PhysReg; 20] = [
-    X0, X1, X2, X3, X4, X5, X6, X7, X8, X9, X10, X11, X12, X13, X14, X15, X16, X17, X18, X30,
+/// platform register).  X30 (LR) is NOT listed here because it is not
+/// allocatable — the prologue/epilogue pair handles saving/restoring LR.
+pub const CALLER_SAVED_INT: [PhysReg; 19] = [
+    X0, X1, X2, X3, X4, X5, X6, X7, X8, X9, X10, X11, X12, X13, X14, X15, X16, X17, X18,
 ];
 
 /// Caller-saved (volatile) SIMD/FP registers per AAPCS64.
@@ -474,9 +475,13 @@ pub const CALLER_SAVED_FP: [PhysReg; 24] = [
 /// and X29/FP (reserved for the frame pointer when frame pointer is used,
 /// which is always the case for AArch64 in this compiler for correct
 /// stack unwinding).
-pub const ALLOCATABLE_INT: [PhysReg; 30] = [
+/// Allocatable integer registers — X0–X28 minus X29 (FP).
+/// X29 is the frame pointer (reserved by AAPCS64).
+/// X30 is the link register (LR) — written implicitly by BL instructions
+/// and restored by the epilogue; it must NOT be used for general allocation.
+pub const ALLOCATABLE_INT: [PhysReg; 29] = [
     X0, X1, X2, X3, X4, X5, X6, X7, X8, X9, X10, X11, X12, X13, X14, X15, X16, X17, X18, X19, X20,
-    X21, X22, X23, X24, X25, X26, X27, X28, X30,
+    X21, X22, X23, X24, X25, X26, X27, X28,
 ];
 
 /// Allocatable SIMD/FP registers — all 32 V-registers are available for
@@ -813,14 +818,18 @@ pub fn is_allocatable(reg: PhysReg) -> bool {
         31..=33 => false,
         // X29 (FP) — reserved for frame pointer
         29 => false,
+        // X30 (LR) — reserved for link register (clobbered by BL)
+        30 => false,
         // WSP — not allocatable
         65 => false,
         // W29 — 32-bit view of FP, also reserved
         63 => false,
-        // X0–X28, X30 — allocatable GPRs
-        0..=28 | 30 => true,
-        // W0–W28, W30 — allocatable 32-bit views
-        34..=62 | 64 => true,
+        // W30 — 32-bit view of LR, also reserved
+        64 => false,
+        // X0–X28 — allocatable GPRs
+        0..=28 => true,
+        // W0–W28 — allocatable 32-bit views
+        34..=62 => true,
         // V0–V31 — all allocatable
         66..=97 => true,
         // S0–S31 — all allocatable
@@ -1101,7 +1110,7 @@ mod tests {
     fn test_is_allocatable() {
         assert!(is_allocatable(X0));
         assert!(is_allocatable(X28));
-        assert!(is_allocatable(X30));
+        assert!(!is_allocatable(X30)); // LR — not allocatable (link register)
         assert!(!is_allocatable(X29)); // FP
         assert!(!is_allocatable(SP));
         assert!(!is_allocatable(XZR));
@@ -1182,9 +1191,9 @@ mod tests {
         assert_eq!(FLOAT_ARG_REGS.len(), 8);
         assert_eq!(CALLEE_SAVED_INT.len(), 10);
         assert_eq!(CALLEE_SAVED_FP.len(), 8);
-        assert_eq!(CALLER_SAVED_INT.len(), 20);
+        assert_eq!(CALLER_SAVED_INT.len(), 19);
         assert_eq!(CALLER_SAVED_FP.len(), 24);
-        assert_eq!(ALLOCATABLE_INT.len(), 30);
+        assert_eq!(ALLOCATABLE_INT.len(), 29);
         assert_eq!(ALLOCATABLE_FP.len(), 32);
     }
 

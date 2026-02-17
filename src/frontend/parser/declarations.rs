@@ -163,11 +163,17 @@ fn expect_identifier(parser: &mut Parser<'_>, context: &str) -> Result<Symbol, P
 pub fn parse_external_declaration(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
     let start = parser.current().span;
 
-    // Handle __extension__ prefix
-    if parser.check(TokenKind::Extension)
-        && super::gcc_extensions::is_gcc_extension_start(&parser.current().kind)
-    {
-        return super::gcc_extensions::parse_extension_decl(parser);
+    // Handle __extension__ prefix — at file scope we must NOT delegate to
+    // `parse_extension_decl` because that function calls `parse_declaration`
+    // (block-scope), which does not handle function *definitions* (the
+    // `{ body }` case).  Instead we consume `__extension__`, recursively
+    // call ourselves (which handles function defs via the LeftBrace check
+    // below), and tag the result.
+    if parser.check(TokenKind::Extension) {
+        parser.advance(); // consume __extension__
+        let mut decl = parse_external_declaration(parser)?;
+        super::gcc_extensions::mark_declaration_extension_pub(&mut decl);
+        return Ok(decl);
     }
 
     // Handle _Static_assert
@@ -271,10 +277,11 @@ pub fn parse_external_declaration(parser: &mut Parser<'_>) -> Result<Declaration
 pub fn parse_declaration(parser: &mut Parser<'_>) -> Result<Declaration, ParseError> {
     let start = parser.current().span;
 
-    // Handle __extension__ prefix
-    if parser.check(TokenKind::Extension)
-        && super::gcc_extensions::is_gcc_extension_start(&parser.current().kind)
-    {
+    // Handle __extension__ prefix in block scope — just consume the keyword
+    // and continue parsing the declaration normally.  At block scope there
+    // are no function definitions, so the existing `parse_declaration`
+    // logic is sufficient.
+    if parser.check(TokenKind::Extension) {
         return super::gcc_extensions::parse_extension_decl(parser);
     }
 
@@ -556,7 +563,7 @@ pub fn parse_declaration_specifiers(
             // -----------------------------------------------------------
             // Function specifiers
             // -----------------------------------------------------------
-            TokenKind::Inline => {
+            TokenKind::Inline | TokenKind::InlineGcc => {
                 func_specifiers.is_inline = true;
                 last_span = parser.advance();
                 count += 1;
@@ -820,12 +827,47 @@ fn parse_direct_declarator(
                 let (inner_decl, inner_grouping) = parse_declarator_inner(parser)?;
                 parser.expect(TokenKind::RightParen)?;
                 name = inner_decl.name;
-                // Inner derived declarators come first (closer to name)
+
+                // For grouped declarators like `int (*f)(int)`, the postfix
+                // derivations (function `()` / array `[]`) bind to the BASE
+                // type before the inner pointer/qualifiers wrap it.
+                //
+                // Parse the postfix derivations first, then append the inner
+                // derivations after them. With forward-order type application:
+                //   base_type → postfix (Function/Array) → inner (Pointer)
+                // This correctly produces "pointer to function" instead of
+                // "function returning pointer".
+                //
+                // Collect postfix derivations for the grouped case here.
+                let mut grouped_postfix: Vec<DerivedDeclarator> = Vec::new();
+                loop {
+                    match parser.current().kind {
+                        TokenKind::LeftBracket => {
+                            let arr = parse_array_declarator(parser)?;
+                            grouped_postfix.push(arr);
+                            last_span = Some(parser.current().span);
+                        }
+                        TokenKind::LeftParen => {
+                            let func = parse_function_declarator(parser)?;
+                            grouped_postfix.push(func);
+                            last_span = Some(parser.current().span);
+                        }
+                        _ => break,
+                    }
+                }
+                // Postfix first (applied to base type), then inner (wraps result)
+                derived.extend(grouped_postfix);
                 derived.extend(inner_decl.derived);
+
                 if inner_grouping {
                     has_grouping = true;
                 }
-                last_span = Some(parser.current().span);
+                if last_span.is_none() {
+                    last_span = Some(parser.current().span);
+                }
+
+                // Return early — postfix already consumed in the grouped branch.
+                return Ok((name, derived, has_grouping, last_span));
             }
             // If not grouped, name stays None (abstract declarator case)
         }
@@ -834,7 +876,7 @@ fn parse_direct_declarator(
         _ => {}
     }
 
-    // Parse postfix derivations: [] and ()
+    // Parse postfix derivations: [] and () (non-grouped case)
     loop {
         match parser.current().kind {
             TokenKind::LeftBracket => {
@@ -1470,11 +1512,22 @@ fn parse_brace_initializer(parser: &mut Parser<'_>) -> Result<Initializer, Parse
                 let field_name = expect_identifier(parser, "designator")?;
                 designators.push(Designator::Field(field_name));
             } else {
-                // [index]
+                // [index] or [lo ... hi] (GCC range designator)
                 parser.advance(); // consume '['
                 let index_expr = super::expressions::parse_constant_expression(parser)?;
-                parser.expect(TokenKind::RightBracket)?;
-                designators.push(Designator::Index(Box::new(index_expr)));
+                if parser.check(TokenKind::Ellipsis) {
+                    // GCC range designator: [lo ... hi]
+                    parser.advance(); // consume '...'
+                    let hi_expr = super::expressions::parse_constant_expression(parser)?;
+                    parser.expect(TokenKind::RightBracket)?;
+                    designators.push(Designator::IndexRange(
+                        Box::new(index_expr),
+                        Box::new(hi_expr),
+                    ));
+                } else {
+                    parser.expect(TokenKind::RightBracket)?;
+                    designators.push(Designator::Index(Box::new(index_expr)));
+                }
             }
         }
 

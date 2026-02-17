@@ -73,6 +73,7 @@ use crate::ir::instructions::{ICmpPredicate, Instruction};
 /// their single incoming value across all uses in the function.
 pub fn run_simplify_cfg(func: &mut IrFunction) -> bool {
     let mut ever_changed = false;
+    let mut _cfg_iter = 0u32;
 
     loop {
         // CRITICAL: Rebuild CFG predecessor/successor lists from terminator
@@ -88,6 +89,14 @@ pub fn run_simplify_cfg(func: &mut IrFunction) -> bool {
 
         let mut changed = false;
 
+        _cfg_iter += 1;
+        // eprintln!("[CFG_DBG] {} iteration {}: {} blocks before", func.name, _cfg_iter, func.block_count());
+        for _bb in func.blocks() {
+            // eprintln!("[CFG_DBG]   BB{}: {} instrs, term={:?}, succs={:?}, preds={:?}",
+            // bb.id.0, bb.instructions().len(),
+            // bb.terminator().map(|t| std::mem::discriminant(t)),
+            // bb.successors(), bb.predecessors());
+        }
         // Phase 1: Remove unreachable blocks — may expose new simplification
         // opportunities by eliminating dead predecessor edges and phi operands.
         changed |= remove_unreachable_blocks(func);
@@ -155,25 +164,45 @@ pub fn run_simplify_cfg(func: &mut IrFunction) -> bool {
 /// from the terminator instructions — the authoritative source of
 /// control-flow edges.
 fn rebuild_cfg_edges(func: &mut IrFunction) {
-    // Step 1: Collect (block_id, Vec<successor_id>) from terminators.
-    // We do this with an immutable borrow first to avoid aliasing issues.
+    // Step 1: Collect (block_id, Vec<successor_id>) from terminators AND
+    // from `asm goto` InlineAsm instructions.
+    //
+    // The terminator is the primary source of CFG edges, but `asm goto`
+    // instructions may also branch to goto-label target blocks at runtime.
+    // Those targets are stored in the InlineAsm instruction's
+    // `goto_targets` field.  If we fail to include them here, the target
+    // blocks would appear unreachable and be incorrectly pruned by the
+    // unreachable-block-removal pass.
     let edge_map: Vec<(BasicBlockId, Vec<BasicBlockId>)> = func
         .blocks()
         .iter()
         .map(|block| {
-            let succs = match block.terminator() {
+            let mut succs = match block.terminator() {
                 Some(term) => term.successor_blocks(),
                 None => Vec::new(),
             };
+
+            // Scan non-terminator instructions for InlineAsm with goto
+            // targets.  This is intentionally placed outside the
+            // terminator path because InlineAsm is a non-terminator
+            // instruction — the block's terminator is typically a Branch
+            // to the fall-through block.
+            for inst in block.instructions() {
+                if let crate::ir::instructions::Instruction::InlineAsm { goto_targets, .. } = inst {
+                    for &target in goto_targets {
+                        if !succs.contains(&target) {
+                            succs.push(target);
+                        }
+                    }
+                }
+            }
+
             (block.id, succs)
         })
         .collect();
 
     // Step 2: Clear all predecessor and successor lists.
     for block in func.blocks_mut() {
-        // We don't have a clear_successors/clear_predecessors method, so
-        // we drain them by removing one at a time (they are typically very
-        // small — 0-3 entries).
         while !block.successors().is_empty() {
             let s = block.successors()[0];
             block.remove_successor(s);
@@ -187,14 +216,12 @@ fn rebuild_cfg_edges(func: &mut IrFunction) {
     // Step 3: Populate successor lists on source blocks and predecessor
     // lists on target blocks.
     for (src_id, succs) in &edge_map {
-        // Add successors to the source block.
         for &succ_id in succs {
             if func.has_block(succ_id) {
                 let src = func.get_block_mut(*src_id);
                 src.add_successor(succ_id);
             }
         }
-        // Add src as a predecessor to each successor block.
         for &succ_id in succs {
             if func.has_block(succ_id) {
                 let dst = func.get_block_mut(succ_id);
@@ -255,6 +282,17 @@ fn remove_unreachable_blocks(func: &mut IrFunction) -> bool {
         for &succ_id in block.successors() {
             if func.has_block(succ_id) && reachable.insert(succ_id) {
                 worklist.push(succ_id);
+            }
+        }
+
+        // BlockAddress instructions reference blocks that may only be
+        // reachable via IndirectBranch.  Mark them reachable so that
+        // unreachable-block removal does not prune them.
+        for inst in block.instructions() {
+            if let crate::ir::instructions::Instruction::BlockAddress { block: tgt, .. } = inst {
+                if func.has_block(*tgt) && reachable.insert(*tgt) {
+                    worklist.push(*tgt);
+                }
             }
         }
     }

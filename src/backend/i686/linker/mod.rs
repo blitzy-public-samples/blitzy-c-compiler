@@ -51,7 +51,7 @@ use crate::backend::elf_writer_common::{
     ElfSection, ElfSymbol, ElfWriter, ProgramHeader, ELFCLASS32, ELFDATA2LSB, EM_386, ET_DYN,
     ET_EXEC, PF_R, PF_W, PF_X, PT_DYNAMIC, PT_GNU_RELRO, PT_GNU_STACK, PT_INTERP, PT_LOAD, PT_PHDR,
     SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE, SHT_DYNAMIC, SHT_DYNSYM, SHT_HASH, SHT_NOBITS,
-    SHT_PROGBITS, SHT_STRTAB, STB_GLOBAL, STB_LOCAL, STT_FILE, STT_SECTION,
+    SHT_PROGBITS, SHT_REL, SHT_STRTAB, STB_GLOBAL, STB_LOCAL, STT_FILE, STT_SECTION,
 };
 use crate::backend::linker_common::dynamic::{
     interp_string, DynamicRelocation, GotEntry, PltEntry,
@@ -388,25 +388,26 @@ impl I686Linker {
                 ));
             }
 
-            // Placeholder .rela.dyn and .rela.plt (populated after reloc processing).
+            // Placeholder .rel.dyn and .rel.plt (populated after reloc processing).
+            // i386 uses REL relocations (8 bytes each, no explicit addend).
             if !classification.got_entries.is_empty() {
                 merger.add_input_section(make_section(
-                    ".rela.dyn",
+                    ".rel.dyn",
                     Vec::new(),
                     4,
                     SHF_ALLOC,
-                    SHT_PROGBITS,
-                    12, // Elf32_Rela = 12 bytes
+                    SHT_REL,
+                    8, // Elf32_Rel = 8 bytes
                 ));
             }
             if !classification.plt_entries.is_empty() {
                 merger.add_input_section(make_section(
-                    ".rela.plt",
+                    ".rel.plt",
                     Vec::new(),
                     4,
                     SHF_ALLOC,
-                    SHT_PROGBITS,
-                    12,
+                    SHT_REL,
+                    8,
                 ));
             }
 
@@ -545,17 +546,18 @@ impl I686Linker {
                 }
             }
 
-            let rela_dyn_bytes = build_rela_32(&dyn_rela_dyn);
-            let rela_plt_bytes = build_rela_32(&dyn_rela_plt);
+            // i386 uses REL relocations (without explicit addend).
+            let rel_dyn_bytes = build_rel_32(&dyn_rela_dyn);
+            let rel_plt_bytes = build_rel_32(&dyn_rela_plt);
 
-            dyn_builder.set_rela_dyn_size(rela_dyn_bytes.len() as u64);
-            dyn_builder.set_rela_plt_size(rela_plt_bytes.len() as u64);
+            dyn_builder.set_rela_dyn_size(rel_dyn_bytes.len() as u64);
+            dyn_builder.set_rela_plt_size(rel_plt_bytes.len() as u64);
             let dynamic_bytes = dyn_builder.build(&layout);
 
             // Patch the dynamic section data into the merger's output sections.
             patch_section_data(merger.output_sections_mut(), ".dynamic", &dynamic_bytes);
-            patch_section_data(merger.output_sections_mut(), ".rela.dyn", &rela_dyn_bytes);
-            patch_section_data(merger.output_sections_mut(), ".rela.plt", &rela_plt_bytes);
+            patch_section_data(merger.output_sections_mut(), ".rel.dyn", &rel_dyn_bytes);
+            patch_section_data(merger.output_sections_mut(), ".rel.plt", &rel_plt_bytes);
         }
 
         // Check for accumulated diagnostic errors before proceeding to ELF
@@ -733,10 +735,10 @@ impl I686Linker {
                 .find_section_address(output_sections, ".plt")
                 .unwrap_or(0),
             rela_dyn_addr: self
-                .find_section_address(output_sections, ".rela.dyn")
+                .find_section_address(output_sections, ".rel.dyn")
                 .unwrap_or(0),
             rela_plt_addr: self
-                .find_section_address(output_sections, ".rela.plt")
+                .find_section_address(output_sections, ".rel.plt")
                 .unwrap_or(0),
             interp_addr: self
                 .find_section_address(output_sections, ".interp")
@@ -1083,16 +1085,16 @@ fn patch_section_data(output_sections: &mut [OutputSection], name: &str, new_dat
 // Helper — 32-bit relocation serialization
 // ===========================================================================
 
-/// Serializes a slice of `DynamicRelocation`s into 32-bit Elf32_Rela format.
+/// Serializes a slice of `DynamicRelocation`s into 32-bit Elf32_Rel format
+/// (without explicit addend), as required by the i386 ABI.
 ///
-/// Each entry is 12 bytes:
+/// Each entry is 8 bytes:
 /// * `r_offset` — 4 bytes (LE)
 /// * `r_info`   — 4 bytes (LE) with `sym << 8 | type`
-/// * `r_addend` — 4 bytes (LE, signed)
-fn build_rela_32(relocations: &[DynamicRelocation]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(relocations.len() * 12);
+fn build_rel_32(relocations: &[DynamicRelocation]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(relocations.len() * 8);
     for r in relocations {
-        out.extend_from_slice(&r.to_bytes_32_le());
+        out.extend_from_slice(&r.to_bytes_32_rel_le());
     }
     out
 }
@@ -1142,21 +1144,21 @@ mod tests {
     }
 
     #[test]
-    fn test_build_rela_32_empty() {
-        let result = build_rela_32(&[]);
+    fn test_build_rel_32_empty() {
+        let result = build_rel_32(&[]);
         assert!(result.is_empty());
     }
 
     #[test]
-    fn test_build_rela_32_single() {
+    fn test_build_rel_32_single() {
         let reloc = DynamicRelocation {
             offset: 0x0804_C000,
             reloc_type: 8, // R_386_RELATIVE
             symbol_index: 0,
-            addend: 0x100,
+            addend: 0x100, // ignored in REL format
         };
-        let result = build_rela_32(&[reloc]);
-        assert_eq!(result.len(), 12);
+        let result = build_rel_32(&[reloc]);
+        assert_eq!(result.len(), 8);
         // r_offset = 0x0804C000 LE
         assert_eq!(
             u32::from_le_bytes(result[0..4].try_into().unwrap()),
@@ -1164,12 +1166,10 @@ mod tests {
         );
         // r_info = (0 << 8) | 8 = 8
         assert_eq!(u32::from_le_bytes(result[4..8].try_into().unwrap()), 8);
-        // r_addend = 0x100
-        assert_eq!(i32::from_le_bytes(result[8..12].try_into().unwrap()), 0x100);
     }
 
     #[test]
-    fn test_build_rela_32_multiple() {
+    fn test_build_rel_32_multiple() {
         let relocs = vec![
             DynamicRelocation {
                 offset: 0x1000,
@@ -1181,30 +1181,28 @@ mod tests {
                 offset: 0x2000,
                 reloc_type: 7, // R_386_JMP_SLOT
                 symbol_index: 3,
-                addend: -4,
+                addend: -4, // ignored in REL format
             },
         ];
-        let result = build_rela_32(&relocs);
-        assert_eq!(result.len(), 24);
+        let result = build_rel_32(&relocs);
+        assert_eq!(result.len(), 16);
 
-        // First reloc: r_offset=0x1000, r_info=(2<<8)|1=513, r_addend=0
+        // First reloc: r_offset=0x1000, r_info=(2<<8)|1=513
         assert_eq!(u32::from_le_bytes(result[0..4].try_into().unwrap()), 0x1000);
         assert_eq!(
             u32::from_le_bytes(result[4..8].try_into().unwrap()),
             (2 << 8) | 1
         );
-        assert_eq!(i32::from_le_bytes(result[8..12].try_into().unwrap()), 0);
 
-        // Second reloc: r_offset=0x2000, r_info=(3<<8)|7=775, r_addend=-4
+        // Second reloc: r_offset=0x2000, r_info=(3<<8)|7=775
         assert_eq!(
-            u32::from_le_bytes(result[12..16].try_into().unwrap()),
+            u32::from_le_bytes(result[8..12].try_into().unwrap()),
             0x2000
         );
         assert_eq!(
-            u32::from_le_bytes(result[16..20].try_into().unwrap()),
+            u32::from_le_bytes(result[12..16].try_into().unwrap()),
             (3 << 8) | 7
         );
-        assert_eq!(i32::from_le_bytes(result[20..24].try_into().unwrap()), -4);
     }
 
     #[test]

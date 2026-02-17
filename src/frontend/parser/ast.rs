@@ -780,6 +780,11 @@ pub enum Designator {
     Field(Symbol),
     /// `[index]` — array index designator.
     Index(Box<Expression>),
+    /// `[lo ... hi]` — GCC range designator extension.
+    ///
+    /// Initializes all array elements in the inclusive range [lo, hi]
+    /// to the same value. Example: `[2 ... 5] = 42`.
+    IndexRange(Box<Expression>, Box<Expression>),
 }
 
 /// A single item in a brace-enclosed initializer list.
@@ -1128,6 +1133,42 @@ pub enum Expression {
         span: Span,
     },
 
+    /// GCC `__builtin_offsetof(type, member)` intrinsic.
+    ///
+    /// Returns the byte offset of `member` within `type`.
+    BuiltinOffsetof {
+        /// The type whose layout is queried.
+        type_name: Box<TypeName>,
+        /// The member designator expression (identifier, or chained `.`/`[]`).
+        member: Box<Expression>,
+        /// Source span of the full `__builtin_offsetof(...)` expression.
+        span: Span,
+    },
+
+    /// GCC `__builtin_types_compatible_p(type1, type2)` intrinsic.
+    ///
+    /// Evaluates to 1 if the two types are compatible, 0 otherwise.
+    BuiltinTypesCompatibleP {
+        /// First type argument.
+        type1: Box<TypeName>,
+        /// Second type argument.
+        type2: Box<TypeName>,
+        /// Source span of the full expression.
+        span: Span,
+    },
+
+    /// GCC `__builtin_va_arg(ap, type)` intrinsic.
+    ///
+    /// Fetches the next argument from variadic argument list `ap` as `type`.
+    BuiltinVaArg {
+        /// The `va_list` argument.
+        ap: Box<Expression>,
+        /// The type to retrieve.
+        type_name: Box<TypeName>,
+        /// Source span of the full expression.
+        span: Span,
+    },
+
     /// Error recovery placeholder — used when the parser encounters a syntax
     /// error in an expression context and needs to continue parsing.
     Error {
@@ -1165,6 +1206,9 @@ impl Expression {
             | Expression::LabelAddress { span, .. }
             | Expression::AddressOf { span, .. }
             | Expression::Dereference { span, .. }
+            | Expression::BuiltinOffsetof { span, .. }
+            | Expression::BuiltinTypesCompatibleP { span, .. }
+            | Expression::BuiltinVaArg { span, .. }
             | Expression::Error { span, .. } => *span,
         }
     }

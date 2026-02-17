@@ -815,13 +815,36 @@ fn parse_primary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
             })
         }
 
-        // String literal (handles adjacent string concatenation at lexer level)
+        // String literal — handles adjacent string concatenation (C11 §5.1.1.2
+        // translation phase 6). Adjacent string literals are concatenated into a
+        // single string literal. This must happen in the parser because the
+        // preprocessor may output multiple adjacent string tokens across lines.
         TokenKind::StringLiteral { value, prefix } => {
             let span = parser.advance();
+            let mut combined_value = value;
+            let mut combined_prefix = prefix;
+            let mut combined_span = span;
+
+            // Consume any adjacent string literals.
+            loop {
+                let (next_val, next_pfx) = match &parser.current().kind {
+                    TokenKind::StringLiteral { value, prefix } => (value.clone(), *prefix),
+                    _ => break,
+                };
+                let next_span = parser.advance();
+                combined_value.extend_from_slice(&next_val);
+                combined_span = Span::merge(combined_span, next_span);
+                // Resolve prefix: if both are None, stays None; otherwise
+                // wider prefix wins (simplified; C11 §6.4.5p5).
+                if combined_prefix == crate::frontend::lexer::token::StringPrefix::None {
+                    combined_prefix = next_pfx;
+                }
+            }
+
             Ok(Expression::StringLiteral {
-                value,
-                prefix,
-                span,
+                value: combined_value,
+                prefix: combined_prefix,
+                span: combined_span,
             })
         }
 
@@ -841,15 +864,15 @@ fn parse_primary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
         // `parse_cast` before we reach here, so we only need to deal
         // with plain parenthesized expressions and statement expressions.
         TokenKind::LeftParen => {
-            let _start = parser.advance(); // consume `(`
-
             // GCC statement expression: `({ ... })`
-            if parser.check(TokenKind::LeftBrace) {
-                let expr = super::gcc_extensions::parse_statement_expression(parser)?;
-                parser.expect(TokenKind::RightParen)?;
-                return Ok(expr);
+            // Check for `{` at peek position 1 (i.e. after `(`) BEFORE
+            // consuming the `(`.  `parse_statement_expression` owns the
+            // full `({ ... })` production including both outer parens.
+            if matches!(parser.peek_ahead(1).kind, TokenKind::LeftBrace) {
+                return super::gcc_extensions::parse_statement_expression(parser);
             }
 
+            let _start = parser.advance(); // consume `(`
             let inner = parse_expression(parser)?;
             parser.expect(TokenKind::RightParen)?;
             // Parenthesized expressions are not a distinct AST node — they
@@ -859,6 +882,109 @@ fn parse_primary(parser: &mut Parser<'_>) -> Result<Expression, ParseError> {
 
         // _Generic selection expression (C11 §6.5.1.1)
         TokenKind::Generic => parse_generic_selection(parser),
+
+        // ------------------------------------------------------------------
+        // GCC __builtin_offsetof(type, member) — special syntax because the
+        // first argument is a type-name, not an expression.
+        // We parse it into an AST node that the semantic analyser can handle.
+        // ------------------------------------------------------------------
+        TokenKind::BuiltinOffsetof => {
+            let start = parser.advance(); // consume __builtin_offsetof
+            parser.expect(TokenKind::LeftParen)?;
+            // Parse the type name
+            let type_name = super::types::parse_type_name(parser)?;
+            parser.expect(TokenKind::Comma)?;
+            // The member designator is parsed as an identifier (possibly with
+            // nested . and [] access, but for now just an identifier suffices
+            // for the most common usage).
+            let member = parse_assignment_expression(parser)?;
+            let end = parser.expect(TokenKind::RightParen)?;
+            // Represent as a call with the type stringified — the sema will
+            // recognise BuiltinOffsetof calls by name and handle type arg.
+            let _name = parser.interner.intern("__builtin_offsetof");
+            Ok(Expression::BuiltinOffsetof {
+                type_name: Box::new(type_name),
+                member: Box::new(member),
+                span: Span::merge(start, end),
+            })
+        }
+
+        // ------------------------------------------------------------------
+        // GCC __builtin_types_compatible_p(type1, type2) — both arguments
+        // are type-names.
+        // ------------------------------------------------------------------
+        TokenKind::BuiltinTypesCompatibleP => {
+            let start = parser.advance();
+            parser.expect(TokenKind::LeftParen)?;
+            let type1 = super::types::parse_type_name(parser)?;
+            parser.expect(TokenKind::Comma)?;
+            let type2 = super::types::parse_type_name(parser)?;
+            let end = parser.expect(TokenKind::RightParen)?;
+            Ok(Expression::BuiltinTypesCompatibleP {
+                type1: Box::new(type1),
+                type2: Box::new(type2),
+                span: Span::merge(start, end),
+            })
+        }
+
+        // ------------------------------------------------------------------
+        // GCC __builtin_choose_expr(const_expr, expr1, expr2) — all are
+        // expressions, so treat like a regular function call via identifier.
+        // ------------------------------------------------------------------
+        TokenKind::BuiltinChooseExpr => {
+            let name = parser.interner.intern("__builtin_choose_expr");
+            let span = parser.advance();
+            Ok(Expression::Identifier { name, span })
+        }
+
+        // ------------------------------------------------------------------
+        // GCC __builtin_va_arg(ap, type) — second argument is a type-name.
+        // ------------------------------------------------------------------
+        TokenKind::BuiltinVaArg => {
+            let start = parser.advance();
+            parser.expect(TokenKind::LeftParen)?;
+            let ap_expr = parse_assignment_expression(parser)?;
+            parser.expect(TokenKind::Comma)?;
+            let type_name = super::types::parse_type_name(parser)?;
+            let end = parser.expect(TokenKind::RightParen)?;
+            Ok(Expression::BuiltinVaArg {
+                ap: Box::new(ap_expr),
+                type_name: Box::new(type_name),
+                span: Span::merge(start, end),
+            })
+        }
+
+        // ------------------------------------------------------------------
+        // GCC builtin function calls — these are lexed as keyword tokens
+        // but behave like function-call identifiers at the expression level.
+        // We convert them to regular identifiers so that `parse_postfix`
+        // can handle the `(args...)` call syntax.
+        // ------------------------------------------------------------------
+        TokenKind::BuiltinConstantP
+        | TokenKind::BuiltinExpect
+        | TokenKind::BuiltinUnreachable
+        | TokenKind::BuiltinTrap
+        | TokenKind::BuiltinClz
+        | TokenKind::BuiltinCtz
+        | TokenKind::BuiltinPopcount
+        | TokenKind::BuiltinBswap16
+        | TokenKind::BuiltinBswap32
+        | TokenKind::BuiltinBswap64
+        | TokenKind::BuiltinFfs
+        | TokenKind::BuiltinFrameAddress
+        | TokenKind::BuiltinReturnAddress
+        | TokenKind::BuiltinAssumeAligned
+        | TokenKind::BuiltinAddOverflow
+        | TokenKind::BuiltinSubOverflow
+        | TokenKind::BuiltinMulOverflow
+        | TokenKind::BuiltinVaStart
+        | TokenKind::BuiltinVaEnd
+        | TokenKind::BuiltinVaCopy => {
+            let name = format!("{}", parser.current().kind);
+            let sym = parser.interner.intern(&name);
+            let span = parser.advance();
+            Ok(Expression::Identifier { name: sym, span })
+        }
 
         // Unexpected token — emit diagnostic and return error
         _ => {

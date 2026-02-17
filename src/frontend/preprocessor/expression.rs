@@ -11,7 +11,8 @@
 // Processing order for a `#if` expression token sequence:
 //   1. Resolve `defined(NAME)` / `defined NAME` operators (before any macro
 //      expansion, since `defined` must not have its operand expanded).
-//   2. Expand remaining object-like macros in the token stream.
+//   2. Expand remaining macros (object-like and function-like) in the
+//      token stream, including ## token pasting for function-like macros.
 //   3. Replace any surviving identifiers with integer literal `0` (per C11
 //      §6.10.1p4 — undefined identifiers evaluate to zero with no diagnostic).
 //   4. Parse and evaluate the resulting arithmetic expression.
@@ -39,6 +40,7 @@ use crate::common::fx_hash::FxHashMap;
 use crate::common::string_interner::{Interner, Symbol};
 use crate::frontend::lexer::token::{CharPrefix, IntegerSuffix, Token, TokenKind};
 
+use super::token_paster::apply_paste_operators;
 use super::MacroDef;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -111,8 +113,8 @@ impl PPValue {
 /// 1. **`defined` handling** — `defined(NAME)` and `defined NAME` forms
 ///    are resolved to integer literal tokens `1` or `0` before macro expansion,
 ///    since the operand of `defined` must not be macro-expanded.
-/// 2. **Macro expansion** — remaining object-like macros are expanded
-///    inline (function-like macros are left unexpanded per simplification).
+/// 2. **Macro expansion** — remaining macros (both object-like and
+///    function-like) are expanded inline, including `##` token pasting.
 /// 3. **Identifier replacement** — any identifier tokens surviving
 ///    expansion are replaced with `0` (C11 §6.10.1p4).
 /// 4. **Expression evaluation** — the resulting token stream is parsed
@@ -263,33 +265,37 @@ fn make_int_token(val: u128, span: Span) -> Token {
 // Phase 2 — simplified macro expansion for #if expressions
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Expand object-like macros in the token stream.
+/// Expand macros (both object-like and function-like) in the token stream.
 ///
-/// This is a simplified expansion that handles object-like macros only.
-/// Function-like macros are left unexpanded (their name becomes an
-/// identifier that will later be replaced with `0`). Expansion is
-/// iterative with a recursion guard to prevent infinite loops on
-/// self-referential macros (e.g. `#define A A`).
+/// Per C11 §6.10.1, all macros in a `#if`/`#elif` expression must be
+/// expanded before evaluation — not just object-like macros. Function-like
+/// macros like `__GLIBC_USE(F)` (which expands to `__GLIBC_USE_ ## F`)
+/// are common in glibc headers and must be handled correctly.
+///
+/// Expansion is iterative with a recursion guard to prevent infinite loops
+/// on self-referential macros (e.g. `#define A A`).
 fn expand_macros_in_expr(
     tokens: &[Token],
     macros: &FxHashMap<Symbol, MacroDef>,
-    _interner: &mut Interner,
+    interner: &mut Interner,
 ) -> Vec<Token> {
     let max_iterations = 256;
     let mut current = tokens.to_vec();
+    let mut diag = DiagnosticEngine::new();
+
     for _ in 0..max_iterations {
         let mut changed = false;
         let mut next = Vec::with_capacity(current.len());
-        for tok in &current {
+        let mut i = 0;
+
+        while i < current.len() {
+            let tok = &current[i];
+
             if let TokenKind::Identifier(sym) = &tok.kind {
                 if let Some(def) = macros.get(sym) {
-                    // Only expand object-like macros (params == None) with a
-                    // non-empty body. Skip predefined macros that require
-                    // special context (they will be resolved to 0 later).
+                    // ── Object-like macro ──
                     if def.params.is_none() && !def.body.is_empty() && !def.is_predefined {
                         // Recursion guard: do not expand a macro to itself.
-                        // This catches `#define A A` and similar trivial
-                        // self-references.
                         let is_self_ref = def.body.len() == 1
                             && matches!(&def.body[0].kind, TokenKind::Identifier(s) if s == sym);
                         if !is_self_ref {
@@ -297,19 +303,144 @@ fn expand_macros_in_expr(
                                 next.push(Token::new(body_tok.kind.clone(), tok.span));
                             }
                             changed = true;
+                            i += 1;
                             continue;
+                        }
+                    }
+
+                    // ── Function-like macro ──
+                    if let Some(ref params) = def.params {
+                        // Look ahead (skipping whitespace) for '('
+                        let mut peek = i + 1;
+                        while peek < current.len()
+                            && matches!(
+                                current[peek].kind,
+                                TokenKind::Whitespace | TokenKind::Newline
+                            )
+                        {
+                            peek += 1;
+                        }
+
+                        if peek < current.len()
+                            && matches!(current[peek].kind, TokenKind::LeftParen)
+                        {
+                            // Collect arguments, respecting nested parentheses.
+                            let args_start = peek + 1; // past the '('
+                            let mut depth: usize = 1;
+                            let mut arg_end = args_start;
+                            while arg_end < current.len() && depth > 0 {
+                                match current[arg_end].kind {
+                                    TokenKind::LeftParen => depth += 1,
+                                    TokenKind::RightParen => {
+                                        depth -= 1;
+                                        if depth == 0 {
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                arg_end += 1;
+                            }
+
+                            if depth == 0 {
+                                // Successfully matched `MACRO(args...)`.
+                                // Split argument tokens by commas at depth 0.
+                                let arg_tokens = &current[args_start..arg_end];
+                                let args = split_macro_args(arg_tokens);
+
+                                // Build the expanded body:
+                                // 1. Apply ## paste operators (with arg substitution)
+                                let expanded = if body_has_paste(&def.body) {
+                                    apply_paste_operators(
+                                        &def.body, &args, params, interner, &mut diag,
+                                    )
+                                } else {
+                                    // Simple parameter substitution (no ##)
+                                    substitute_params(&def.body, &args, params)
+                                };
+
+                                for body_tok in &expanded {
+                                    next.push(Token::new(body_tok.kind.clone(), tok.span));
+                                }
+
+                                changed = true;
+                                // Advance past the closing ')'
+                                i = arg_end + 1;
+                                continue;
+                            }
                         }
                     }
                 }
             }
+
             next.push(tok.clone());
+            i += 1;
         }
+
         current = next;
         if !changed {
             break;
         }
     }
     current
+}
+
+/// Split argument tokens by top-level commas (respecting nested parens).
+fn split_macro_args(tokens: &[Token]) -> Vec<Vec<Token>> {
+    let mut args: Vec<Vec<Token>> = Vec::new();
+    let mut current_arg: Vec<Token> = Vec::new();
+    let mut depth: usize = 0;
+
+    for tok in tokens {
+        match tok.kind {
+            TokenKind::LeftParen => {
+                depth += 1;
+                current_arg.push(tok.clone());
+            }
+            TokenKind::RightParen => {
+                depth -= 1;
+                current_arg.push(tok.clone());
+            }
+            TokenKind::Comma if depth == 0 => {
+                args.push(current_arg);
+                current_arg = Vec::new();
+            }
+            _ => {
+                current_arg.push(tok.clone());
+            }
+        }
+    }
+    // Push final argument (even if empty, for zero-arg macros the vec
+    // will contain one empty entry which is correct).
+    if !current_arg.is_empty() || !args.is_empty() {
+        args.push(current_arg);
+    }
+    args
+}
+
+/// Check if a macro body contains `##` paste operators.
+fn body_has_paste(body: &[Token]) -> bool {
+    body.iter().any(|t| matches!(t.kind, TokenKind::HashHash))
+}
+
+/// Simple parameter substitution without ## pasting.
+fn substitute_params(body: &[Token], args: &[Vec<Token>], params: &[Symbol]) -> Vec<Token> {
+    let mut result = Vec::with_capacity(body.len());
+    for tok in body {
+        if let TokenKind::Identifier(sym) = &tok.kind {
+            if let Some(idx) = params.iter().position(|p| p == sym) {
+                if idx < args.len() {
+                    result.extend(args[idx].iter().cloned());
+                    continue;
+                }
+            }
+        }
+        // Skip whitespace tokens from the macro body to keep the result clean.
+        if !matches!(tok.kind, TokenKind::Whitespace | TokenKind::Newline) {
+            result.push(tok.clone());
+        }
+    }
+    result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

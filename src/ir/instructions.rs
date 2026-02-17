@@ -700,6 +700,9 @@ pub enum Instruction {
         args: Vec<ValueId>,
         /// If `true`, this is a tail call eligible for tail-call optimization.
         is_tail: bool,
+        /// If `true`, the callee is a variadic function (important for ABI —
+        /// e.g. on RISC-V LP64D variadic float args go in integer registers).
+        is_variadic: bool,
     },
 
     /// Return from the current function (terminator).
@@ -850,6 +853,117 @@ pub enum Instruction {
         has_side_effects: bool,
         /// If `true`, the stack must be aligned before execution.
         is_align_stack: bool,
+        /// For `asm goto`: basic block IDs of the goto label targets.
+        /// These are the blocks that the inline assembly may branch to at
+        /// runtime.  Empty for non-goto inline assembly.  The CFG
+        /// reconstruction pass uses these to maintain correct
+        /// reachability so that the target blocks are not pruned.
+        goto_targets: Vec<BasicBlockId>,
+    },
+
+    /// Produce a pointer value that represents the runtime address of a
+    /// basic block.  Used by GCC's `&&label` extension (computed gotos).
+    ///
+    /// During code generation this becomes a `LEA` (or equivalent) of the
+    /// label that will be bound to the target basic block.  The value can
+    /// be stored in an array, loaded later, and passed to an
+    /// [`IndirectBranch`](Instruction::IndirectBranch) to implement
+    /// `goto *ptr`.
+    BlockAddress {
+        /// Result value — a pointer to the block's machine-code start.
+        result: ValueId,
+        /// The basic block whose address is taken.
+        block: BasicBlockId,
+    },
+
+    /// Indirect branch through a pointer value (terminator).
+    ///
+    /// Transfers control to the machine address held in `addr`.
+    /// `possible_targets` lists all blocks that might be reached — this
+    /// is required for correct CFG construction and to prevent dead-code
+    /// elimination from pruning reachable blocks.
+    IndirectBranch {
+        /// The pointer value to jump to (must hold a block address
+        /// produced by [`BlockAddress`](Instruction::BlockAddress)).
+        addr: ValueId,
+        /// Blocks that may be the target of this branch.  The CFG
+        /// must include edges from the current block to every entry
+        /// in this list.
+        possible_targets: Vec<BasicBlockId>,
+    },
+
+    // ------------------------------------------------------------------
+    // Floating-point ↔ integer conversion instructions
+    // ------------------------------------------------------------------
+    /// Convert a signed integer to a floating-point value.
+    ///
+    /// For example, `(float)42` → `42.0f`.  The mathematical value is
+    /// preserved (subject to precision limits).
+    SIToFP {
+        /// Result value (floating-point type).
+        result: ValueId,
+        /// Input value (signed integer type).
+        value: ValueId,
+        /// Target floating-point type ([`IrType::F32`], [`IrType::F64`], [`IrType::F80`]).
+        to_ty: IrType,
+    },
+
+    /// Convert an unsigned integer to a floating-point value.
+    UIToFP {
+        /// Result value (floating-point type).
+        result: ValueId,
+        /// Input value (unsigned integer type).
+        value: ValueId,
+        /// Target floating-point type.
+        to_ty: IrType,
+    },
+
+    /// Convert a floating-point value to a signed integer.
+    ///
+    /// The value is truncated toward zero.
+    FPToSI {
+        /// Result value (signed integer type).
+        result: ValueId,
+        /// Input value (floating-point type).
+        value: ValueId,
+        /// Target integer type.
+        to_ty: IrType,
+    },
+
+    /// Convert a floating-point value to an unsigned integer.
+    ///
+    /// The value is truncated toward zero.
+    FPToUI {
+        /// Result value (unsigned integer type).
+        result: ValueId,
+        /// Input value (floating-point type).
+        value: ValueId,
+        /// Target integer type.
+        to_ty: IrType,
+    },
+
+    /// Extend a floating-point value to a wider floating-point type.
+    ///
+    /// For example, `F32` → `F64`.
+    FPExt {
+        /// Result value.
+        result: ValueId,
+        /// Input value.
+        value: ValueId,
+        /// Target floating-point type (must be wider than source).
+        to_ty: IrType,
+    },
+
+    /// Truncate a floating-point value to a narrower floating-point type.
+    ///
+    /// For example, `F64` → `F32`.
+    FPTrunc {
+        /// Result value.
+        result: ValueId,
+        /// Input value.
+        value: ValueId,
+        /// Target floating-point type (must be narrower than source).
+        to_ty: IrType,
     },
 }
 
@@ -879,7 +993,14 @@ impl Instruction {
             | Instruction::ZExt { result, .. }
             | Instruction::SExt { result, .. }
             | Instruction::IntToPtr { result, .. }
-            | Instruction::PtrToInt { result, .. } => Some(*result),
+            | Instruction::PtrToInt { result, .. }
+            | Instruction::BlockAddress { result, .. }
+            | Instruction::SIToFP { result, .. }
+            | Instruction::UIToFP { result, .. }
+            | Instruction::FPToSI { result, .. }
+            | Instruction::FPToUI { result, .. }
+            | Instruction::FPExt { result, .. }
+            | Instruction::FPTrunc { result, .. } => Some(*result),
 
             Instruction::Call { result, .. } | Instruction::InlineAsm { result, .. } => *result,
 
@@ -887,6 +1008,7 @@ impl Instruction {
             | Instruction::Branch { .. }
             | Instruction::CondBranch { .. }
             | Instruction::Switch { .. }
+            | Instruction::IndirectBranch { .. }
             | Instruction::Return { .. } => None,
         }
     }
@@ -944,6 +1066,17 @@ impl Instruction {
             | Instruction::PtrToInt { value, .. } => vec![*value],
 
             Instruction::InlineAsm { operands, .. } => operands.clone(),
+
+            Instruction::BlockAddress { .. } => Vec::new(),
+
+            Instruction::IndirectBranch { addr, .. } => vec![*addr],
+
+            Instruction::SIToFP { value, .. }
+            | Instruction::UIToFP { value, .. }
+            | Instruction::FPToSI { value, .. }
+            | Instruction::FPToUI { value, .. }
+            | Instruction::FPExt { value, .. }
+            | Instruction::FPTrunc { value, .. } => vec![*value],
         }
     }
 
@@ -958,6 +1091,7 @@ impl Instruction {
             Instruction::Branch { .. }
                 | Instruction::CondBranch { .. }
                 | Instruction::Switch { .. }
+                | Instruction::IndirectBranch { .. }
                 | Instruction::Return { .. }
         )
     }
@@ -1049,8 +1183,21 @@ impl Instruction {
                 blocks
             }
 
+            // IndirectBranch lists all possible jump destinations.
+            Instruction::IndirectBranch {
+                possible_targets, ..
+            } => possible_targets.clone(),
+
             // Return exits the function — no successor blocks.
             Instruction::Return { .. } => Vec::new(),
+
+            // InlineAsm with goto targets acts as a potential branch to
+            // those targets, even though it is not modelled as a formal
+            // terminator.  Report goto targets as successor blocks so that
+            // CFG reconstruction and reachability analysis preserve them.
+            Instruction::InlineAsm { goto_targets, .. } if !goto_targets.is_empty() => {
+                goto_targets.clone()
+            }
 
             // Non-terminators have no successor blocks.
             _ => Vec::new(),
@@ -1074,7 +1221,13 @@ impl Instruction {
             | Instruction::ZExt { to_ty, .. }
             | Instruction::SExt { to_ty, .. }
             | Instruction::IntToPtr { to_ty, .. }
-            | Instruction::PtrToInt { to_ty, .. } => Some(to_ty),
+            | Instruction::PtrToInt { to_ty, .. }
+            | Instruction::SIToFP { to_ty, .. }
+            | Instruction::UIToFP { to_ty, .. }
+            | Instruction::FPToSI { to_ty, .. }
+            | Instruction::FPToUI { to_ty, .. }
+            | Instruction::FPExt { to_ty, .. }
+            | Instruction::FPTrunc { to_ty, .. } => Some(to_ty),
             // ICmp and FCmp always produce I1, but don't carry a type field.
             // Call/InlineAsm result types are determined by the callee signature.
             _ => None,
@@ -1173,7 +1326,13 @@ impl Instruction {
             | Instruction::ZExt { value, .. }
             | Instruction::SExt { value, .. }
             | Instruction::IntToPtr { value, .. }
-            | Instruction::PtrToInt { value, .. } => {
+            | Instruction::PtrToInt { value, .. }
+            | Instruction::SIToFP { value, .. }
+            | Instruction::UIToFP { value, .. }
+            | Instruction::FPToSI { value, .. }
+            | Instruction::FPToUI { value, .. }
+            | Instruction::FPExt { value, .. }
+            | Instruction::FPTrunc { value, .. } => {
                 sub(value, old, new);
             }
 
@@ -1181,6 +1340,13 @@ impl Instruction {
                 for op in operands.iter_mut() {
                     sub(op, old, new);
                 }
+            }
+
+            // BlockAddress produces a pointer — no value operands to substitute.
+            Instruction::BlockAddress { .. } => {}
+
+            Instruction::IndirectBranch { addr, .. } => {
+                sub(addr, old, new);
             }
         }
     }
@@ -1225,6 +1391,25 @@ impl Instruction {
                 }
             }
 
+            Instruction::BlockAddress { block, .. } => {
+                sub(block, old, new);
+            }
+
+            Instruction::IndirectBranch {
+                possible_targets, ..
+            } => {
+                for target in possible_targets.iter_mut() {
+                    sub(target, old, new);
+                }
+            }
+
+            // InlineAsm goto_targets have block references too.
+            Instruction::InlineAsm { goto_targets, .. } => {
+                for target in goto_targets.iter_mut() {
+                    sub(target, old, new);
+                }
+            }
+
             // All other instruction variants have no block references.
             _ => {}
         }
@@ -1250,11 +1435,18 @@ impl Instruction {
             | Instruction::Phi { result, .. }
             | Instruction::GetElementPtr { result, .. }
             | Instruction::BitCast { result, .. }
+            | Instruction::BlockAddress { result, .. }
             | Instruction::Trunc { result, .. }
             | Instruction::ZExt { result, .. }
             | Instruction::SExt { result, .. }
             | Instruction::IntToPtr { result, .. }
-            | Instruction::PtrToInt { result, .. } => {
+            | Instruction::PtrToInt { result, .. }
+            | Instruction::SIToFP { result, .. }
+            | Instruction::UIToFP { result, .. }
+            | Instruction::FPToSI { result, .. }
+            | Instruction::FPToUI { result, .. }
+            | Instruction::FPExt { result, .. }
+            | Instruction::FPTrunc { result, .. } => {
                 *result = new_id;
             }
 
@@ -1266,6 +1458,7 @@ impl Instruction {
             | Instruction::Branch { .. }
             | Instruction::CondBranch { .. }
             | Instruction::Switch { .. }
+            | Instruction::IndirectBranch { .. }
             | Instruction::Return { .. } => {
                 panic!(
                     "set_result called on instruction that produces no result: {:?}",
@@ -1444,6 +1637,7 @@ impl fmt::Display for Instruction {
                 callee,
                 args,
                 is_tail,
+                ..
             } => {
                 if let Some(r) = result {
                     write!(f, "{} = ", r)?;
@@ -1558,6 +1752,7 @@ impl fmt::Display for Instruction {
                 clobbers,
                 has_side_effects,
                 is_align_stack,
+                goto_targets,
             } => {
                 if let Some(r) = result {
                     write!(f, "{} = ", r)?;
@@ -1589,8 +1784,74 @@ impl fmt::Display for Instruction {
                     }
                     write!(f, "}}")?;
                 }
+                if !goto_targets.is_empty() {
+                    write!(f, " goto[")?;
+                    for (i, t) in goto_targets.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "bb{}", t.index())?;
+                    }
+                    write!(f, "]")?;
+                }
                 Ok(())
             }
+
+            Instruction::BlockAddress { result, block } => {
+                write!(f, "{} = blockaddress bb{}", result, block.index())
+            }
+
+            Instruction::IndirectBranch {
+                addr,
+                possible_targets,
+            } => {
+                write!(f, "indirectbr {}", addr)?;
+                write!(f, " [")?;
+                for (i, t) in possible_targets.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "bb{}", t.index())?;
+                }
+                write!(f, "]")
+            }
+
+            // Floating-point conversion instructions
+            Instruction::SIToFP {
+                result,
+                value,
+                to_ty,
+            } => write!(f, "{} = sitofp {} to {}", result, value, to_ty),
+
+            Instruction::UIToFP {
+                result,
+                value,
+                to_ty,
+            } => write!(f, "{} = uitofp {} to {}", result, value, to_ty),
+
+            Instruction::FPToSI {
+                result,
+                value,
+                to_ty,
+            } => write!(f, "{} = fptosi {} to {}", result, value, to_ty),
+
+            Instruction::FPToUI {
+                result,
+                value,
+                to_ty,
+            } => write!(f, "{} = fptoui {} to {}", result, value, to_ty),
+
+            Instruction::FPExt {
+                result,
+                value,
+                to_ty,
+            } => write!(f, "{} = fpext {} to {}", result, value, to_ty),
+
+            Instruction::FPTrunc {
+                result,
+                value,
+                to_ty,
+            } => write!(f, "{} = fptrunc {} to {}", result, value, to_ty),
         }
     }
 }
@@ -2002,6 +2263,7 @@ mod tests {
             callee: ValueId(0),
             args: vec![ValueId(1), ValueId(2)],
             is_tail: false,
+            is_variadic: false,
         };
         assert_eq!(instr.result(), Some(ValueId(5)));
         assert_eq!(instr.uses(), vec![ValueId(0), ValueId(1), ValueId(2)]);
@@ -2015,6 +2277,7 @@ mod tests {
             callee: ValueId(0),
             args: vec![ValueId(1)],
             is_tail: false,
+            is_variadic: false,
         };
         assert_eq!(instr.result(), None);
     }
@@ -2141,6 +2404,7 @@ mod tests {
             clobbers: vec!["memory".to_string(), "cc".to_string()],
             has_side_effects: true,
             is_align_stack: false,
+            goto_targets: Vec::new(),
         };
         assert_eq!(instr.result(), Some(ValueId(5)));
         assert_eq!(instr.uses(), vec![ValueId(0)]);
@@ -2183,6 +2447,7 @@ mod tests {
             callee: ValueId(0),
             args: vec![ValueId(1), ValueId(0), ValueId(2)],
             is_tail: false,
+            is_variadic: false,
         };
         instr.replace_use(ValueId(0), ValueId(99));
         assert_eq!(
@@ -2294,6 +2559,7 @@ mod tests {
             callee: ValueId(0),
             args: vec![],
             is_tail: false,
+            is_variadic: false,
         };
         instr.set_result(ValueId(10));
         assert_eq!(instr.result(), Some(ValueId(10)));
@@ -2420,6 +2686,7 @@ mod tests {
             callee: ValueId(0),
             args: vec![ValueId(1), ValueId(2)],
             is_tail: true,
+            is_variadic: false,
         };
         let s = format!("{}", instr);
         assert!(s.contains("tail"));
@@ -2512,6 +2779,7 @@ mod tests {
             clobbers: vec![],
             has_side_effects: false,
             is_align_stack: false,
+            goto_targets: Vec::new(),
         };
         instr.replace_use(ValueId(0), ValueId(99));
         assert_eq!(instr.uses(), vec![ValueId(99), ValueId(1), ValueId(99)]);
@@ -2630,6 +2898,7 @@ mod tests {
             clobbers: vec![],
             has_side_effects: false,
             is_align_stack: false,
+            goto_targets: Vec::new(),
         };
         assert!(!instr.is_volatile());
         // InlineAsm always has_side_effects from the perspective of DCE.

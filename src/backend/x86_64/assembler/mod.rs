@@ -802,12 +802,13 @@ pub fn encode_function(mf: &MachineFunction) -> AssembledFunction {
             for operand in &instr.operands {
                 match operand {
                     MachineOperand::Register(reg) => {
-                        // Physical register — the encoder handles encoding
-                        // via gpr_encoding(). We note whether it requires REX
-                        // for diagnostic reporting.
+                        // Physical register — note whether it requires a REX
+                        // prefix for diagnostic / debugging purposes.
+                        // Use `reg_index` instead of `gpr_encoding` because
+                        // the register may be GPR *or* SSE.
                         let _reg_index = reg.0;
                         let _needs_rex = registers::needs_rex(*reg);
-                        let _encoding = registers::gpr_encoding(*reg);
+                        let _encoding = registers::reg_index(*reg);
                     }
                     MachineOperand::Immediate(_imm) => {
                         // Immediate constant — no pre-processing needed

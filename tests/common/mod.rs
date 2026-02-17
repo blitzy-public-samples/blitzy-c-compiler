@@ -369,6 +369,7 @@ pub fn run_binary_with_qemu(path: &str, target: &str) -> BccOutput {
         "x86-64" => run_binary(path),
         "aarch64" => {
             let output = Command::new("qemu-aarch64")
+                .env("QEMU_LD_PREFIX", "/usr/aarch64-linux-gnu")
                 .arg(path)
                 .output()
                 .unwrap_or_else(|e| panic!("Failed to execute '{}' via qemu-aarch64: {}", path, e));
@@ -380,6 +381,7 @@ pub fn run_binary_with_qemu(path: &str, target: &str) -> BccOutput {
         }
         "riscv64" => {
             let output = Command::new("qemu-riscv64")
+                .env("QEMU_LD_PREFIX", "/usr/riscv64-linux-gnu")
                 .arg(path)
                 .output()
                 .unwrap_or_else(|e| panic!("Failed to execute '{}' via qemu-riscv64: {}", path, e));
@@ -457,7 +459,7 @@ pub fn readelf_program_headers(path: &str) -> String {
 
 /// Invoke `readelf -s <path>` and return the symbol table.
 pub fn readelf_symbols(path: &str) -> String {
-    run_tool("readelf", &["-s", path])
+    run_tool("readelf", &["-sW", path])
 }
 
 /// Invoke `readelf -d <path>` and return the `.dynamic` section entries.
@@ -489,9 +491,13 @@ pub fn readelf_debug_line(path: &str) -> String {
 // Disassembly helpers — objdump wrappers
 // ---------------------------------------------------------------------------
 
-/// Invoke `objdump -d <path>` and return the disassembly output.
+/// Invoke `objdump -d -r <path>` and return the disassembly output
+/// with interleaved relocation entries.  The `-r` flag causes `objdump`
+/// to annotate call/jump targets with their relocation symbol names,
+/// which is essential for validating retpoline thunk references in
+/// relocatable object files where targets are not yet resolved.
 pub fn objdump_disassemble(path: &str) -> String {
-    run_tool("objdump", &["-d", path])
+    run_tool("objdump", &["-d", "-r", path])
 }
 
 /// Invoke `objdump -s -j <section> <path>` and return the hex dump of a

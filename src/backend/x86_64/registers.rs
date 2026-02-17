@@ -194,7 +194,15 @@ pub const CALLEE_SAVED: &[PhysReg] = &[RBX, RBP, R12, R13, R14, R15];
 /// The register allocator must spill any live value in these registers
 /// across a call instruction. These registers are freely usable within
 /// a function without prologue/epilogue save/restore overhead.
-pub const CALLER_SAVED: &[PhysReg] = &[RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11];
+///
+/// Per the System V AMD64 ABI, **all 16 XMM registers** are caller-saved
+/// in addition to the integer scratch registers.  Including them here
+/// ensures that `RegisterSet::float_set()` sees them and populates the
+/// allocatable float-register pool.
+pub const CALLER_SAVED: &[PhysReg] = &[
+    RAX, RCX, RDX, RSI, RDI, R8, R9, R10, R11, XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7,
+    XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14, XMM15,
+];
 
 /// Integer argument registers in System V AMD64 calling convention order.
 ///
@@ -217,17 +225,27 @@ pub const ARG_REGS_FLOAT: &[PhysReg] = &[XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM
 /// here because frame-pointer omission is possible (though callee-saved
 /// status still applies when RBP is used).
 pub const ALLOCATABLE_GPRS: &[PhysReg] = &[
-    RAX, RCX, RDX, RBX, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15,
+    RAX, RCX, RDX, RBX, RBP, RSI, RDI, R8, R9, R10, R12, R13, R14, R15,
 ];
 
-/// Allocatable SSE registers — all XMM0 through XMM15.
+/// Allocatable SSE registers — XMM0 through XMM14.
 ///
-/// All 16 SSE registers are available for the register allocator. On
-/// System V AMD64, all XMM registers are caller-saved (volatile).
+/// XMM15 is reserved as a scratch register for spill code generation.
+/// All other SSE registers are available. On System V AMD64, all XMM
+/// registers are caller-saved (volatile).
 pub const ALLOCATABLE_SSE: &[PhysReg] = &[
     XMM0, XMM1, XMM2, XMM3, XMM4, XMM5, XMM6, XMM7, XMM8, XMM9, XMM10, XMM11, XMM12, XMM13, XMM14,
-    XMM15,
 ];
+
+/// Scratch GPR reserved for spill code — never allocated by the register
+/// allocator. Used as a temporary when lowering memory-to-memory moves
+/// generated during register spilling.
+pub const SPILL_SCRATCH_GPR: PhysReg = R11;
+
+/// Scratch SSE register reserved for spill code — never allocated by the
+/// register allocator. Used as a temporary when lowering SSE
+/// memory-to-memory moves generated during register spilling.
+pub const SPILL_SCRATCH_SSE: PhysReg = XMM15;
 
 // ---------------------------------------------------------------------------
 // Register Name Lookup Tables (private)
@@ -808,7 +826,8 @@ mod tests {
 
     #[test]
     fn test_caller_saved_set() {
-        assert_eq!(CALLER_SAVED.len(), 9);
+        // 9 GPRs + 16 XMM = 25 caller-saved registers
+        assert_eq!(CALLER_SAVED.len(), 25);
         assert!(CALLER_SAVED.contains(&RAX));
         assert!(CALLER_SAVED.contains(&RCX));
         assert!(CALLER_SAVED.contains(&RDX));
@@ -818,6 +837,9 @@ mod tests {
         assert!(CALLER_SAVED.contains(&R9));
         assert!(CALLER_SAVED.contains(&R10));
         assert!(CALLER_SAVED.contains(&R11));
+        // XMM registers are caller-saved
+        assert!(CALLER_SAVED.contains(&XMM0));
+        assert!(CALLER_SAVED.contains(&XMM15));
         // Callee-saved registers must NOT be in caller-saved set
         assert!(!CALLER_SAVED.contains(&RBX));
         assert!(!CALLER_SAVED.contains(&RBP));
@@ -845,11 +867,13 @@ mod tests {
 
     #[test]
     fn test_allocatable_gprs_excludes_rsp() {
-        assert_eq!(ALLOCATABLE_GPRS.len(), 15); // 16 GPRs minus RSP
+        // 16 GPRs minus RSP (stack pointer) minus R11 (spill scratch)
+        assert_eq!(ALLOCATABLE_GPRS.len(), 14);
         assert!(!ALLOCATABLE_GPRS.contains(&RSP));
+        assert!(!ALLOCATABLE_GPRS.contains(&SPILL_SCRATCH_GPR));
         // All other GPRs must be present
         for &reg in &[
-            RAX, RCX, RDX, RBX, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15,
+            RAX, RCX, RDX, RBX, RBP, RSI, RDI, R8, R9, R10, R12, R13, R14, R15,
         ] {
             assert!(
                 ALLOCATABLE_GPRS.contains(&reg),
@@ -861,8 +885,9 @@ mod tests {
 
     #[test]
     fn test_allocatable_sse_contains_all() {
-        assert_eq!(ALLOCATABLE_SSE.len(), 16);
-        for i in 0..16u16 {
+        // 16 SSE registers minus XMM15 (spill scratch)
+        assert_eq!(ALLOCATABLE_SSE.len(), 15);
+        for i in 0..15u16 {
             let reg = PhysReg(16 + i);
             assert!(
                 ALLOCATABLE_SSE.contains(&reg),

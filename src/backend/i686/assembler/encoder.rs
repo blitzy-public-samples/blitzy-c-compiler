@@ -33,6 +33,7 @@
 
 use crate::backend::i686::codegen::ConditionCode;
 use crate::backend::i686::registers;
+use crate::backend::register_allocator::{SPILL_LOAD_OPCODE, SPILL_STORE_OPCODE};
 use crate::backend::traits::{MachineInstr, MachineOperand, PhysReg};
 
 use super::relocations::I686RelocType;
@@ -64,6 +65,8 @@ pub mod opcodes {
     pub const LEA: u32 = I686Opcode::Lea as u32;
     pub const PUSH: u32 = I686Opcode::Push as u32;
     pub const POP: u32 = I686Opcode::Pop as u32;
+    pub const MOV_BYTE: u32 = I686Opcode::MovByte as u32;
+    pub const MOV_WORD: u32 = I686Opcode::MovWord as u32;
 
     // Integer ALU
     pub const ADD: u32 = I686Opcode::Add as u32;
@@ -124,8 +127,23 @@ pub mod opcodes {
     pub const FISTP: u32 = I686Opcode::Fistp as u32;
     pub const FXCH: u32 = I686Opcode::Fxch as u32;
 
+    // Register-indirect addressing
+    pub const MOV_LOAD: u32 = I686Opcode::MovLoad as u32;
+    pub const MOV_STORE: u32 = I686Opcode::MovStore as u32;
+    pub const LEA_MEM: u32 = I686Opcode::LeaMem as u32;
+
+    // Bit manipulation
+    pub const BSR: u32 = I686Opcode::Bsr as u32;
+    pub const BSF: u32 = I686Opcode::Bsf as u32;
+    pub const POPCNT: u32 = I686Opcode::Popcnt as u32;
+    pub const BSWAP: u32 = I686Opcode::Bswap as u32;
+
     // No-op
     pub const NOP: u32 = I686Opcode::Nop as u32;
+
+    // Computed goto support
+    pub const LEA_LABEL: u32 = I686Opcode::LeaLabel as u32;
+    pub const JMP_INDIRECT: u32 = I686Opcode::JmpIndirect as u32;
 }
 
 // ---------------------------------------------------------------------------
@@ -176,32 +194,38 @@ fn cc_to_nibble(cc: ConditionCode) -> u8 {
 /// [`cc_to_nibble`].
 #[inline]
 fn extract_cc(ops: &[MachineOperand]) -> u8 {
-    if let Some(MachineOperand::Immediate(cc_val)) = ops.first() {
-        let raw = (*cc_val as u8) & 0x0F;
-        // Convert raw discriminant to the type-safe ConditionCode variant,
-        // then map through cc_to_nibble for the canonical x86 encoding.
-        let cc = match raw {
-            0x0 => ConditionCode::O,
-            0x1 => ConditionCode::No,
-            0x2 => ConditionCode::B,
-            0x3 => ConditionCode::Ae,
-            0x4 => ConditionCode::E,
-            0x5 => ConditionCode::Ne,
-            0x6 => ConditionCode::Be,
-            0x7 => ConditionCode::A,
-            0x8 => ConditionCode::S,
-            0x9 => ConditionCode::Ns,
-            0xA => ConditionCode::P,
-            0xB => ConditionCode::Np,
-            0xC => ConditionCode::L,
-            0xD => ConditionCode::Ge,
-            0xE => ConditionCode::Le,
-            _ => ConditionCode::G,
-        };
-        cc_to_nibble(cc)
-    } else {
-        cc_to_nibble(ConditionCode::E) // Default to JE/SETE if malformed
+    // Search ALL operands for the condition code immediate.  The codegen
+    // places the cc in different positions depending on the instruction:
+    //   Jcc:   [Label, Immediate(cc)]
+    //   SETcc: [Register, Immediate(cc)]  — preferred layout
+    //          [Immediate(cc), Register]  — legacy layout
+    //   CMOVcc:[Immediate(cc), Register, Register/Memory]
+    // So we scan every operand position and return the first Immediate found.
+    for op in ops.iter() {
+        if let MachineOperand::Immediate(cc_val) = op {
+            let raw = (*cc_val as u8) & 0x0F;
+            let cc = match raw {
+                0x0 => ConditionCode::O,
+                0x1 => ConditionCode::No,
+                0x2 => ConditionCode::B,
+                0x3 => ConditionCode::Ae,
+                0x4 => ConditionCode::E,
+                0x5 => ConditionCode::Ne,
+                0x6 => ConditionCode::Be,
+                0x7 => ConditionCode::A,
+                0x8 => ConditionCode::S,
+                0x9 => ConditionCode::Ns,
+                0xA => ConditionCode::P,
+                0xB => ConditionCode::Np,
+                0xC => ConditionCode::L,
+                0xD => ConditionCode::Ge,
+                0xE => ConditionCode::Le,
+                _ => ConditionCode::G,
+            };
+            return cc_to_nibble(cc);
+        }
     }
+    cc_to_nibble(ConditionCode::E) // Default to JE/SETE if truly malformed
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +648,15 @@ fn encode_reg_mem(
     mem: &MemOperand,
     ctx: &mut EncoderContext,
 ) {
+    // DEBUG: detect frame-pointer corruption at the encoding level
+    if opcode == &[0x8B] && reg.0 == 5 {
+        eprintln!(
+            "[ENCODE_REG_MEM-BUG] opcode=8B reg=PhysReg({}) (EBP!) mem_base={:?} disp={}",
+            reg.0,
+            mem.base.map(|b| b.0),
+            mem.disp
+        );
+    }
     buf.extend_from_slice(opcode);
     encode_memory(buf, reg_encoding(reg), mem, ctx);
 }
@@ -770,6 +803,12 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncoderContext) -> Enc
         // ---------------------------------------------------------------
         opcodes::MOV => {
             encode_mov(instr, &mut bytes, ctx);
+        }
+        opcodes::MOV_BYTE => {
+            encode_mov_byte(instr, &mut bytes, ctx);
+        }
+        opcodes::MOV_WORD => {
+            encode_mov_word(instr, &mut bytes, ctx);
         }
 
         // ---------------------------------------------------------------
@@ -979,6 +1018,259 @@ pub fn encode_instruction(instr: &MachineInstr, ctx: &mut EncoderContext) -> Enc
         }
 
         // ---------------------------------------------------------------
+        // MovLoad — MOV dst, [addr_reg + offset]
+        // Register-indirect load where the address is a top-level
+        // Register operand (visible to the register allocator).
+        // Operands: [dst_reg, addr_reg] or [dst_reg, addr_reg, imm_offset]
+        // ---------------------------------------------------------------
+        opcodes::MOV_LOAD => {
+            let ops = &instr.operands;
+            if ops.len() >= 2 {
+                if let MachineOperand::Register(dst) = &ops[0] {
+                    if let MachineOperand::Register(addr) = &ops[1] {
+                        if dst.0 == 5 {
+                            eprintln!("[ENCODER-BUG] MOV_LOAD EBP, [r{}+disp] — frame pointer corruption!", addr.0);
+                        }
+                        let disp = if ops.len() >= 3 {
+                            if let MachineOperand::Immediate(off) = &ops[2] {
+                                *off as i32
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+                        // Encode as MOV dst, [addr + disp]
+                        let mem = MemOperand {
+                            base: Some(*addr),
+                            index: None,
+                            scale: 1,
+                            disp,
+                            symbol: None,
+                        };
+                        encode_reg_mem(&mut bytes, &[0x8B], *dst, &mem, ctx);
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // MovStore — MOV [addr_reg + offset], src
+        // Register-indirect store where the address is a top-level
+        // Register operand.
+        // Operands: [addr_reg, src_reg] or [addr_reg, src_reg, imm_offset]
+        // ---------------------------------------------------------------
+        opcodes::MOV_STORE => {
+            let ops = &instr.operands;
+            if ops.len() >= 2 {
+                if let MachineOperand::Register(addr) = &ops[0] {
+                    if let MachineOperand::Register(src) = &ops[1] {
+                        let disp = if ops.len() >= 3 {
+                            if let MachineOperand::Immediate(off) = &ops[2] {
+                                *off as i32
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+                        // Encode as MOV [addr + disp], src
+                        let mem = MemOperand {
+                            base: Some(*addr),
+                            index: None,
+                            scale: 1,
+                            disp,
+                            symbol: None,
+                        };
+                        encode_reg_mem(&mut bytes, &[0x89], *src, &mem, ctx);
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // BSR — Bit Scan Reverse: find index of highest set bit.
+        //   0F BD /r  — BSR r32, r/m32
+        //   Operands: [dst_reg, src_reg]
+        // ---------------------------------------------------------------
+        opcodes::BSR => {
+            let ops = &instr.operands;
+            if ops.len() >= 2 {
+                if let (MachineOperand::Register(dst), MachineOperand::Register(src)) =
+                    (&ops[0], &ops[1])
+                {
+                    bytes.push(0x0F);
+                    bytes.push(0xBD);
+                    bytes.push(encode_modrm(0b11, reg_encoding(*dst), reg_encoding(*src)));
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // BSF — Bit Scan Forward: find index of lowest set bit.
+        //   0F BC /r  — BSF r32, r/m32
+        //   Operands: [dst_reg, src_reg]
+        // ---------------------------------------------------------------
+        opcodes::BSF => {
+            let ops = &instr.operands;
+            if ops.len() >= 2 {
+                if let (MachineOperand::Register(dst), MachineOperand::Register(src)) =
+                    (&ops[0], &ops[1])
+                {
+                    bytes.push(0x0F);
+                    bytes.push(0xBC);
+                    bytes.push(encode_modrm(0b11, reg_encoding(*dst), reg_encoding(*src)));
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // POPCNT — Population Count: count set bits.
+        //   F3 0F B8 /r  — POPCNT r32, r/m32
+        //   Operands: [dst_reg, src_reg]
+        // ---------------------------------------------------------------
+        opcodes::POPCNT => {
+            let ops = &instr.operands;
+            if ops.len() >= 2 {
+                if let (MachineOperand::Register(dst), MachineOperand::Register(src)) =
+                    (&ops[0], &ops[1])
+                {
+                    bytes.push(0xF3);
+                    bytes.push(0x0F);
+                    bytes.push(0xB8);
+                    bytes.push(encode_modrm(0b11, reg_encoding(*dst), reg_encoding(*src)));
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // BSWAP — Byte Swap: reverse byte order of 32-bit register.
+        //   0F C8+rd  — BSWAP r32
+        //   Operands: [reg] (in-place)
+        // ---------------------------------------------------------------
+        opcodes::BSWAP => {
+            let ops = &instr.operands;
+            if !ops.is_empty() {
+                if let MachineOperand::Register(reg) = &ops[0] {
+                    bytes.push(0x0F);
+                    bytes.push(0xC8 + reg_encoding(*reg));
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // LeaMem — LEA dst, [mem] or LEA dst, FrameIndex
+        // Used by GEP to compute addresses of stack slots and memory
+        // operands without loading the value.
+        // Operands: [dst_reg, FrameIndex(n)] or [dst_reg, Memory{...}]
+        // ---------------------------------------------------------------
+        opcodes::LEA_MEM => {
+            encode_lea(instr, &mut bytes, ctx);
+        }
+
+        // ---------------------------------------------------------------
+        // SPILL_LOAD — Register allocator pseudo-op: load spilled value
+        //   operand[0]: Register(scratch)   — the scratch GPR (ECX)
+        //   operand[1]: FrameIndex(offset)  — byte offset from EBP
+        //
+        // Emits: MOV scratch, [EBP + offset]   (opcode 8B /r)
+        //
+        // The register allocator inserts these when a virtual register
+        // is spilled to a stack slot and needs to be reloaded before use.
+        // The high 8 bits of the opcode may be masked by the register
+        // allocator's slot encoding, so we match both the raw constant
+        // and the masked variant.
+        // ---------------------------------------------------------------
+        x if x == SPILL_LOAD_OPCODE || x == (SPILL_LOAD_OPCODE & 0x00FF_FFFF) => {
+            let ops = &instr.operands;
+            if ops.len() >= 2 {
+                if let MachineOperand::Register(scratch) = &ops[0] {
+                    if let MachineOperand::FrameIndex(offset) = &ops[1] {
+                        if scratch.0 == 5 {
+                            eprintln!("[ENCODER-BUG] SPILL_LOAD EBP, [FrameIndex({})] — frame pointer corruption!", offset);
+                        }
+                        // MOV scratch, [EBP + offset]
+                        let mem = frame_index_to_mem_operand(*offset);
+                        encode_reg_mem(&mut bytes, &[0x8B], *scratch, &mem, ctx);
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // SPILL_STORE — Register allocator pseudo-op: store to spill slot
+        //   operand[0]: Register(scratch)   — the scratch GPR (ECX)
+        //   operand[1]: FrameIndex(offset)  — byte offset from EBP
+        //
+        // Emits: MOV [EBP + offset], scratch   (opcode 89 /r)
+        //
+        // Inserted after defs of spilled virtual registers to persist
+        // the value to its assigned stack slot.
+        // ---------------------------------------------------------------
+        x if x == SPILL_STORE_OPCODE || x == (SPILL_STORE_OPCODE & 0x00FF_FFFF) => {
+            let ops = &instr.operands;
+            if ops.len() >= 2 {
+                if let MachineOperand::Register(scratch) = &ops[0] {
+                    if let MachineOperand::FrameIndex(offset) = &ops[1] {
+                        // MOV [EBP + offset], scratch
+                        let mem = frame_index_to_mem_operand(*offset);
+                        encode_reg_mem(&mut bytes, &[0x89], *scratch, &mem, ctx);
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // LEA_LABEL — load the address of a local basic-block label
+        // into a register (computed goto).
+        //
+        // On i686 (no RIP-relative addressing), this expands to:
+        //   CALL $+5          ; E8 00 00 00 00 — push IP of next instr
+        //   POP reg           ; 58+rd          — pop IP into dest
+        //   ADD reg, imm32    ; 81 /0 imm32    — add delta to target
+        //
+        // The imm32 in the ADD is a placeholder (0) that the assembler
+        // patches via a fixup with `target_offset - pop_instr_offset`.
+        // ---------------------------------------------------------------
+        opcodes::LEA_LABEL => {
+            let ops = &instr.operands;
+            if let Some(MachineOperand::Register(dst)) = ops.first() {
+                let dst_enc = reg_encoding(*dst);
+                // CALL $+5  (call to next instruction — pushes return addr)
+                bytes.push(0xE8);
+                bytes.extend_from_slice(&0i32.to_le_bytes());
+                // POP dst
+                bytes.push(0x58 + dst_enc);
+                // ADD dst, imm32 (placeholder 0)
+                if dst_enc == EAX_ENC {
+                    // Short form: 05 imm32
+                    bytes.push(0x05);
+                } else {
+                    bytes.push(0x81);
+                    bytes.push(encode_modrm(0b11, 0, dst_enc));
+                }
+                bytes.extend_from_slice(&0i32.to_le_bytes());
+                // The fixup offset and delta will be handled by the assembler
+                // after encoding — it recognizes LEA_LABEL and records an
+                // absolute-label fixup (delta = target - pop_addr).
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // JMP_INDIRECT — indirect jump through a register (computed goto).
+        // Operands: [reg]
+        // Encodes: jmp *%reg  (FF /4 with ModRM mod=11)
+        // ---------------------------------------------------------------
+        opcodes::JMP_INDIRECT => {
+            let ops = &instr.operands;
+            if let Some(MachineOperand::Register(reg)) = ops.first() {
+                let reg_enc = reg_encoding(*reg);
+                bytes.push(0xFF);
+                bytes.push(encode_modrm(0b11, 4, reg_enc));
+            }
+        }
+
+        // ---------------------------------------------------------------
         // Unknown opcode — emit nothing (assembler will warn)
         // ---------------------------------------------------------------
         _ => {
@@ -1045,11 +1337,24 @@ fn encode_mov(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
                 scale,
             },
         ) => {
+            if dst.0 == 5 {
+                eprintln!(
+                    "[ENCODER-BUG] MOV EBP, [Memory(base={:?},off={})] — frame pointer corruption!",
+                    base, offset
+                );
+            }
             let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
             encode_reg_mem(buf, &[0x8B], *dst, &mem, ctx);
         }
         // MOV reg, [EBP+frame_idx] — load from stack frame slot
         (MachineOperand::Register(dst), MachineOperand::FrameIndex(idx)) => {
+            // DEBUG: detect frame-pointer corruption
+            if dst.0 == 5 {
+                eprintln!(
+                    "[ENCODER-BUG] MOV EBP, [FrameIndex({})] — frame pointer would be corrupted!",
+                    idx
+                );
+            }
             let mem = frame_index_to_mem_operand(*idx);
             encode_reg_mem(buf, &[0x8B], *dst, &mem, ctx);
         }
@@ -1090,6 +1395,253 @@ fn encode_mov(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext)
             let mem = frame_index_to_mem_operand(*idx);
             encode_mem_ext(buf, &[0xC7], 0, &mem, ctx);
             buf.extend_from_slice(&(*imm as i32).to_le_bytes());
+        }
+        _ => {} // Unsupported operand combination
+    }
+}
+
+/// Returns true if the register encoding can be used as a byte-register
+/// operand in `MOV r/m8, r8` (opcode 0x88).
+///
+/// On i686 (32-bit mode, no REX prefix), only encodings 0–3 are usable
+/// as low-byte registers (AL/CL/DL/BL). Encodings 4–7 map to the
+/// *high* bytes AH/CH/DH/BH, which are completely different registers.
+/// Attempting to use ESI (enc=6) as a byte source would actually access
+/// DH, producing silently wrong results.
+fn is_byte_addressable(reg: PhysReg) -> bool {
+    reg_encoding(reg) < 4
+}
+
+/// Picks a byte-addressable scratch register (EAX/ECX/EDX/EBX) that
+/// does not conflict with any of the given `avoid` registers. Falls
+/// back to EAX if nothing better is available (caller must handle the
+/// save/restore).
+fn pick_byte_temp(avoid: &[PhysReg]) -> PhysReg {
+    use crate::backend::i686::registers;
+    let candidates = [
+        registers::EAX,
+        registers::ECX,
+        registers::EDX,
+        registers::EBX,
+    ];
+    for &c in &candidates {
+        if !avoid.contains(&c) {
+            return c;
+        }
+    }
+    // All four are in use — fall back to EAX (the caller pushes/pops).
+    registers::EAX
+}
+
+/// Emit a 32-bit `MOV r32, r32` (opcode 0x89).
+fn emit_mov_r32_r32(buf: &mut Vec<u8>, src: PhysReg, dst: PhysReg) {
+    let modrm = 0xC0 | (reg_encoding(src) << 3) | reg_encoding(dst);
+    buf.push(0x89);
+    buf.push(modrm);
+}
+
+/// Emit a byte store to a `MemOperand`, correctly handling the i686
+/// restriction that only AL/CL/DL/BL can appear in `MOV r/m8, r8`.
+///
+/// If `src` is not byte-addressable (e.g. ESI), the function emits a
+/// short sequence that saves a byte-addressable scratch register,
+/// copies `src` into it, does the byte store with the scratch's low
+/// byte, and restores the scratch register.
+fn emit_byte_store_to_mem(
+    buf: &mut Vec<u8>,
+    src: PhysReg,
+    mem: &MemOperand,
+    ctx: &mut EncoderContext,
+) {
+    if is_byte_addressable(src) {
+        // Fast path: register encoding directly maps to the correct
+        // low-byte register.
+        encode_reg_mem(buf, &[0x88], src, mem, ctx);
+    } else {
+        // Slow path: src is ESI/EDI/EBP/ESP — no usable low-byte alias.
+        // Strategy: push tmp; mov tmp, src; mov byte [mem], tmp_lo; pop tmp
+        //
+        // We must pick a tmp register not used as the memory base or
+        // index, because we'd corrupt the address if we overwrote it
+        // before the store.
+        let mut avoid = Vec::new();
+        if let Some(b) = mem.base {
+            avoid.push(b);
+        }
+        if let Some(i) = mem.index {
+            avoid.push(i);
+        }
+        let tmp = pick_byte_temp(&avoid);
+        // PUSH tmp (0x50 + enc)
+        buf.push(0x50 + reg_encoding(tmp));
+        // MOV tmp, src (32-bit)
+        emit_mov_r32_r32(buf, src, tmp);
+        // MOV byte [mem], tmp_lo (0x88)
+        encode_reg_mem(buf, &[0x88], tmp, mem, ctx);
+        // POP tmp (0x58 + enc)
+        buf.push(0x58 + reg_encoding(tmp));
+    }
+}
+
+/// Encode an 8-bit store: `MOV r/m8, r8` (opcode 0x88) or
+/// `MOV r/m8, imm8` (opcode 0xC6 /0).
+///
+/// Handles the same operand patterns as [`encode_mov`] but emits
+/// byte-width instructions to prevent stack corruption on sub-32-bit
+/// variables.
+///
+/// # i686 byte-register restriction
+///
+/// On i686 (no REX prefix), only register encodings 0–3 have low-byte
+/// aliases (AL/CL/DL/BL). Encodings 4–7 map to high-byte registers
+/// (AH/CH/DH/BH). If the register allocator places a byte-store source
+/// into ESI/EDI/EBP/ESP, this function transparently inserts a short
+/// push/mov/store/pop sequence through a byte-addressable scratch
+/// register.
+fn encode_mov_byte(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext) {
+    let ops = &instr.operands;
+    if ops.len() < 2 {
+        return;
+    }
+
+    match (&ops[0], &ops[1]) {
+        // MOV [mem], r8  — byte store to memory
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Register(src),
+        ) => {
+            let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            emit_byte_store_to_mem(buf, *src, &mem, ctx);
+        }
+        // MOV [EBP+frame_idx], r8  — byte store to stack slot
+        (MachineOperand::FrameIndex(idx), MachineOperand::Register(src)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            emit_byte_store_to_mem(buf, *src, &mem, ctx);
+        }
+        // MOV [mem], imm8
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Immediate(imm),
+        ) => {
+            let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            encode_mem_ext(buf, &[0xC6], 0, &mem, ctx);
+            buf.push(*imm as u8);
+        }
+        // MOV [EBP+frame_idx], imm8
+        (MachineOperand::FrameIndex(idx), MachineOperand::Immediate(imm)) => {
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_mem_ext(buf, &[0xC6], 0, &mem, ctx);
+            buf.push(*imm as u8);
+        }
+        // Indirect store via register pointer: [addr_reg], src_reg
+        // (Same pattern as MovStore but with byte opcode.)
+        (MachineOperand::Register(addr), MachineOperand::Register(src)) => {
+            let disp = if ops.len() >= 3 {
+                if let MachineOperand::Immediate(off) = &ops[2] {
+                    *off as i32
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            let mem = MemOperand {
+                base: Some(*addr),
+                index: None,
+                scale: 1,
+                disp,
+                symbol: None,
+            };
+            emit_byte_store_to_mem(buf, *src, &mem, ctx);
+        }
+        _ => {} // Unsupported operand combination
+    }
+}
+
+/// Encode a 16-bit store: `MOV r/m16, r16` (operand-size prefix 0x66 +
+/// opcode 0x89) or `MOV r/m16, imm16` (0x66 + 0xC7 /0).
+///
+/// The 0x66 operand-size prefix overrides the default 32-bit operand size
+/// to 16-bit on i686.
+fn encode_mov_word(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext) {
+    let ops = &instr.operands;
+    if ops.len() < 2 {
+        return;
+    }
+
+    match (&ops[0], &ops[1]) {
+        // MOV [mem], r16
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Register(src),
+        ) => {
+            buf.push(0x66); // operand-size prefix
+            let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            encode_reg_mem(buf, &[0x89], *src, &mem, ctx);
+        }
+        // MOV [EBP+frame_idx], r16
+        (MachineOperand::FrameIndex(idx), MachineOperand::Register(src)) => {
+            buf.push(0x66);
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_reg_mem(buf, &[0x89], *src, &mem, ctx);
+        }
+        // MOV [mem], imm16
+        (
+            MachineOperand::Memory {
+                base,
+                offset,
+                index,
+                scale,
+            },
+            MachineOperand::Immediate(imm),
+        ) => {
+            buf.push(0x66);
+            let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+            encode_mem_ext(buf, &[0xC7], 0, &mem, ctx);
+            buf.extend_from_slice(&(*imm as i16).to_le_bytes());
+        }
+        // MOV [EBP+frame_idx], imm16
+        (MachineOperand::FrameIndex(idx), MachineOperand::Immediate(imm)) => {
+            buf.push(0x66);
+            let mem = frame_index_to_mem_operand(*idx);
+            encode_mem_ext(buf, &[0xC7], 0, &mem, ctx);
+            buf.extend_from_slice(&(*imm as i16).to_le_bytes());
+        }
+        // Indirect store via register pointer: [addr_reg], src_reg
+        (MachineOperand::Register(addr), MachineOperand::Register(src)) => {
+            let disp = if ops.len() >= 3 {
+                if let MachineOperand::Immediate(off) = &ops[2] {
+                    *off as i32
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            buf.push(0x66);
+            let mem = MemOperand {
+                base: Some(*addr),
+                index: None,
+                scale: 1,
+                disp,
+                symbol: None,
+            };
+            encode_reg_mem(buf, &[0x89], *src, &mem, ctx);
         }
         _ => {} // Unsupported operand combination
     }
@@ -1144,7 +1696,43 @@ fn encode_movsx_movzx(
             } else {
                 reg_encoding(parent_gpr(*src))
             };
-            buf.push(encode_modrm(0b11, reg_encoding(*dst), src_enc));
+
+            // i686 byte-register restriction: when the source width is 8
+            // bits and the source register encoding is >= 4, the CPU
+            // interprets the r/m field as AH/CH/DH/BH instead of the low
+            // byte of ESP/EBP/ESI/EDI (which don't exist without REX).
+            //
+            // Work around by replacing the MOVZX/MOVSX with a 32-bit
+            // MOV followed by masking (for zero-extend) or shift-pair
+            // (for sign-extend).
+            if src_width == 8 && src_enc >= 4 {
+                // Remove the already-pushed 0x0F and opcode_byte
+                buf.pop();
+                buf.pop();
+                let dst_enc = reg_encoding(*dst);
+                // MOV dst, src (32-bit, opcode 0x89)
+                emit_mov_r32_r32(buf, *src, *dst);
+                if is_sign_extend {
+                    // SHL dst, 24  (opcode 0xC1 /4)
+                    buf.push(0xC1);
+                    buf.push(0xE0 | dst_enc);
+                    buf.push(24);
+                    // SAR dst, 24  (opcode 0xC1 /7)
+                    buf.push(0xC1);
+                    buf.push(0xF8 | dst_enc);
+                    buf.push(24);
+                } else {
+                    // AND dst, 0x000000FF (opcode 0x81 /4, imm32)
+                    buf.push(0x81);
+                    buf.push(0xE0 | dst_enc);
+                    buf.push(0xFF);
+                    buf.push(0x00);
+                    buf.push(0x00);
+                    buf.push(0x00);
+                }
+            } else {
+                buf.push(encode_modrm(0b11, reg_encoding(*dst), src_enc));
+            }
         }
         (
             MachineOperand::Register(dst),
@@ -1423,6 +2011,7 @@ fn encode_imul(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
             encode_unary_rm(instr, buf, ctx, 0xF7, 5);
         }
         // 2 operands: IMUL r32, r/m32 (0F AF /r)
+        //          or IMUL r32, imm → 3-operand form IMUL r32, r32, imm (69/6B)
         2 => match (&ops[0], &ops[1]) {
             (MachineOperand::Register(dst), MachineOperand::Register(src)) => {
                 buf.push(0x0F);
@@ -1439,6 +2028,27 @@ fn encode_imul(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContext
                 },
             ) => {
                 let mem = machine_mem_to_mem_operand(base, *offset, index, *scale);
+                buf.push(0x0F);
+                buf.push(0xAF);
+                encode_memory(buf, reg_encoding(*dst), &mem, ctx);
+            }
+            // Immediate rhs: use 3-operand form IMUL dst, dst, imm
+            (MachineOperand::Register(dst), MachineOperand::Immediate(imm)) => {
+                let val = *imm as i32;
+                let d = reg_encoding(*dst);
+                if (-128..=127).contains(&val) {
+                    buf.push(0x6B);
+                    buf.push(encode_modrm(0b11, d, d));
+                    buf.push(val as i8 as u8);
+                } else {
+                    buf.push(0x69);
+                    buf.push(encode_modrm(0b11, d, d));
+                    buf.extend_from_slice(&val.to_le_bytes());
+                }
+            }
+            // FrameIndex source: load-address variant
+            (MachineOperand::Register(dst), MachineOperand::FrameIndex(idx)) => {
+                let mem = frame_index_to_mem_operand(*idx);
                 buf.push(0x0F);
                 buf.push(0xAF);
                 encode_memory(buf, reg_encoding(*dst), &mem, ctx);
@@ -1717,12 +2327,29 @@ fn encode_setcc(instr: &MachineInstr, buf: &mut Vec<u8>, ctx: &mut EncoderContex
         return;
     }
 
-    let cc = extract_cc(ops);
+    // The codegen emits SETcc with two operand conventions:
+    //   (1) preferred: (Register dst, Immediate cc)
+    //   (2) legacy:    (Immediate cc, Register/Memory/FrameIndex dst)
+    // We must detect which layout is used and extract accordingly.
+    let (cc, dst_idx) = if let MachineOperand::Immediate(cc_val) = &ops[0] {
+        // Legacy layout: ops[0]=Immediate(cc), ops[1]=destination
+        ((*cc_val as u8) & 0x0F, 1)
+    } else if ops.len() > 1 {
+        if let MachineOperand::Immediate(cc_val) = &ops[1] {
+            // Preferred layout: ops[0]=destination, ops[1]=Immediate(cc)
+            ((*cc_val as u8) & 0x0F, 0)
+        } else {
+            // Fallback: treat ops[0] as cc (via extract_cc), ops[1] as dst
+            (extract_cc(ops), 1)
+        }
+    } else {
+        return;
+    };
 
     buf.push(0x0F);
     buf.push(0x90 + cc);
 
-    match &ops[1] {
+    match &ops[dst_idx] {
         MachineOperand::Register(dst) => {
             buf.push(encode_modrm(0b11, 0, reg_encoding(*dst)));
         }

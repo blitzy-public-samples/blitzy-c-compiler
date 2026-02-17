@@ -391,8 +391,14 @@ impl IrBuilder {
     /// This is a *terminator* instruction — it is placed in the block's
     /// terminator slot rather than appended to the instruction list.
     pub fn build_branch(&mut self, func: &mut IrFunction, target: BasicBlockId) {
+        let from = self
+            .current_block
+            .expect("IrBuilder: no insertion point set");
         let inst = Instruction::Branch { target };
         self.insert_inst(func, inst);
+        // Maintain CFG edges: from → target
+        func.get_block_mut(from).add_successor(target);
+        func.get_block_mut(target).add_predecessor(from);
     }
 
     /// Emit a conditional branch.
@@ -406,12 +412,22 @@ impl IrBuilder {
         true_bb: BasicBlockId,
         false_bb: BasicBlockId,
     ) {
+        let from = self
+            .current_block
+            .expect("IrBuilder: no insertion point set");
         let inst = Instruction::CondBranch {
             condition: cond,
             true_target: true_bb,
             false_target: false_bb,
         };
         self.insert_inst(func, inst);
+        // Maintain CFG edges: from → true_bb, from → false_bb
+        func.get_block_mut(from).add_successor(true_bb);
+        func.get_block_mut(true_bb).add_predecessor(from);
+        if false_bb != true_bb {
+            func.get_block_mut(from).add_successor(false_bb);
+            func.get_block_mut(false_bb).add_predecessor(from);
+        }
     }
 
     /// Emit a multi-way `switch` terminator.
@@ -425,12 +441,68 @@ impl IrBuilder {
         default: BasicBlockId,
         cases: Vec<(i64, BasicBlockId)>,
     ) {
+        let from = self
+            .current_block
+            .expect("IrBuilder: no insertion point set");
         let inst = Instruction::Switch {
             value,
             default,
-            cases,
+            cases: cases.clone(),
         };
         self.insert_inst(func, inst);
+        // Maintain CFG edges: from → default, from → each case target
+        let mut seen = crate::common::fx_hash::fx_hash_set();
+        func.get_block_mut(from).add_successor(default);
+        func.get_block_mut(default).add_predecessor(from);
+        seen.insert(default);
+        for (_, target) in &cases {
+            if seen.insert(*target) {
+                func.get_block_mut(from).add_successor(*target);
+                func.get_block_mut(*target).add_predecessor(from);
+            }
+        }
+    }
+
+    /// Emit a block-address instruction that produces a pointer to the
+    /// runtime address of the given basic block.
+    ///
+    /// Used to implement GCC's `&&label` computed-goto extension.  The
+    /// resulting value can be stored, loaded, and later passed to
+    /// [`build_indirect_branch`](Self::build_indirect_branch).
+    pub fn build_block_address(&mut self, func: &mut IrFunction, block: BasicBlockId) -> ValueId {
+        let result = self.alloc_value(func, IrType::Ptr, Some("blockaddr"));
+        let inst = Instruction::BlockAddress { result, block };
+        self.insert_inst(func, inst);
+        result
+    }
+
+    /// Emit an indirect branch that jumps to the address held in `addr`.
+    ///
+    /// `possible_targets` must list every basic block that `addr` could
+    /// point to.  The CFG is updated to include edges from the current
+    /// block to each target.
+    pub fn build_indirect_branch(
+        &mut self,
+        func: &mut IrFunction,
+        addr: ValueId,
+        possible_targets: Vec<BasicBlockId>,
+    ) {
+        let from = self
+            .current_block
+            .expect("IrBuilder: no insertion point set");
+        let inst = Instruction::IndirectBranch {
+            addr,
+            possible_targets: possible_targets.clone(),
+        };
+        self.insert_inst(func, inst);
+        // Maintain CFG edges
+        let mut seen = crate::common::fx_hash::fx_hash_set();
+        for target in &possible_targets {
+            if seen.insert(*target) {
+                func.get_block_mut(from).add_successor(*target);
+                func.get_block_mut(*target).add_predecessor(from);
+            }
+        }
     }
 
     /// Emit a function call.
@@ -444,6 +516,22 @@ impl IrBuilder {
         args: Vec<ValueId>,
         ret_ty: IrType,
     ) -> Option<ValueId> {
+        self.build_call_ex(func, callee, args, ret_ty, false)
+    }
+
+    /// Build a function call with explicit variadic flag.
+    ///
+    /// When `is_variadic` is `true`, backends that distinguish variadic
+    /// argument passing (e.g. RISC-V LP64D) will use integer registers
+    /// for floating-point arguments instead of FP registers.
+    pub fn build_call_ex(
+        &mut self,
+        func: &mut IrFunction,
+        callee: ValueId,
+        args: Vec<ValueId>,
+        ret_ty: IrType,
+        is_variadic: bool,
+    ) -> Option<ValueId> {
         let result = if ret_ty.is_void() {
             None
         } else {
@@ -454,6 +542,7 @@ impl IrBuilder {
             callee,
             args,
             is_tail: false,
+            is_variadic,
         };
         self.insert_inst(func, inst);
         result
@@ -647,6 +736,112 @@ impl IrBuilder {
     }
 
     // -----------------------------------------------------------------------
+    // Floating-point ↔ integer conversion
+    // -----------------------------------------------------------------------
+
+    /// Convert a signed integer to a floating-point value (SCVTF equivalent).
+    pub fn build_si_to_fp(
+        &mut self,
+        func: &mut IrFunction,
+        value: ValueId,
+        to_ty: IrType,
+    ) -> ValueId {
+        let result = self.alloc_value(func, to_ty.clone(), None);
+        let inst = Instruction::SIToFP {
+            result,
+            value,
+            to_ty,
+        };
+        self.insert_inst(func, inst);
+        result
+    }
+
+    /// Convert an unsigned integer to a floating-point value (UCVTF equivalent).
+    pub fn build_ui_to_fp(
+        &mut self,
+        func: &mut IrFunction,
+        value: ValueId,
+        to_ty: IrType,
+    ) -> ValueId {
+        let result = self.alloc_value(func, to_ty.clone(), None);
+        let inst = Instruction::UIToFP {
+            result,
+            value,
+            to_ty,
+        };
+        self.insert_inst(func, inst);
+        result
+    }
+
+    /// Convert a floating-point value to a signed integer (FCVTZS equivalent).
+    pub fn build_fp_to_si(
+        &mut self,
+        func: &mut IrFunction,
+        value: ValueId,
+        to_ty: IrType,
+    ) -> ValueId {
+        let result = self.alloc_value(func, to_ty.clone(), None);
+        let inst = Instruction::FPToSI {
+            result,
+            value,
+            to_ty,
+        };
+        self.insert_inst(func, inst);
+        result
+    }
+
+    /// Convert a floating-point value to an unsigned integer (FCVTZU equivalent).
+    pub fn build_fp_to_ui(
+        &mut self,
+        func: &mut IrFunction,
+        value: ValueId,
+        to_ty: IrType,
+    ) -> ValueId {
+        let result = self.alloc_value(func, to_ty.clone(), None);
+        let inst = Instruction::FPToUI {
+            result,
+            value,
+            to_ty,
+        };
+        self.insert_inst(func, inst);
+        result
+    }
+
+    /// Extend a floating-point value to a wider float type (e.g., F32 → F64).
+    pub fn build_fp_ext(
+        &mut self,
+        func: &mut IrFunction,
+        value: ValueId,
+        to_ty: IrType,
+    ) -> ValueId {
+        let result = self.alloc_value(func, to_ty.clone(), None);
+        let inst = Instruction::FPExt {
+            result,
+            value,
+            to_ty,
+        };
+        self.insert_inst(func, inst);
+        result
+    }
+
+    /// Truncate a floating-point value to a narrower float type (e.g., F64 → F32).
+    pub fn build_fp_trunc(
+        &mut self,
+        func: &mut IrFunction,
+        value: ValueId,
+        to_ty: IrType,
+    ) -> ValueId {
+        let result = self.alloc_value(func, to_ty.clone(), None);
+        let inst = Instruction::FPTrunc {
+            result,
+            value,
+            to_ty,
+        };
+        self.insert_inst(func, inst);
+        result
+    }
+
+    // -----------------------------------------------------------------------
     // Inline assembly
     // -----------------------------------------------------------------------
 
@@ -677,13 +872,74 @@ impl IrBuilder {
         has_side_effects: bool,
         is_align_stack: bool,
     ) -> Option<ValueId> {
+        self.build_inline_asm_full(
+            func,
+            template,
+            constraints,
+            operands,
+            clobbers,
+            has_side_effects,
+            is_align_stack,
+            IrType::I64,
+            Vec::new(),
+        )
+    }
+
+    /// Like [`build_inline_asm`](Self::build_inline_asm) but allows the
+    /// caller to specify the IR type of the result value.  Use this when
+    /// the inline-asm instruction produces a value narrower than 64 bits
+    /// (e.g. 32-bit `bsrl` for `__builtin_clz`) so that downstream
+    /// comparison and arithmetic instructions operate at the correct width
+    /// without spurious sign/zero extensions.
+    pub fn build_inline_asm_typed(
+        &mut self,
+        func: &mut IrFunction,
+        template: String,
+        constraints: String,
+        operands: Vec<ValueId>,
+        clobbers: Vec<String>,
+        has_side_effects: bool,
+        is_align_stack: bool,
+        result_type: IrType,
+    ) -> Option<ValueId> {
+        self.build_inline_asm_full(
+            func,
+            template,
+            constraints,
+            operands,
+            clobbers,
+            has_side_effects,
+            is_align_stack,
+            result_type,
+            Vec::new(),
+        )
+    }
+
+    /// Full-featured inline assembly builder with goto target support.
+    ///
+    /// `goto_targets` lists the [`BasicBlockId`]s that this `asm goto`
+    /// statement may branch to.  For non-goto inline assembly, pass an
+    /// empty vector.  These targets are stored on the IR instruction so
+    /// that CFG analysis preserves those blocks as reachable.
+    pub fn build_inline_asm_full(
+        &mut self,
+        func: &mut IrFunction,
+        template: String,
+        constraints: String,
+        operands: Vec<ValueId>,
+        clobbers: Vec<String>,
+        has_side_effects: bool,
+        is_align_stack: bool,
+        result_type: IrType,
+        goto_targets: Vec<BasicBlockId>,
+    ) -> Option<ValueId> {
         // Inline assembly that produces a result gets a fresh ValueId.
         // By convention, a non-empty output constraint means a result is
         // produced.  The caller determines this and we check whether the
         // constraint string starts with '=' (output) or '+' (inout).
         let produces_result = constraints.starts_with('=') || constraints.starts_with('+');
         let result = if produces_result {
-            Some(self.alloc_value(func, IrType::I64, None))
+            Some(self.alloc_value(func, result_type, None))
         } else {
             None
         };
@@ -695,6 +951,7 @@ impl IrBuilder {
             clobbers,
             has_side_effects,
             is_align_stack,
+            goto_targets,
         };
         self.insert_inst(func, inst);
         result

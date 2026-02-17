@@ -613,6 +613,33 @@ impl ArchCodegen for I686Codegen {
         result.code
     }
 
+    /// Assembles an i686 machine function and returns both code and relocations.
+    ///
+    /// Overrides the default (empty-relocation) implementation so that
+    /// symbol references emitted by the assembler — e.g. `R_386_PC32` for
+    /// direct `CALL` instructions and `R_386_32` for absolute address loads
+    /// — are preserved and forwarded to the linker for fixup.
+    fn emit_assembly_with_relocations(
+        &self,
+        mf: &MachineFunction,
+    ) -> crate::backend::traits::AssemblyOutput {
+        let mut asm = I686Assembler::with_pic(self.config.pic);
+        let result = asm.assemble_function(mf);
+        crate::backend::traits::AssemblyOutput {
+            code: result.code,
+            relocations: result
+                .relocations
+                .into_iter()
+                .map(|r| crate::backend::traits::AsmRelocation {
+                    offset: r.offset as usize,
+                    symbol: r.symbol,
+                    reloc_type: r.reloc_type.to_elf_value() as u32,
+                    addend: r.addend as i64,
+                })
+                .collect(),
+        }
+    }
+
     /// Returns the complete table of i386 ELF relocation types.
     ///
     /// These relocations are used by both the assembler (to record
@@ -626,11 +653,15 @@ impl ArchCodegen for I686Codegen {
     /// Returns 8 — i686 has 8 general-purpose 32-bit registers:
     /// EAX, EBX, ECX, EDX, ESI, EDI, EBP, ESP.
     ///
-    /// Of these, only 6 are typically available for the register
-    /// allocator (ESP and EBP are reserved for stack management).
+    /// The PhysReg namespace for i686 spans 0–23 for integer-class
+    /// registers (32-bit GPRs 0–7, 16-bit sub-regs 8–15, 8-bit
+    /// sub-regs 16–23).  Of these, only GPRs that appear in the
+    /// caller-saved or callee-saved lists will actually be allocatable.
+    /// Returning 24 ensures the float range starts at index 24, which
+    /// correctly matches ST(0)–ST(7) at PhysReg(24)–PhysReg(31).
     #[inline]
     fn integer_register_count(&self) -> usize {
-        8
+        24
     }
 
     /// Returns 8 — i686 has 8 x87 FPU stack registers: ST(0)–ST(7).
@@ -734,6 +765,28 @@ impl ArchCodegen for I686Codegen {
     #[inline]
     fn pointer_size(&self) -> u32 {
         Target::I686.pointer_width()
+    }
+
+    /// Returns ECX — the scratch GPR reserved for spill code on i686.
+    ///
+    /// ECX is caller-saved, so it does not need to be preserved across
+    /// function calls. The register allocator will never allocate ECX
+    /// to a user value; instead it is used exclusively for spill loads
+    /// and spill stores (moving values between the stack and scratch
+    /// register before/after the actual instruction that uses them).
+    #[inline]
+    fn spill_scratch_gpr(&self) -> PhysReg {
+        registers::ECX
+    }
+
+    /// Returns ST7 — the scratch x87 register reserved for FP spill code.
+    ///
+    /// On i686, floating-point operations use the x87 FPU stack rather
+    /// than SSE registers. ST(7) is at the bottom of the stack and is
+    /// the least likely to conflict with normal FP operations.
+    #[inline]
+    fn spill_scratch_sse(&self) -> PhysReg {
+        registers::ST7
     }
 
     /// Returns 16 — function entry points are aligned to 16-byte
@@ -1000,9 +1053,11 @@ mod tests {
     // -- Register count tests -----------------------------------------------
 
     #[test]
-    fn integer_register_count_is_8() {
+    fn integer_register_count_is_24() {
         let backend = I686Codegen::new(test_config());
-        assert_eq!(backend.integer_register_count(), 8);
+        // 24 = 8 GPRs (0–7) + 8 16-bit sub-regs (8–15) + 8 8-bit sub-regs (16–23)
+        // This ensures the float range [24, 32) correctly maps to ST(0)–ST(7).
+        assert_eq!(backend.integer_register_count(), 24);
     }
 
     #[test]
@@ -1029,11 +1084,13 @@ mod tests {
     fn caller_saved_register_set() {
         let backend = I686Codegen::new(test_config());
         let regs = backend.caller_saved_registers();
-        // cdecl i386: EAX, ECX, EDX (3 registers)
-        assert_eq!(regs.len(), 3);
+        // cdecl i386: EAX, ECX, EDX (3 GPRs) + ST0–ST7 (8 x87 FPU)
+        assert_eq!(regs.len(), 11);
         assert!(regs.contains(&registers::EAX));
         assert!(regs.contains(&registers::ECX));
         assert!(regs.contains(&registers::EDX));
+        assert!(regs.contains(&registers::ST0));
+        assert!(regs.contains(&registers::ST7));
     }
 
     #[test]

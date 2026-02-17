@@ -85,11 +85,29 @@ pub fn try_get_constant(
         return Some(cv.clone());
     }
 
-    // Secondary: check if the value type gives us information. For example,
-    // a value of type I1 that is exactly 0 or 1 might be encoded directly.
-    // In practice, most constants are discovered through instruction folding,
-    // so this is a best-effort fallback.
-    let _ty = func.get_value_type(value);
+    // Secondary: inspect the value's name — named constants created by
+    // `IrBuilder::build_const_int`, `build_const_float`, and
+    // `build_const_null` encode their value in the name string.
+    // This is the *only* mechanism through which literal constants enter
+    // the folding pipeline, because these pseudo-values have no defining
+    // instruction.
+    if let Some(info) = func.get_value_info(value) {
+        if let Some(ref name) = info.name {
+            if let Some(int_str) = name.strip_prefix("const.int.") {
+                // Parse as i64 first (matches `build_const_int` signature),
+                // then widen to i128 for the constant map.
+                if let Ok(v) = int_str.parse::<i64>() {
+                    return Some(ConstantValue::Int(v as i128));
+                }
+            } else if let Some(flt_str) = name.strip_prefix("const.float.") {
+                if let Ok(v) = flt_str.parse::<f64>() {
+                    return Some(ConstantValue::Float(v));
+                }
+            } else if name == "const.null" {
+                return Some(ConstantValue::Null);
+            }
+        }
+    }
 
     None
 }
@@ -144,6 +162,33 @@ enum FoldResult {
 pub fn run_constant_folding(func: &mut IrFunction) -> bool {
     let mut changed = false;
     let mut constants: FxHashMap<ValueId, ConstantValue> = FxHashMap::default();
+
+    // -----------------------------------------------------------------
+    // Phase 0: Seed the constant map from named constant values.
+    //
+    // `IrBuilder::build_const_int`, `build_const_float`, and
+    // `build_const_null` create pseudo-values that carry their value
+    // in the name string (e.g., "const.int.42").  These have *no*
+    // defining instruction, so the worklist-driven Phase 2 would never
+    // discover them.  We scan the entire value registry and populate
+    // the constant map up-front so that all downstream fold functions
+    // can look up operands via `constants.get(...)`.
+    // -----------------------------------------------------------------
+    for vi in func.local_values.iter() {
+        if let Some(ref name) = vi.name {
+            if let Some(int_str) = name.strip_prefix("const.int.") {
+                if let Ok(v) = int_str.parse::<i64>() {
+                    constants.insert(vi.id, ConstantValue::Int(v as i128));
+                }
+            } else if let Some(flt_str) = name.strip_prefix("const.float.") {
+                if let Ok(v) = flt_str.parse::<f64>() {
+                    constants.insert(vi.id, ConstantValue::Float(v));
+                }
+            } else if name == "const.null" {
+                constants.insert(vi.id, ConstantValue::Null);
+            }
+        }
+    }
 
     // -----------------------------------------------------------------
     // Phase 1: Build worklist with all instruction locations.
@@ -499,12 +544,30 @@ fn fold_instruction(
 /// 1. Both operands are known constants → compute result at compile time.
 /// 2. One operand has an algebraic identity → simplify without needing
 ///    both operands to be constant.
+/// Truncates an i128 constant to the bit-width of the given IR type,
+/// then sign-extends back to i128 so that subsequent signed comparisons
+/// and arithmetic see the correct value.  This is essential for
+/// compile-time evaluation of sequences like the software popcount
+/// algorithm, where intermediate multiplications overflow the 32-bit
+/// (or 64-bit) range and must wrap at the type boundary.
+fn truncate_to_type_width(val: i128, ty: &IrType) -> i128 {
+    match ty {
+        IrType::I1 => val & 1,
+        IrType::I8 => (val as i8) as i128,
+        IrType::I16 => (val as i16) as i128,
+        IrType::I32 => (val as i32) as i128,
+        IrType::I64 => (val as i64) as i128,
+        // I128 and non-integer types: no truncation needed.
+        _ => val,
+    }
+}
+
 fn fold_binop(
     result: ValueId,
     op: BinOp,
     lhs: ValueId,
     rhs: ValueId,
-    _ty: &IrType,
+    ty: &IrType,
     constants: &FxHashMap<ValueId, ConstantValue>,
 ) -> FoldResult {
     let lhs_const = constants.get(&lhs);
@@ -513,7 +576,12 @@ fn fold_binop(
     // Case 1: both operands are known integer constants.
     if let (Some(ConstantValue::Int(l)), Some(ConstantValue::Int(r))) = (lhs_const, rhs_const) {
         if let Some(val) = eval_int_binop(op, *l, *r) {
-            return FoldResult::Constant(result, ConstantValue::Int(val));
+            // CRITICAL: truncate the result to the IR type's bit-width.
+            // Without this, intermediate results grow beyond the type
+            // boundary (e.g., i128 product of two i32 values) and
+            // subsequent shifts/comparisons produce wrong answers.
+            let truncated = truncate_to_type_width(val, ty);
+            return FoldResult::Constant(result, ConstantValue::Int(truncated));
         }
     }
 

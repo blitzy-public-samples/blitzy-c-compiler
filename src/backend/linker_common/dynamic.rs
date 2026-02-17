@@ -68,9 +68,15 @@ pub const DT_SONAME: i64 = 14;
 pub const DT_RPATH: i64 = 15;
 /// Object uses symbolic binding (rarely used).
 pub const DT_SYMBOLIC: i64 = 16;
+/// Address of the Rel relocation table (`.rel.dyn`) — used for 32-bit ELF.
+pub const DT_REL: i64 = 17;
+/// Total size in bytes of the Rel relocation table.
+pub const DT_RELSZ: i64 = 18;
+/// Size of a single Rel relocation entry (8 bytes for 32-bit).
+pub const DT_RELENT: i64 = 19;
 /// Type of relocation entry used for PLT (7 = DT_RELA, 17 = DT_REL).
 pub const DT_PLTREL: i64 = 20;
-/// Address of the PLT relocation entries (`.rela.plt`).
+/// Address of the PLT relocation entries (`.rela.plt` or `.rel.plt`).
 pub const DT_JMPREL: i64 = 23;
 /// Dynamic flags word.
 pub const DT_FLAGS: i64 = 30;
@@ -85,7 +91,8 @@ const ELF64_SYM_SIZE: u64 = 24;
 const ELF32_SYM_SIZE: u64 = 16;
 // Size of Elf64_Rela (used for DT_RELAENT on 64-bit targets).
 const ELF64_RELA_SIZE: u64 = 24;
-// Size of Elf32_Rela (used for DT_RELAENT on 32-bit targets).
+// Size of Elf32_Rela (retained for reference; 32-bit i386 uses REL instead).
+#[allow(dead_code)]
 const ELF32_RELA_SIZE: u64 = 12;
 
 // ===========================================================================
@@ -171,6 +178,18 @@ impl DynamicRelocation {
         let r_info: u32 = (self.symbol_index << 8) | (self.reloc_type & 0xFF);
         buf[4..8].copy_from_slice(&r_info.to_le_bytes());
         buf[8..12].copy_from_slice(&(self.addend as i32).to_le_bytes());
+        buf
+    }
+
+    /// Serializes as Elf32_Rel (8 bytes, little-endian) — **without** addend.
+    /// The i386 ABI uses REL relocations where the addend is stored inline at
+    /// the relocation site rather than in an explicit field.
+    /// Layout: r_offset (4) | r_info (4 = sym<<8 | type).
+    pub fn to_bytes_32_rel_le(&self) -> [u8; 8] {
+        let mut buf = [0u8; 8];
+        buf[0..4].copy_from_slice(&(self.offset as u32).to_le_bytes());
+        let r_info: u32 = (self.symbol_index << 8) | (self.reloc_type & 0xFF);
+        buf[4..8].copy_from_slice(&r_info.to_le_bytes());
         buf
     }
 }
@@ -540,13 +559,16 @@ impl Default for DynamicSymbolTable {
 /// `symoffset` (typically 1) are skipped. The caller must ensure that the
 /// symbols slice is consistent with the `.dynsym` ordering.
 pub fn build_gnu_hash(symbols: &[DynSymEntry], _dynstr: &[u8]) -> Vec<u8> {
-    // Collect hashable symbols (skip index 0 = null symbol).
-    // Each tuple: (original index in .dynsym, hash value).
+    // Collect hashable symbols: only DEFINED symbols (section_index != 0).
+    // Undefined/imported symbols (section_index == 0 / SHN_UNDEF) are NOT
+    // included in .gnu.hash — the hash table is for exporting symbols, not
+    // importing them. The dynamic linker uses .gnu.hash to find symbols
+    // DEFINED in this object, not symbols we import from shared libraries.
     let hashable: Vec<(usize, u32)> = symbols
         .iter()
         .enumerate()
         .skip(1) // skip null symbol at index 0
-        .filter(|(_, s)| !s.name.is_empty())
+        .filter(|(_, s)| !s.name.is_empty() && s.section_index != 0)
         .map(|(idx, s)| (idx, gnu_hash(&s.name)))
         .collect();
 
@@ -687,6 +709,29 @@ pub struct DynamicSectionBuilder {
     rela_plt_size: u64,
     /// Whether to emit 32-bit entries (i686) instead of 64-bit.
     is_32bit: bool,
+    /// Byte offset added to `got_plt_addr` when emitting `DT_PLTGOT`.
+    ///
+    /// On x86-64, i686, and AArch64 the dynamic linker writes `link_map`
+    /// to `*(DT_PLTGOT + ptr_size)` and the resolver to
+    /// `*(DT_PLTGOT + 2*ptr_size)`, so `DT_PLTGOT` points at GOT\[0\]
+    /// (the `.dynamic` address slot) and the three‐reserved‐entry layout
+    /// works.
+    ///
+    /// On **RISC-V**, glibc's `elf_machine_runtime_setup` writes:
+    /// ```text
+    /// gotplt[0] = _dl_runtime_resolve
+    /// gotplt[1] = link_map
+    /// ```
+    /// where `gotplt = (ElfW(Addr)*)DT_PLTGOT`.  So `DT_PLTGOT` should
+    /// point directly at GOT\[0\] (no adjustment needed), and our PLT0
+    /// stub loads the resolver from GOT\[0\] and `link_map` from GOT\[1\].
+    pltgot_adjust: u64,
+    /// When true, emit `DT_FLAGS = DF_BIND_NOW` and
+    /// `DT_FLAGS_1 = DF_1_NOW` so the dynamic linker resolves all PLT
+    /// entries eagerly at load time.  GCC enables this by default on
+    /// RISC-V because the PLT0 lazy-resolution stub is fragile across
+    /// glibc versions.
+    bind_now: bool,
 }
 
 impl DynamicSectionBuilder {
@@ -703,6 +748,8 @@ impl DynamicSectionBuilder {
             rela_dyn_size: 0,
             rela_plt_size: 0,
             is_32bit: false,
+            pltgot_adjust: 0,
+            bind_now: false,
         }
     }
 
@@ -753,6 +800,23 @@ impl DynamicSectionBuilder {
     /// Sets whether to emit 32-bit entries for i686 targets.
     pub fn set_32bit(&mut self, is_32bit: bool) {
         self.is_32bit = is_32bit;
+    }
+
+    /// Sets the byte offset added to `.got.plt` base when emitting
+    /// `DT_PLTGOT`.
+    ///
+    /// Call this with `ptr_size` (8 on 64-bit) for RISC-V targets where
+    /// the dynamic linker uses `gotplt[0]`/`gotplt[1]` rather than
+    /// `gotplt[1]`/`gotplt[2]` for `link_map` / resolver.
+    pub fn set_pltgot_adjust(&mut self, adjust: u64) {
+        self.pltgot_adjust = adjust;
+    }
+
+    /// Enables `DT_FLAGS = DF_BIND_NOW` and `DT_FLAGS_1 = DF_1_NOW` so
+    /// the dynamic linker resolves all PLT entries eagerly at load time.
+    /// GCC enables this by default on RISC-V.
+    pub fn set_bind_now(&mut self, enable: bool) {
+        self.bind_now = enable;
     }
 
     /// Builds and serializes the complete `.dynamic` section.
@@ -829,33 +893,53 @@ impl DynamicSectionBuilder {
         self.entries.push(DynamicEntry::new(DT_SYMENT, syment));
 
         // 5. PLT/GOT entries.
-        self.entries
-            .push(DynamicEntry::new(DT_PLTGOT, layout.got_plt_addr));
+        // pltgot_adjust shifts DT_PLTGOT for architectures that need it.
+        // RISC-V uses 0 (DT_PLTGOT = GOT[0]) and relies on BIND_NOW.
+        self.entries.push(DynamicEntry::new(
+            DT_PLTGOT,
+            layout.got_plt_addr + self.pltgot_adjust,
+        ));
         if self.rela_plt_size > 0 {
             self.entries
                 .push(DynamicEntry::new(DT_PLTRELSZ, self.rela_plt_size));
-            // DT_PLTREL value 7 = DT_RELA (we use RELA format for all arches).
+            // i386 uses REL relocations (DT_REL=17); 64-bit arches use RELA (DT_RELA=7).
+            let pltrel_value = if self.is_32bit { DT_REL } else { DT_RELA };
             self.entries
-                .push(DynamicEntry::new(DT_PLTREL, DT_RELA as u64));
+                .push(DynamicEntry::new(DT_PLTREL, pltrel_value as u64));
             self.entries
                 .push(DynamicEntry::new(DT_JMPREL, layout.rela_plt_addr));
         }
 
-        // 6. RELA relocations (non-PLT).
+        // 6. Dynamic relocations (non-PLT).
+        // 32-bit i386 uses DT_REL/DT_RELSZ/DT_RELENT (REL entries without addend).
+        // 64-bit arches use DT_RELA/DT_RELASZ/DT_RELAENT (RELA entries with addend).
         if self.rela_dyn_size > 0 {
-            self.entries
-                .push(DynamicEntry::new(DT_RELA, layout.rela_dyn_addr));
-            self.entries
-                .push(DynamicEntry::new(DT_RELASZ, self.rela_dyn_size));
-            let relaent = if self.is_32bit {
-                ELF32_RELA_SIZE
+            if self.is_32bit {
+                self.entries
+                    .push(DynamicEntry::new(DT_REL, layout.rela_dyn_addr));
+                self.entries
+                    .push(DynamicEntry::new(DT_RELSZ, self.rela_dyn_size));
+                // Elf32_Rel = 8 bytes
+                self.entries.push(DynamicEntry::new(DT_RELENT, 8));
             } else {
-                ELF64_RELA_SIZE
-            };
-            self.entries.push(DynamicEntry::new(DT_RELAENT, relaent));
+                self.entries
+                    .push(DynamicEntry::new(DT_RELA, layout.rela_dyn_addr));
+                self.entries
+                    .push(DynamicEntry::new(DT_RELASZ, self.rela_dyn_size));
+                self.entries
+                    .push(DynamicEntry::new(DT_RELAENT, ELF64_RELA_SIZE));
+            }
         }
 
-        // 7. Terminator.
+        // 7. DT_FLAGS / DT_FLAGS_1 (binding policy).
+        // DF_BIND_NOW = 0x8 — resolve all relocations at load time.
+        // DF_1_NOW    = 0x1 — extended flag, same semantics.
+        if self.bind_now {
+            self.entries.push(DynamicEntry::new(DT_FLAGS, 0x8));
+            self.entries.push(DynamicEntry::new(DT_FLAGS_1, 0x1));
+        }
+
+        // 8. Terminator.
         self.entries.push(DynamicEntry::new(DT_NULL, 0));
 
         // Serialize all entries.
@@ -1229,7 +1313,10 @@ impl PltBuilder {
         for (i, entry) in self.entries.iter().enumerate() {
             let plt_n_addr = plt0_addr + 16 + (i as u64) * 16;
             let got_entry_addr = got_plt_base + (3 + entry.plt_index as u64) * ptr_size;
-            let reloc_idx = i as u32;
+            // i386 ld.so expects the PLT push value to be the byte offset
+            // into .rel.plt (each Elf32_Rel is 8 bytes), NOT the entry index.
+            // This differs from x86-64 which uses the entry index.
+            let reloc_idx = (i as u32) * 8; // 8 = sizeof(Elf32_Rel)
 
             // jmp dword ptr [abs32]
             out.extend_from_slice(&[0xff, 0x25]);
@@ -1256,7 +1343,7 @@ impl PltBuilder {
     /// stp  x16, x30, [sp, #-16]!
     /// adrp x16, PAGE(GOT+16)
     /// ldr  x17, [x16, #PAGEOFF(GOT+16)]
-    /// add  x16, x16, #PAGEOFF(GOT+8)
+    /// add  x16, x16, #PAGEOFF(GOT+16)
     /// br   x17
     /// nop
     /// nop
@@ -1280,7 +1367,8 @@ impl PltBuilder {
 
         // PLT[0] — resolver stub (32 bytes = 8 instructions)
         {
-            let got1_addr = got_plt_base + ptr_size; // GOT[1] link_map
+            // GOT[1] is link_map — the resolver finds it via *(x16 - 8).
+            let _got1_addr = got_plt_base + ptr_size;
             let got2_addr = got_plt_base + 2 * ptr_size; // GOT[2] resolver
 
             // stp x16, x30, [sp, #-16]!
@@ -1295,9 +1383,13 @@ impl PltBuilder {
             let pageoff_got2 = (got2_addr & 0xFFF) as u32;
             out.extend_from_slice(&encode_ldr_imm64(17, 16, pageoff_got2).to_le_bytes());
 
-            // add x16, x16, #PAGEOFF(GOT+8)
-            let pageoff_got1 = (got1_addr & 0xFFF) as u32;
-            out.extend_from_slice(&encode_add_imm(16, 16, pageoff_got1).to_le_bytes());
+            // add x16, x16, #PAGEOFF(GOT+16)
+            // CRITICAL: x16 must point to &PLTGOT[2], NOT &PLTGOT[1].
+            // The dynamic linker (_dl_runtime_resolve) computes:
+            //   link_map = *(x16 - 8) = PLTGOT[1]
+            // so x16 must be &PLTGOT[2] for that dereference to yield the link_map.
+            let pageoff_got2 = (got2_addr & 0xFFF) as u32;
+            out.extend_from_slice(&encode_add_imm(16, 16, pageoff_got2).to_le_bytes());
 
             // br x17
             out.extend_from_slice(&0xd61f_0220u32.to_le_bytes());
@@ -1364,37 +1456,44 @@ impl PltBuilder {
         let mut out = Vec::with_capacity(plt0_bytes + self.entries.len() * 16);
 
         // PLT[0] — resolver stub (32 bytes = 8 instructions × 4 bytes)
+        //
+        // RISC-V glibc convention (elf_machine_runtime_setup):
+        //   gotplt = (ElfW(Addr)*)DT_PLTGOT;
+        //   gotplt[0] = _dl_runtime_resolve;  // resolver
+        //   gotplt[1] = l;                     // link_map
+        //
+        // DT_PLTGOT points to GOT[0], so:
+        //   GOT[0] = resolver, GOT[1] = link_map
+        //
+        // PLT0 loads t3 = *(GOT[0]) = resolver, t0 = *(GOT[1]) = link_map.
         {
-            let got1_addr = got_plt_base + ptr_size; // GOT[1] link_map
-            let got2_addr = got_plt_base + 2 * ptr_size; // GOT[2] resolver
+            let got0_addr = got_plt_base; // GOT[0] — resolver (written by glibc)
 
-            // auipc t2(x7), %pcrel_hi(GOT+8)
-            let offset1 = got1_addr as i64 - plt0_addr as i64;
-            let (hi20_1, lo12_1) = riscv_split_imm(offset1 as i32);
-            out.extend_from_slice(&riscv_auipc(7, hi20_1 as u32).to_le_bytes());
+            // auipc t2(x7), %pcrel_hi(GOT[0])
+            let offset0 = got0_addr as i64 - plt0_addr as i64;
+            let (hi20_0, lo12_0) = riscv_split_imm(offset0 as i32);
+            out.extend_from_slice(&riscv_auipc(7, hi20_0 as u32).to_le_bytes());
 
             // sub t1(x6), t1, t3(x28) — convention for lazy binding index
             out.extend_from_slice(&riscv_sub(6, 6, 28).to_le_bytes());
 
-            // ld t3(x28), lo12(GOT+16)(t2)
-            let offset2 = got2_addr as i64 - plt0_addr as i64;
-            let (_hi20_2, lo12_2) = riscv_split_imm(offset2 as i32);
-            out.extend_from_slice(&riscv_ld(28, 7, lo12_2).to_le_bytes());
+            // ld t3(x28), lo12(GOT[0])(t2)  — load resolver from GOT[0]
+            out.extend_from_slice(&riscv_ld(28, 7, lo12_0).to_le_bytes());
 
             // addi t1, t1, -(plt_header_size + 12)
             let neg_off = -((plt0_bytes as i32) + 12);
             out.extend_from_slice(&riscv_addi(6, 6, neg_off).to_le_bytes());
 
-            // addi t0(x5), t2, lo12(GOT+8) — pointer to link_map
-            out.extend_from_slice(&riscv_addi(5, 7, lo12_1).to_le_bytes());
+            // addi t0(x5), t2, lo12(GOT[0])  — t0 = address of GOT[0]
+            out.extend_from_slice(&riscv_addi(5, 7, lo12_0).to_le_bytes());
 
             // srli t1, t1, 4 (log2(16) = 4, plt entry size)
             out.extend_from_slice(&riscv_srli(6, 6, 4).to_le_bytes());
 
-            // ld t0, 0(t0) — dereference link_map pointer
-            out.extend_from_slice(&riscv_ld(5, 5, 0).to_le_bytes());
+            // ld t0, 8(t0)  — load link_map from GOT[1] (= GOT[0] + 8)
+            out.extend_from_slice(&riscv_ld(5, 5, 8).to_le_bytes());
 
-            // jr t3 (jalr x0, t3, 0)
+            // jr t3 (jalr x0, t3, 0) — jump to resolver
             out.extend_from_slice(&riscv_jalr(0, 28, 0).to_le_bytes());
         }
 
@@ -1538,6 +1637,30 @@ pub fn build_rela_plt(relocations: &[DynamicRelocation]) -> Vec<u8> {
     let mut out = Vec::with_capacity(relocations.len() * 24);
     for r in relocations {
         out.extend_from_slice(&r.to_bytes_64_le());
+    }
+    out
+}
+
+/// Serializes dynamic relocations into 32-bit REL format (`.rel.dyn`).
+///
+/// Each entry is Elf32_Rel (8 bytes) — no explicit addend field.
+/// Used for i386 targets which require REL format.
+pub fn build_rel_dyn_32(relocations: &[DynamicRelocation]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(relocations.len() * 8);
+    for r in relocations {
+        out.extend_from_slice(&r.to_bytes_32_rel_le());
+    }
+    out
+}
+
+/// Serializes dynamic relocations into 32-bit REL format (`.rel.plt`).
+///
+/// Each entry is Elf32_Rel (8 bytes) — no explicit addend field.
+/// Used for i386 targets which require REL format for PLT relocations.
+pub fn build_rel_plt_32(relocations: &[DynamicRelocation]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(relocations.len() * 8);
+    for r in relocations {
+        out.extend_from_slice(&r.to_bytes_32_rel_le());
     }
     out
 }

@@ -11,7 +11,7 @@
 //! Produces [`TypedExpression`] consumed by IR lowering (Phase 6).
 
 use crate::common::diagnostics::{DiagnosticEngine, Span};
-use crate::common::string_interner::Symbol;
+use crate::common::string_interner::{Interner, Symbol};
 use crate::common::target::{DataModel, Target};
 use crate::common::type_builder;
 use crate::common::types::{self, CType, FieldDef};
@@ -20,6 +20,7 @@ use crate::frontend::parser::ast::{
     GenericAssociation, IntegerSuffix, SizeofOperand, Statement, StringPrefix, TypeName,
     UnaryOperator,
 };
+use crate::frontend::sema::builtin_eval::{self, BuiltinResult};
 use crate::frontend::sema::scope::ScopeStack;
 use crate::frontend::sema::symbol_table::{StorageClass, SymbolEntry, SymbolTable};
 
@@ -88,6 +89,9 @@ struct TypeCheckContext<'a> {
     diag: &'a mut DiagnosticEngine,
     /// The return type of the enclosing function (if any).
     return_type: Option<&'a CType>,
+    /// String interner for resolving Symbol handles to &str during member
+    /// name comparisons and diagnostics.
+    interner: &'a Interner,
 }
 
 // ===========================================================================
@@ -286,6 +290,7 @@ pub fn check_expression(
     target: &Target,
     diag: &mut DiagnosticEngine,
     return_type: Option<&CType>,
+    interner: &Interner,
 ) -> TypedExpression {
     let mut ctx = TypeCheckContext {
         scopes,
@@ -293,6 +298,7 @@ pub fn check_expression(
         target,
         diag,
         return_type,
+        interner,
     };
     check_expr_inner(expr, &mut ctx)
 }
@@ -326,6 +332,7 @@ pub fn check_statement(
     target: &Target,
     diag: &mut DiagnosticEngine,
     return_type: Option<&CType>,
+    interner: &Interner,
 ) {
     let mut ctx = TypeCheckContext {
         scopes,
@@ -333,6 +340,7 @@ pub fn check_statement(
         target,
         diag,
         return_type,
+        interner,
     };
     check_stmt_inner(stmt, &mut ctx);
 }
@@ -484,6 +492,60 @@ fn check_expr_inner(expr: &Expression, ctx: &mut TypeCheckContext<'_>) -> TypedE
             )
         }
 
+        // ----- __builtin_offsetof(type, member) -----
+        Expression::BuiltinOffsetof {
+            type_name: _,
+            member: _,
+            span,
+        } => {
+            // __builtin_offsetof always yields a size_t (unsigned long on 64-bit).
+            // The actual offset is computed at compile-time or lowered to a
+            // constant by the IR. For sema purposes we just type it as size_t.
+            TypedExpression::new(
+                expr.clone(),
+                CType::Long { signed: false },
+                false,
+                true,
+                *span,
+            )
+        }
+
+        // ----- __builtin_types_compatible_p(type1, type2) -----
+        Expression::BuiltinTypesCompatibleP {
+            type1: _,
+            type2: _,
+            span,
+        } => {
+            // Always evaluates to an int (0 or 1) at compile time.
+            TypedExpression::new(
+                expr.clone(),
+                CType::Int { signed: true },
+                false,
+                true,
+                *span,
+            )
+        }
+
+        // ----- __builtin_va_arg(ap, type) -----
+        Expression::BuiltinVaArg {
+            ap,
+            type_name: _,
+            span,
+        } => {
+            // Type-check the va_list argument expression.
+            let _ap_typed = check_expr_inner(ap, ctx);
+            // The result type is the type named in the second argument.
+            // For now, represent as Int; the actual type resolution depends
+            // on TypeName→CType mapping which is handled at IR lowering time.
+            TypedExpression::new(
+                expr.clone(),
+                CType::Int { signed: true },
+                false,
+                false,
+                *span,
+            )
+        }
+
         // ----- Error recovery -----
         Expression::Error { span } => TypedExpression::error(*span),
     }
@@ -605,9 +667,13 @@ fn check_identifier(name: Symbol, span: Span, ctx: &mut TypeCheckContext<'_>) ->
     // lvalue characteristics.
     let is_lvalue = !ty.is_function() && entry.storage_class != StorageClass::Typedef;
 
-    // Enum constants are compile-time constant expressions.
-    let is_constant =
-        matches!(ty.canonical(), CType::Enum { .. }) && entry.storage_class != StorageClass::Static;
+    // Determine if this identifier is a compile-time constant expression.
+    // Per C11 §6.6p9, the following are address constants:
+    //   - Function designators (function names are compile-time address constants)
+    //   - Enum constants
+    let is_constant = ty.is_function()
+        || (matches!(ty.canonical(), CType::Enum { .. })
+            && entry.storage_class != StorageClass::Static);
 
     TypedExpression::new(
         Expression::Identifier { name, span },
@@ -1462,6 +1528,25 @@ fn check_function_call(
     expr: &Expression,
     ctx: &mut TypeCheckContext<'_>,
 ) -> TypedExpression {
+    // Intercept __builtin_* calls before normal function resolution.
+    // Builtins are not declared in the symbol table — they are recognized
+    // by name and dispatched to the builtin evaluator.
+    if let Expression::Identifier { name, .. } = callee {
+        let name_str = ctx.interner.resolve(*name);
+        if name_str.starts_with("__builtin_") && builtin_eval::is_builtin_name(name_str) {
+            match builtin_eval::evaluate_builtin(*name, args, ctx.diag, ctx.interner, ctx.target) {
+                Ok(result) => {
+                    let result_ty = result.ty();
+                    let is_const = matches!(result, BuiltinResult::CompileTimeValue(_));
+                    return TypedExpression::new(expr.clone(), result_ty, false, is_const, span);
+                }
+                Err(()) => {
+                    return TypedExpression::error(span);
+                }
+            }
+        }
+    }
+
     let typed_callee = check_expr_inner(callee, ctx);
     let callee_ty = lvalue_conversion(&typed_callee.ty);
 
@@ -1713,34 +1798,22 @@ fn check_arrow_access(
 /// found in an anonymous struct/union sub-member, recursively resolves.
 ///
 /// Returns `Some(CType)` of the member's type, or `None` if not found.
-#[allow(clippy::only_used_in_recursion)]
 fn resolve_member(
     fields: &[FieldDef],
     member: Symbol,
     ctx: &TypeCheckContext<'_>,
 ) -> Option<CType> {
-    let member_u32 = member.as_u32();
+    // Resolve the member Symbol to its string representation using the
+    // interner.  This allows exact comparison against FieldDef.name (String).
+    let member_str = ctx.interner.resolve(member);
 
     for field in fields {
         if let Some(ref field_name) = field.name {
-            // FieldDef.name is a String, while member is a Symbol.
-            // We need to compare by checking if the interned symbol matches
-            // the field's string name.  Since we don't have the interner here
-            // for reverse lookup, we compare using the u32 index against
-            // the field name hash.  In practice, the AST and type system would
-            // use Symbols consistently.  For now, we use a positional lookup
-            // that is compatible with both String-based FieldDef and Symbol-based
-            // member access.
-            //
-            // The field name string and the member Symbol should correspond
-            // to the same identifier.  This comparison works because the
-            // semantic analyzer ensures that struct field definitions created
-            // from the parser AST use the same name strings that the interner
-            // would produce for their corresponding Symbols.
-            let _ = member_u32; // Acknowledge usage for schema compliance.
-            let _ = field_name;
-            // Direct name comparison is deferred to the concrete interner
-            // resolution below.
+            // Exact string comparison between the interned member name and
+            // the field definition's name string.
+            if field_name == member_str {
+                return Some(field.ty.clone());
+            }
         }
 
         // For anonymous struct/union fields (field.name == None), search
@@ -1752,27 +1825,6 @@ fn resolve_member(
                 if let Some(ty) = resolve_member(sub, member, ctx) {
                     return Some(ty);
                 }
-            }
-        }
-    }
-
-    // Fallback: linear search by position (all named fields are checked).
-    // Since we can't do string-to-Symbol comparison without the interner,
-    // we return the first named field as a conservative fallback if there's
-    // exactly one field, or None if ambiguous.
-    // In a fully wired system, the interner would resolve Symbol -> &str
-    // for exact comparison.  Here we iterate and use ordinal matching.
-    //
-    // Production implementation: with interner access, this becomes:
-    // fields.iter().find(|f| f.name.as_deref() == Some(interner.resolve(member)))
-    for (i, field) in fields.iter().enumerate() {
-        if field.name.is_some() {
-            // Use the member's u32 as an ordinal hint.  This is a
-            // simplified matching strategy that works when field ordering
-            // is consistent with symbol interning order.  A proper
-            // implementation requires the Interner to resolve Symbol to &str.
-            if i as u32 == member_u32 || fields.len() == 1 {
-                return Some(field.ty.clone());
             }
         }
     }
@@ -2304,12 +2356,15 @@ fn resolve_type_name(type_name: &TypeName, ctx: &mut TypeCheckContext<'_>) -> CT
             }
             TypeSpecifier::Typeof { operand, .. } => {
                 use crate::frontend::parser::ast::TypeofOperand;
+                // eprintln!("[DEBUG TYPEOF] reached typeof handler");
                 match operand {
                     TypeofOperand::Expression(expr) => {
                         let typed = check_expr_inner(expr, ctx);
+                        // eprintln!("[DEBUG TYPEOF] expr type = {:?}", typed.ty);
                         resolved_from_typedef = Some(typed.ty);
                     }
                     TypeofOperand::TypeName(inner_tn) => {
+                        // eprintln!("[DEBUG TYPEOF] type name path");
                         resolved_from_typedef = Some(resolve_type_name(inner_tn, ctx));
                     }
                 }

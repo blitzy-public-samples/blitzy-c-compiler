@@ -410,11 +410,11 @@ pub const CALLER_SAVED_FP: [PhysReg; 20] = [
 ///
 /// The remaining 28 integer registers are allocatable. The register
 /// allocator treats callee-saved registers as higher spill-cost candidates.
-pub const ALLOCATABLE_INT: [PhysReg; 28] = [
-    // Return address (callee may save/restore if needed)
-    X1, // ra
+pub const ALLOCATABLE_INT: [PhysReg; 27] = [
+    // Note: X1 (ra) is intentionally excluded — it holds the return address
+    // after JAL/JALR and must not be clobbered by the register allocator.
     // Temporaries t0–t2
-    X5, X6, X7, // Saved registers s0–s1
+    X5, X6, X7, // Saved registers s0–s1 (frame pointer and first saved reg)
     X8, X9, // Argument registers a0–a7
     X10, X11, X12, X13, X14, X15, X16, X17, // Saved registers s2–s11
     X18, X19, X20, X21, X22, X23, X24, X25, X26, X27, // Temporaries t3–t6
@@ -620,8 +620,8 @@ pub fn is_callee_saved(reg: PhysReg) -> bool {
 pub fn is_allocatable(reg: PhysReg) -> bool {
     let r = reg.0;
     if r < 32 {
-        // Exclude: x0 (zero), x2 (sp), x3 (gp), x4 (tp)
-        !matches!(r, 0 | 2 | 3 | 4)
+        // Exclude: x0 (zero), x1 (ra), x2 (sp), x3 (gp), x4 (tp)
+        !matches!(r, 0 | 1 | 2 | 3 | 4)
     } else if r < 64 {
         // All FP registers are allocatable
         true
@@ -809,7 +809,7 @@ mod tests {
 
     #[test]
     fn test_allocatable_int() {
-        assert_eq!(ALLOCATABLE_INT.len(), 28);
+        assert_eq!(ALLOCATABLE_INT.len(), 27);
         // x0, x2, x3, x4 must not appear
         for reg in &ALLOCATABLE_INT {
             assert!(
@@ -919,7 +919,7 @@ mod tests {
         assert!(!is_allocatable(SP)); // sp
         assert!(!is_allocatable(GP)); // gp
         assert!(!is_allocatable(TP)); // tp
-        assert!(is_allocatable(RA)); // ra is allocatable
+        assert!(!is_allocatable(RA)); // ra is reserved (link register)
         assert!(is_allocatable(T0));
         assert!(is_allocatable(A0));
         assert!(is_allocatable(S0));

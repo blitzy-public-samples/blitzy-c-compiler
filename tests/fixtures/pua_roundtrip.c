@@ -103,7 +103,7 @@ static int verify_bytes(const char *name,
     int i;
     for (i = 0; i < length; i++) {
         if (actual[i] != expected[i]) {
-            fprintf(stderr,
+            printf(
                     "FAIL [%s]: byte %d: expected 0x%02X, got 0x%02X\n",
                     name, i, expected[i], actual[i]);
             return 1;
@@ -130,7 +130,7 @@ int main(void)
         }
         /* Also verify string length (should be 2 + null terminator) */
         if (strlen(pua_core) != 2) {
-            fprintf(stderr,
+            printf(
                     "FAIL [pua_core]: strlen expected 2, got %d\n",
                     (int)strlen(pua_core));
             failures++;
@@ -151,7 +151,7 @@ int main(void)
             failures++;
         }
         if (strlen(pua_range) != 9) {
-            fprintf(stderr,
+            printf(
                     "FAIL [pua_range]: strlen expected 9, got %d\n",
                     (int)strlen(pua_range));
             failures++;
@@ -174,7 +174,7 @@ int main(void)
             failures++;
         }
         if (strlen(pua_mixed) != 12) {
-            fprintf(stderr,
+            printf(
                     "FAIL [pua_mixed]: strlen expected 12, got %d\n",
                     (int)strlen(pua_mixed));
             failures++;
@@ -191,7 +191,7 @@ int main(void)
             unsigned char expected_byte = (unsigned char)(0x80 + i);
             unsigned char actual_byte = (unsigned char)pua_all[i];
             if (actual_byte != expected_byte) {
-                fprintf(stderr,
+                printf(
                         "FAIL [pua_all]: index %d: expected 0x%02X, got 0x%02X\n",
                         i, expected_byte, actual_byte);
                 failures++;
@@ -229,7 +229,7 @@ int main(void)
             failures++;
         }
         if (strlen(pua_repeated) != 6) {
-            fprintf(stderr,
+            printf(
                     "FAIL [pua_repeated]: strlen expected 6, got %d\n",
                     (int)strlen(pua_repeated));
             failures++;
@@ -268,7 +268,7 @@ int main(void)
 
         if ((unsigned char)pua_core[0] != runtime_expected[0] ||
             (unsigned char)pua_core[1] != runtime_expected[1]) {
-            fprintf(stderr,
+            printf(
                     "FAIL [runtime_verify]: pua_core bytes do not match "
                     "runtime-constructed expectation\n");
             failures++;
@@ -281,7 +281,7 @@ int main(void)
     if (failures == 0) {
         printf("PUA round-trip: ALL TESTS PASSED\n");
     } else {
-        fprintf(stderr,
+        printf(
                 "PUA round-trip: %d TEST(S) FAILED\n", failures);
     }
 

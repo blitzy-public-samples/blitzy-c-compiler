@@ -449,6 +449,36 @@ pub struct ModuleLoweringContext {
     /// String interner for zero-cost identifier comparison and
     /// name resolution during symbol lookups.
     pub interner: Interner,
+
+    /// File-scope typedef type mapping.  Populated when a `typedef`
+    /// declaration is processed at file scope so that subsequent
+    /// function bodies can resolve typedef names to their IR types.
+    pub typedef_types: FxHashMap<Symbol, IrType>,
+
+    /// Struct/union definition registry.  Maps a struct/union tag name
+    /// (Symbol) to its resolved CType (which contains the field list).
+    /// Populated when a struct or union definition is encountered during
+    /// lowering so that `__builtin_offsetof(struct S, member)` can
+    /// resolve named struct field offsets.
+    pub struct_defs: FxHashMap<Symbol, CType>,
+
+    /// Maps a struct/union tag name (Symbol) to its ordered field name
+    /// list.  Each entry is a `Vec<Option<Symbol>>` parallel to the
+    /// `IrType::Struct.fields` vector — `Some(name)` for named fields,
+    /// `None` for anonymous or padding fields.
+    ///
+    /// Populated by `register_struct_fields` when a struct or union
+    /// definition is encountered, allowing `infer_field_index` to
+    /// resolve member names to positional indices.
+    pub struct_field_names: FxHashMap<Symbol, Vec<Option<Symbol>>>,
+
+    /// Maps global variable name (Symbol) to its C-level type.
+    ///
+    /// Populated when a global variable with struct/union type is declared,
+    /// enabling `find_struct_tag_for_expr` to resolve struct member access
+    /// on global variables (which aren't tracked in the per-function
+    /// `variable_ctypes` map).
+    pub global_variable_ctypes: FxHashMap<Symbol, CType>,
 }
 
 impl ModuleLoweringContext {
@@ -476,6 +506,10 @@ impl ModuleLoweringContext {
             diagnostics,
             source_map,
             interner,
+            typedef_types: FxHashMap::default(),
+            struct_defs: FxHashMap::default(),
+            struct_field_names: FxHashMap::default(),
+            global_variable_ctypes: FxHashMap::default(),
         }
     }
 
@@ -586,6 +620,69 @@ pub struct LoweringContext<'a> {
     /// GCC computed-goto extension (`&&label`). These labels must remain
     /// as indirect branch targets and cannot be optimized away.
     pub address_taken_labels: FxHashSet<Symbol>,
+
+    /// Maps typedef names to their resolved IR types. Populated when
+    /// `typedef` declarations are encountered during lowering, enabling
+    /// subsequent variable declarations using those typedef names to
+    /// resolve to the correct IR type (e.g. `va_list` → `IrType::Ptr`).
+    pub typedef_types: FxHashMap<Symbol, IrType>,
+
+    /// Maps local variable symbols to their C-level type (`CType`).
+    ///
+    /// This is necessary for struct/union member access: while the IR
+    /// type system tracks field *types*, it does not record field *names*.
+    /// The CType preserves the original struct definition including
+    /// field names and ordering, allowing `infer_field_index` to resolve
+    /// member names to their positional index within the struct.
+    ///
+    /// Populated by `create_local_alloca_with_ctype`.
+    pub variable_ctypes: FxHashMap<Symbol, CType>,
+
+    /// Maps local variable symbols to their IR element types.
+    ///
+    /// Unlike `get_value_type()` which returns `Ptr` for all allocas,
+    /// this map stores the *element type* (the type of the allocated value).
+    /// This is essential for `typeof(expr)` resolution during IR lowering,
+    /// where we need to know what type a variable holds, not that it's a pointer.
+    ///
+    /// Populated by `create_local_alloca`.
+    pub variable_ir_types: FxHashMap<Symbol, IrType>,
+
+    /// Maps pointer variable symbols to the IR type produced when the
+    /// pointer is dereferenced once.
+    ///
+    /// For `int *p`, the pointee type is `I32` — dereferencing `p` gives an int.
+    /// For `int **pp`, the pointee type is `Ptr` — dereferencing `pp` gives a pointer.
+    /// For `char *s`, the pointee type is `I8`.
+    ///
+    /// This is essential because the IR uses opaque pointers (`IrType::Ptr`)
+    /// that don't encode what they point to. Without this map, dereferencing
+    /// a `int **` would incorrectly load 32 bits instead of 64 bits.
+    pub variable_pointee_types: FxHashMap<Symbol, IrType>,
+
+    /// Tracks the "deep" pointee type for multi-level pointer variables.
+    ///
+    /// For `int **pp`, the (first-level) pointee type stored in
+    /// `variable_pointee_types` is `Ptr`, but the *deep* pointee —
+    /// the type obtained after fully dereferencing through all pointer
+    /// layers — is `I32`.
+    ///
+    /// This map is populated during declaration lowering alongside
+    /// `variable_pointee_types` and is consumed by
+    /// `infer_dereference_type` when resolving nested `*(*pp)` patterns.
+    pub variable_deep_pointee_types: FxHashMap<Symbol, IrType>,
+
+    /// Monotonically increasing counter for generating unique synthetic
+    /// tag names for anonymous struct/union definitions.  Each anonymous
+    /// struct encountered during lowering receives a unique internal name
+    /// so its field mapping can be registered and looked up just like
+    /// named structs.
+    pub anon_struct_counter: u32,
+
+    /// Tracks which local variable symbols have unsigned integer types.
+    /// This is needed for correct comparison predicate selection (signed
+    /// vs unsigned) and for shift/division operations.
+    pub variable_unsigned: FxHashSet<Symbol>,
 }
 
 impl<'a> LoweringContext<'a> {
@@ -626,6 +723,8 @@ impl<'a> LoweringContext<'a> {
     pub fn create_local_alloca(&mut self, name: Symbol, ir_type: IrType) -> ValueId {
         // Resolve the name to a string, copying to avoid borrow conflicts.
         let name_str = self.module_ctx.interner.resolve(name).to_string();
+        // Record the element type before moving ir_type into the alloca.
+        self.variable_ir_types.insert(name, ir_type.clone());
         let alloca_id = self
             .builder
             .build_alloca(self.function, ir_type, Some(&name_str));
@@ -831,6 +930,11 @@ pub fn create_function_lowering_context<'a>(
     let entry_id = function.entry_block().id;
     builder.set_insert_point(entry_id);
 
+    // Seed the per-function typedef map with all file-scope typedefs
+    // so that function bodies can resolve typedef names registered at
+    // the translation-unit level (e.g. `typedef __builtin_va_list va_list;`).
+    let initial_typedefs = module_ctx.typedef_types.clone();
+
     LoweringContext {
         builder,
         function,
@@ -842,6 +946,13 @@ pub fn create_function_lowering_context<'a>(
         recursion_depth: 0,
         max_recursion_depth: MAX_RECURSION_DEPTH,
         address_taken_labels: FxHashSet::default(),
+        typedef_types: initial_typedefs,
+        variable_ctypes: FxHashMap::default(),
+        variable_ir_types: FxHashMap::default(),
+        variable_pointee_types: FxHashMap::default(),
+        variable_deep_pointee_types: FxHashMap::default(),
+        anon_struct_counter: 0,
+        variable_unsigned: FxHashSet::default(),
     }
 }
 
@@ -1109,6 +1220,7 @@ fn lower_top_level_declaration(
             init,
             linkage,
             storage_class,
+            is_const,
             attrs,
             span,
         } => lower_global_variable_decl(
@@ -1119,16 +1231,66 @@ fn lower_top_level_declaration(
             init.as_ref(),
             *linkage,
             *storage_class,
+            *is_const,
             attrs,
             *span,
         ),
 
         // Type definitions produce no IR output — they are resolved
-        // during semantic analysis and type lowering.
-        CheckedDeclaration::Typedef { .. }
-        | CheckedDeclaration::StructDef { .. }
-        | CheckedDeclaration::UnionDef { .. }
-        | CheckedDeclaration::EnumDef { .. } => Ok(()),
+        // during semantic analysis and type lowering.  However, we
+        // record the typedef→IrType mapping so that function bodies
+        // referencing the typedef name resolve to the correct IR type.
+        CheckedDeclaration::Typedef { name, ty, .. } => {
+            let ir_ty = c_type_to_ir_type(ty, &module_ctx.target).unwrap_or(IrType::I32);
+            module_ctx.typedef_types.insert(*name, ir_ty);
+            Ok(())
+        }
+        CheckedDeclaration::StructDef { name, ty, .. } => {
+            // Register named struct definitions so __builtin_offsetof
+            // can resolve field offsets for named struct references.
+            if let Some(name_sym) = name {
+                module_ctx.struct_defs.insert(*name_sym, ty.clone());
+                // Also populate struct_field_names so that infer_field_index
+                // works when function bodies reference this struct.
+                if let CType::Struct {
+                    fields: ref cfields,
+                    ..
+                } = ty
+                {
+                    let field_names: Vec<Option<Symbol>> = cfields
+                        .iter()
+                        .map(|f| match &f.name {
+                            Some(n) if !n.is_empty() => Some(module_ctx.interner.intern(n)),
+                            _ => None,
+                        })
+                        .collect();
+                    module_ctx.struct_field_names.insert(*name_sym, field_names);
+                }
+            }
+            Ok(())
+        }
+        CheckedDeclaration::UnionDef { name, ty, .. } => {
+            if let Some(name_sym) = name {
+                module_ctx.struct_defs.insert(*name_sym, ty.clone());
+                // Populate struct_field_names for union fields too.
+                if let CType::Union {
+                    fields: ref cfields,
+                    ..
+                } = ty
+                {
+                    let field_names: Vec<Option<Symbol>> = cfields
+                        .iter()
+                        .map(|f| match &f.name {
+                            Some(n) if !n.is_empty() => Some(module_ctx.interner.intern(n)),
+                            _ => None,
+                        })
+                        .collect();
+                    module_ctx.struct_field_names.insert(*name_sym, field_names);
+                }
+            }
+            Ok(())
+        }
+        CheckedDeclaration::EnumDef { .. } => Ok(()),
 
         // Static assertions were validated during Phase 5; no IR output.
         CheckedDeclaration::StaticAssert { .. } => Ok(()),
@@ -1182,6 +1344,11 @@ fn lower_function_definition(
     // --- 2. Create the IrFunction ---
     let mut ir_func = IrFunction::new(func_name.clone(), ir_return_ty.clone(), ir_params);
 
+    // Propagate the variadic flag from the AST function declaration.
+    // This is essential for the backend to generate the register save area
+    // required by the x86-64 System V ABI for variadic functions.
+    ir_func.is_variadic = variadic;
+
     // Apply function attributes from validated GCC attributes.
     let func_attrs = build_function_attributes(attrs);
     ir_func.attributes = func_attrs;
@@ -1189,6 +1356,34 @@ fn lower_function_definition(
     // Set linkage.
     let ir_linkage = map_sema_linkage_to_ir(linkage, has_weak_attr(attrs), false);
     ir_func.linkage = ir_linkage;
+
+    // --- 2b. Pre-register the function as a global symbol ---
+    // This must happen BEFORE the body is lowered so that recursive
+    // function calls (e.g. `factorial(n-1)` inside `factorial`) can
+    // resolve the function name in the global symbol table.
+    {
+        let func_ir_type_pre = IrType::Function {
+            return_type: Box::new(ir_return_ty.clone()),
+            param_types: params
+                .iter()
+                .map(|p| c_type_to_ir_type(&p.ty, target))
+                .collect::<Result<Vec<_>, _>>()?,
+            is_variadic: variadic,
+        };
+        let sym_info_pre = GlobalSymbolInfo {
+            name,
+            ir_type: func_ir_type_pre,
+            linkage: map_sema_linkage_to_ir(linkage, has_weak_attr(attrs), false),
+            is_defined: true,
+            is_tls: false,
+            section: get_section_attr(attrs),
+            visibility: get_visibility_attr(attrs),
+            alignment: None,
+        };
+        // Use register_global_symbol which won't fail on duplicate if
+        // it was already declared (forward declaration).
+        let _ = module_ctx.register_global_symbol(sym_info_pre);
+    }
 
     // --- 3. Create the lowering context ---
     {
@@ -1203,6 +1398,35 @@ fn lower_function_definition(
                 // Store the incoming parameter value into the alloca.
                 let param_value = ValueId(i as u32);
                 ctx.builder.build_store(ctx.function, param_value, alloca);
+
+                // Record the parameter's CType so that downstream
+                // lowering (e.g. array subscript, member access, sizeof)
+                // can look up the full C-level type information for
+                // parameters — not just local variables.
+                ctx.variable_ctypes.insert(param_name, param.ty.clone());
+
+                // Record pointee type for pointer parameters so that
+                // dereferencing multi-level pointers generates correct
+                // load widths (e.g. `int **pp` → `*pp` loads 8 bytes).
+                if let CType::Pointer(ref inner) = param.ty {
+                    if let Ok(pointee_ir) = c_type_to_ir_type(inner, &ctx.module_ctx.target) {
+                        ctx.variable_pointee_types
+                            .insert(param_name, pointee_ir.clone());
+
+                        // For multi-level pointer parameters (e.g. `int **pp`),
+                        // also record the deep pointee (the base element type
+                        // after all pointer layers).
+                        if pointee_ir == IrType::Ptr {
+                            if let CType::Pointer(ref deep_inner) = **inner {
+                                if let Ok(deep_ir) =
+                                    c_type_to_ir_type(deep_inner, &ctx.module_ctx.target)
+                                {
+                                    ctx.variable_deep_pointee_types.insert(param_name, deep_ir);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -1238,27 +1462,10 @@ fn lower_function_definition(
         }
     }
 
-    // --- 8. Register the global symbol and add to module ---
-    let func_ir_type = IrType::Function {
-        return_type: Box::new(ir_return_ty),
-        param_types: params
-            .iter()
-            .map(|p| c_type_to_ir_type(&p.ty, &module_ctx.target))
-            .collect::<Result<Vec<_>, _>>()?,
-        is_variadic: variadic,
-    };
-
-    let sym_info = GlobalSymbolInfo {
-        name,
-        ir_type: func_ir_type,
-        linkage: map_sema_linkage_to_ir(linkage, has_weak_attr(attrs), false),
-        is_defined: true,
-        is_tls: false,
-        section: get_section_attr(attrs),
-        visibility: get_visibility_attr(attrs),
-        alignment: None,
-    };
-    module_ctx.register_global_symbol(sym_info)?;
+    // --- 8. Add the function to the module ---
+    // The global symbol was already pre-registered in step 2b (before
+    // the body was lowered) to enable recursive calls.  We only need
+    // to add the completed IR function to the module here.
     module_ctx.module.add_function(ir_func);
 
     Ok(())
@@ -1328,6 +1535,7 @@ fn lower_global_variable_decl(
     init: Option<&sema::CheckedInitializer>,
     linkage: SemaLinkage,
     storage_class: SemaStorageClass,
+    is_const: bool,
     attrs: &[ValidatedAttribute],
     _span: Span,
 ) -> Result<(), LoweringError> {
@@ -1343,11 +1551,8 @@ fn lower_global_variable_decl(
     // Set linkage.
     global.linkage = map_sema_linkage_to_ir(linkage, entry.attributes.is_weak, entry.is_tentative);
 
-    // Set const qualifier.
-    // A variable declared with `const` at file scope goes into .rodata.
-    // We check the CType qualifiers are not directly available here,
-    // so we rely on the semantic analysis having propagated constness.
-    // For now, use a conservative heuristic based on storage class.
+    // Set const qualifier — places the variable in .rodata instead of .data.
+    global.is_const = is_const;
 
     // Set section from attribute.
     global.section = get_section_attr(attrs);
@@ -1365,6 +1570,14 @@ fn lower_global_variable_decl(
         let constant = lower_initializer_to_constant(checked_init, ty, module_ctx)?;
         global.initializer = Some(constant);
     }
+
+    // Track the C-level type for this global variable so that
+    // struct member access (e.g. `p_global.x`) can resolve field
+    // indices even though globals aren't in the per-function
+    // `variable_ctypes` map.
+    module_ctx
+        .global_variable_ctypes
+        .insert(entry.name, ty.clone());
 
     // Register the global symbol.
     let sym_info = GlobalSymbolInfo {
@@ -1405,6 +1618,24 @@ pub(crate) fn lower_initializer_to_constant(
 ) -> Result<Constant, LoweringError> {
     match init {
         sema::CheckedInitializer::Scalar(typed_expr) => {
+            // Special case: string literal initializing a character array.
+            // The sema produces Scalar(StringLiteral) for `char arr[] = "hello"`,
+            // but we must expand the string bytes directly into the array
+            // rather than creating a GlobalRef (which would be a pointer).
+            if let CType::Array { element, size } = ty {
+                if is_char_element_type(element) {
+                    if let crate::frontend::parser::ast::Expression::StringLiteral {
+                        value, ..
+                    } = &typed_expr.expr
+                    {
+                        return expand_string_literal_to_char_array(
+                            value,
+                            *size,
+                            &module_ctx.target,
+                        );
+                    }
+                }
+            }
             lower_scalar_init_to_constant(typed_expr, module_ctx)
         }
 
@@ -1444,10 +1675,63 @@ pub(crate) fn lower_initializer_to_constant(
 /// Only compile-time constant expressions can appear in global initializers.
 /// If the expression is not a constant, a [`LoweringError::NonConstantStaticInit`]
 /// is returned.
+/// Returns `true` if `ty` is a character type suitable for string literal
+/// initialization: `char`, `signed char`, or `unsigned char`.
+fn is_char_element_type(ty: &CType) -> bool {
+    matches!(ty, CType::Char { .. })
+}
+
+/// Expands a string literal's raw bytes into a `Constant::Array` of I8 elements.
+///
+/// This is used for `char arr[] = "hello"` where the array must contain the
+/// actual byte values (including null terminator and zero-padding), NOT a
+/// pointer to a `.rodata` string.
+fn expand_string_literal_to_char_array(
+    bytes: &[u8],
+    declared_size: Option<usize>,
+    target: &crate::common::target::Target,
+) -> Result<Constant, LoweringError> {
+    let _ = target; // reserved for future use
+                    // Effective array size: declared size or string length + 1 (null terminator).
+    let array_len = declared_size.unwrap_or(bytes.len() + 1);
+
+    let mut elements = Vec::with_capacity(array_len);
+    for i in 0..array_len {
+        let byte_val = if i < bytes.len() {
+            bytes[i] as i128
+        } else {
+            0i128 // null terminator or zero-padding
+        };
+        elements.push(Constant::Int {
+            ty: IrType::I8,
+            value: byte_val,
+        });
+    }
+
+    Ok(Constant::Array {
+        elements,
+        ty: IrType::Array {
+            element: Box::new(IrType::I8),
+            count: array_len,
+        },
+    })
+}
+
 fn lower_scalar_init_to_constant(
     typed_expr: &TypedExpression,
     module_ctx: &mut ModuleLoweringContext,
 ) -> Result<Constant, LoweringError> {
+    // Function designators and address-of-global expressions are compile-time
+    // address constants per C11 §6.6p9. Recognise identifiers that refer to
+    // functions (or global symbols) before the generic is_constant check so
+    // that `func_ptr table[] = { func_a, func_b };` works correctly.
+    if let ast::Expression::Identifier { name, .. } = &typed_expr.expr {
+        if typed_expr.ty.is_function() || typed_expr.is_constant {
+            let sym_name = module_ctx.interner.resolve(*name).to_string();
+            return Ok(Constant::GlobalRef { name: sym_name });
+        }
+    }
+
     // Check if the expression is a compile-time constant.
     if !typed_expr.is_constant {
         return Err(LoweringError::NonConstantStaticInit {
@@ -1485,13 +1769,113 @@ fn lower_scalar_init_to_constant(
             })
         }
 
-        // For other constant expressions, produce a zero as a fallback.
-        // The detailed constant evaluation is handled by the semantic
-        // analysis pass; we trust the `is_constant` flag here.
+        ast::Expression::CharLiteral { value, .. } => {
+            // Character literals resolve to their integer value.
+            Ok(Constant::Int {
+                ty: ir_type,
+                value: *value as i128,
+            })
+        }
+
+        // Cast expressions wrapping a constant (e.g. `(unsigned char)0x80`)
+        ast::Expression::Cast { operand, .. } => lower_scalar_init_to_constant(
+            &TypedExpression {
+                expr: *operand.clone(),
+                ty: typed_expr.ty.clone(),
+                is_lvalue: false,
+                is_constant: true,
+                span: typed_expr.span,
+            },
+            module_ctx,
+        ),
+
+        // Unary operations on constants (e.g., `-1`, `~0`).
+        ast::Expression::UnaryOp { op, operand, .. } => {
+            let inner = lower_scalar_init_to_constant(
+                &TypedExpression {
+                    expr: *operand.clone(),
+                    ty: typed_expr.ty.clone(),
+                    is_lvalue: false,
+                    is_constant: true,
+                    span: typed_expr.span,
+                },
+                module_ctx,
+            )?;
+            match (op, &inner) {
+                (ast::UnaryOperator::Neg, Constant::Int { ty: t, value: v }) => Ok(Constant::Int {
+                    ty: t.clone(),
+                    value: v.wrapping_neg(),
+                }),
+                (ast::UnaryOperator::BitNot, Constant::Int { ty: t, value: v }) => {
+                    Ok(Constant::Int {
+                        ty: t.clone(),
+                        value: !v,
+                    })
+                }
+                (ast::UnaryOperator::Neg, Constant::Float { ty: t, value: v }) => {
+                    Ok(Constant::Float {
+                        ty: t.clone(),
+                        value: -v,
+                    })
+                }
+                _ => Ok(inner),
+            }
+        }
+
+        // Binary operations on constants (e.g. `sizeof(int) * 4`).
+        ast::Expression::BinaryOp {
+            op, left, right, ..
+        } => {
+            let l_val = lower_scalar_init_to_constant(
+                &TypedExpression {
+                    expr: *left.clone(),
+                    ty: typed_expr.ty.clone(),
+                    is_lvalue: false,
+                    is_constant: true,
+                    span: typed_expr.span,
+                },
+                module_ctx,
+            )?;
+            let r_val = lower_scalar_init_to_constant(
+                &TypedExpression {
+                    expr: *right.clone(),
+                    ty: typed_expr.ty.clone(),
+                    is_lvalue: false,
+                    is_constant: true,
+                    span: typed_expr.span,
+                },
+                module_ctx,
+            )?;
+            match (&l_val, &r_val) {
+                (Constant::Int { ty: t, value: lv }, Constant::Int { value: rv, .. }) => {
+                    let result = match op {
+                        ast::BinaryOperator::Add => lv.wrapping_add(*rv),
+                        ast::BinaryOperator::Sub => lv.wrapping_sub(*rv),
+                        ast::BinaryOperator::Mul => lv.wrapping_mul(*rv),
+                        ast::BinaryOperator::Div if *rv != 0 => lv.wrapping_div(*rv),
+                        ast::BinaryOperator::Mod if *rv != 0 => lv.wrapping_rem(*rv),
+                        ast::BinaryOperator::Shl => lv.wrapping_shl(*rv as u32),
+                        ast::BinaryOperator::Shr => lv.wrapping_shr(*rv as u32),
+                        ast::BinaryOperator::BitAnd => lv & rv,
+                        ast::BinaryOperator::BitOr => lv | rv,
+                        ast::BinaryOperator::BitXor => lv ^ rv,
+                        _ => 0,
+                    };
+                    Ok(Constant::Int {
+                        ty: t.clone(),
+                        value: result,
+                    })
+                }
+                _ => Ok(Constant::int_zero(ir_type)),
+            }
+        }
+
+        // For other constant expressions, attempt to evaluate them.
+        // Fall back to zero only if we truly cannot interpret them.
         _ => {
             // Default: produce a zero value of the appropriate type.
-            // This is safe because the sema pass has already validated
-            // the expression as a compile-time constant.
+            // This handles rare cases where the sema pass marked an
+            // expression as constant but we lack a specific handler.
             Ok(Constant::int_zero(ir_type))
         }
     }

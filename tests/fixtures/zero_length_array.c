@@ -305,7 +305,7 @@ int main(void) {
         size_t sz = sizeof(struct aligned_msg);
         failures += check(
             "sizeof(struct aligned_msg) is multiple of alignof(double)",
-            (sz % sizeof(double)) == 0
+            (sz % _Alignof(double)) == 0
         );
         /* The zero-length array should NOT make the struct larger than
          * what padding alone would require. */

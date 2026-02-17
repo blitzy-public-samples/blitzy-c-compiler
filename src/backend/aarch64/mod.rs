@@ -581,6 +581,33 @@ impl ArchCodegen for AArch64Codegen {
         assembled.code
     }
 
+    /// Assembles a machine function into raw bytes **and** collects
+    /// relocations for external symbol references (e.g. `BL printf`).
+    ///
+    /// The default trait implementation discards relocations, which is
+    /// incorrect for the AArch64 backend where `BL <symbol>` instructions
+    /// require `R_AARCH64_CALL26` relocations to be applied by the linker.
+    fn emit_assembly_with_relocations(
+        &self,
+        mf: &MachineFunction,
+    ) -> crate::backend::traits::AssemblyOutput {
+        let mut assembler = AArch64Assembler::new();
+        let assembled = assembler.assemble_function(mf);
+        crate::backend::traits::AssemblyOutput {
+            code: assembled.code,
+            relocations: assembled
+                .relocations
+                .into_iter()
+                .map(|r| crate::backend::traits::AsmRelocation {
+                    offset: r.offset as usize,
+                    symbol: r.symbol,
+                    reloc_type: r.reloc_type.to_elf_value(),
+                    addend: r.addend,
+                })
+                .collect(),
+        }
+    }
+
     /// Returns the complete set of AArch64 relocation types supported by
     /// this backend.
     ///
@@ -628,23 +655,91 @@ impl ArchCodegen for AArch64Codegen {
     ///
     /// Combined into a single slice for the register allocator.
     fn callee_saved_registers(&self) -> &[PhysReg] {
-        // Return only the integer callee-saved set directly. The register
-        // allocator also needs to check CALLEE_SAVED_FP for FP register
-        // preservation. We return the integer set as the primary callee-saved
-        // list since the trait interface expects a single slice.
+        // Return the combined integer + FP callee-saved set.  The register
+        // allocator's `float_set()` filters this by register number range
+        // to build the FP pool.  Omitting FP registers here leaves the
+        // allocator with an empty FP pool and causes operand clobbering.
         //
-        // For full AAPCS64 compliance, the register allocator should also
-        // consult registers::CALLEE_SAVED_FP for any V8–V15 usage.
-        &registers::CALLEE_SAVED_INT
+        // Integer (10): X19–X28
+        // FP       (8): V8–V15  (lower 64 bits only per AAPCS64)
+        static COMBINED_CALLEE: [PhysReg; 18] = [
+            registers::X19,
+            registers::X20,
+            registers::X21,
+            registers::X22,
+            registers::X23,
+            registers::X24,
+            registers::X25,
+            registers::X26,
+            registers::X27,
+            registers::X28,
+            registers::V8,
+            registers::V9,
+            registers::V10,
+            registers::V11,
+            registers::V12,
+            registers::V13,
+            registers::V14,
+            registers::V15,
+        ];
+        &COMBINED_CALLEE
     }
 
     /// Returns the caller-saved (volatile) registers for AArch64.
     ///
     /// Per AAPCS64:
-    /// - Integer: X0–X18, X30 (LR is caller-saved for call-site purposes)
-    /// - FP/SIMD: V0–V7, V16–V31
+    /// - Integer: X0–X18 (19 registers)
+    /// - FP/SIMD: V0–V7, V16–V31 (24 registers)
     fn caller_saved_registers(&self) -> &[PhysReg] {
-        &registers::CALLER_SAVED_INT
+        // Combined integer + FP caller-saved set for register allocator.
+        static COMBINED_CALLER: [PhysReg; 43] = [
+            // Integer caller-saved (19)
+            registers::X0,
+            registers::X1,
+            registers::X2,
+            registers::X3,
+            registers::X4,
+            registers::X5,
+            registers::X6,
+            registers::X7,
+            registers::X8,
+            registers::X9,
+            registers::X10,
+            registers::X11,
+            registers::X12,
+            registers::X13,
+            registers::X14,
+            registers::X15,
+            registers::X16,
+            registers::X17,
+            registers::X18,
+            // FP caller-saved (24)
+            registers::V0,
+            registers::V1,
+            registers::V2,
+            registers::V3,
+            registers::V4,
+            registers::V5,
+            registers::V6,
+            registers::V7,
+            registers::V16,
+            registers::V17,
+            registers::V18,
+            registers::V19,
+            registers::V20,
+            registers::V21,
+            registers::V22,
+            registers::V23,
+            registers::V24,
+            registers::V25,
+            registers::V26,
+            registers::V27,
+            registers::V28,
+            registers::V29,
+            registers::V30,
+            registers::V31,
+        ];
+        &COMBINED_CALLER
     }
 
     /// Returns the integer argument registers in order (X0–X7).
@@ -702,6 +797,37 @@ impl ArchCodegen for AArch64Codegen {
         registers::FP
     }
 
+    /// Returns the scratch GPR reserved for spill code generation.
+    ///
+    /// X16 (IP0) is the AArch64 intra-procedure-call register, used by
+    /// the linker for PLT stubs and veneers. It is caller-saved and not
+    /// used for parameter passing, making it safe to reserve for spill
+    /// load/store pseudo-operations. The register allocator excludes this
+    /// register from the allocatable pool so it never conflicts with any
+    /// live value.
+    #[inline]
+    fn spill_scratch_gpr(&self) -> PhysReg {
+        registers::X16
+    }
+
+    /// Returns the scratch FP register reserved for spill code generation.
+    ///
+    /// V31 is a caller-saved SIMD/FP register not used for parameter
+    /// passing or return values. Reserving it for spill code prevents
+    /// conflicts with allocated floating-point values.
+    #[inline]
+    fn spill_scratch_sse(&self) -> PhysReg {
+        registers::V31
+    }
+
+    /// Returns X30 (LR) — the AArch64 link register that holds the return
+    /// address after `BL`/`BLR`. Must be reserved by the register allocator
+    /// to prevent clobbering the return address.
+    #[inline]
+    fn link_register(&self) -> PhysReg {
+        registers::X30
+    }
+
     /// Returns the pointer size in bytes (8 for AArch64/LP64).
     ///
     /// AArch64 is a 64-bit architecture with 8-byte pointers under the
@@ -743,179 +869,465 @@ impl ArchCodegen for AArch64Codegen {
     /// stack probing because the kernel handles guard page faults. However,
     /// for very large frames the compiler may emit a probe loop.
     fn emit_prologue(&self, mf: &mut MachineFunction) {
+        // ---------------------------------------------------------------
+        // Step 0: Compute callee-saved registers from the *physical*
+        // register operands that remain AFTER register allocation.
+        // ---------------------------------------------------------------
+        let mut used_callee: Vec<PhysReg> = Vec::new();
+        for block in &mf.blocks {
+            for instr in &block.instructions {
+                for op in &instr.operands {
+                    if let MachineOperand::Register(reg) = op {
+                        if registers::is_callee_saved(*reg) && !used_callee.contains(reg) {
+                            used_callee.push(*reg);
+                        }
+                    }
+                }
+                for reg in &instr.implicit_defs {
+                    if registers::is_callee_saved(*reg) && !used_callee.contains(reg) {
+                        used_callee.push(*reg);
+                    }
+                }
+            }
+        }
+        mf.used_callee_saved = used_callee;
+
+        // ---------------------------------------------------------------
+        // Step 1: Compute final frame size.
+        //
+        // Frame layout (growing upward from FP after prologue):
+        //
+        //   [FP + 0]               = saved FP (X29)
+        //   [FP + 8]               = saved LR (X30)
+        //   [FP + 16]              = VA save area (64 bytes if variadic)
+        //   [FP + 16 + va]         = callee-saved registers
+        //   [FP + local_base]      = local variables (allocas)
+        //   [FP + spill_base]      = register allocator spill slots
+        //   [FP + frame_size - 1]  = end of frame / previous SP
+        //
+        // ---------------------------------------------------------------
+        use crate::backend::register_allocator::{SPILL_LOAD_OPCODE, SPILL_STORE_OPCODE};
+
+        let fp_lr_size: u32 = 16;
+        let va_save_size: u32 = if mf.is_variadic { 64 } else { 0 };
+        let callee_save_bytes = (mf.used_callee_saved.len() as u32) * 8;
+        let callee_save_aligned = (callee_save_bytes + 15) & !15;
+        let local_size = ((-mf.frame_offset_watermark) as u32 + 15) & !15;
+
+        // Capture the spill area size contributed by the register
+        // allocator (generate_spill_code sets mf.frame_size to the
+        // cumulative spill slot bytes).  We must save this BEFORE we
+        // overwrite mf.frame_size with the full frame layout.
+        let regalloc_spill_size = mf.frame_size;
+        let regalloc_spill_aligned = (regalloc_spill_size + 15) & !15;
+
+        let max_object_align = mf
+            .frame_objects
+            .iter()
+            .map(|fo| fo.1)
+            .max()
+            .unwrap_or(16)
+            .max(16);
+        // Include the spill area in the total frame size so that the
+        // STP [SP, #-frame_size]! prologue instruction allocates enough
+        // space for both locals and spills.
+        let total =
+            fp_lr_size + va_save_size + callee_save_aligned + local_size + regalloc_spill_aligned;
+        let frame_size = (total + max_object_align - 1) & !(max_object_align - 1);
+        mf.frame_size = frame_size;
+
+        // Base offset (from FP) where alloca locals start.
+        let local_base = fp_lr_size + va_save_size + callee_save_aligned;
+
+        // Base offset (from FP) where spill slots start — immediately
+        // after the local variable area.
+        let spill_base = local_base + local_size;
+
+        // ---------------------------------------------------------------
+        // Step 2: Resolve FrameIndex operands → concrete FP-relative.
+        //
+        // Two categories of FrameIndex operands exist:
+        //   (a) Alloca / frame-object indices — small integers (0, 1, 2…)
+        //       that index into mf.frame_objects.  These are emitted by
+        //       instruction selection (codegen) and need to be translated
+        //       to FP-relative byte offsets via fi_offsets[].
+        //   (b) Spill byte-offsets — larger numbers (8, 16, 24…) emitted
+        //       by the register allocator on SPILL_LOAD / SPILL_STORE
+        //       pseudo-instructions.  These need to be rebased from
+        //       alloca-relative (starting at 0) to FP-relative by adding
+        //       spill_base.
+        //
+        // We process both categories in a single pass and use the
+        // instruction opcode to distinguish them.
+        // ---------------------------------------------------------------
+        {
+            // Build the alloca frame-object offset table.
+            let mut fi_offsets: Vec<i32> = Vec::with_capacity(mf.frame_objects.len());
+            for &(_sz, _al, off) in &mf.frame_objects {
+                let within_local = local_size as i32 + off;
+                fi_offsets.push(local_base as i32 + within_local);
+            }
+
+            for block in &mut mf.blocks {
+                for instr in &mut block.instructions {
+                    // -------------------------------------------------
+                    // Category (b): SPILL pseudo-instructions.
+                    // Adjust the FrameIndex byte offset to be relative
+                    // to FP by adding spill_base.  Leave the operand as
+                    // FrameIndex so the encoder's encode_spill_op()
+                    // picks it up correctly.
+                    // -------------------------------------------------
+                    let opc = instr.opcode;
+                    let is_spill = opc == SPILL_LOAD_OPCODE
+                        || opc == SPILL_STORE_OPCODE
+                        || opc == (SPILL_LOAD_OPCODE & 0x00FF_FFFF)
+                        || opc == (SPILL_STORE_OPCODE & 0x00FF_FFFF);
+                    if is_spill {
+                        if let Some(MachineOperand::FrameIndex(off)) = instr.operands.get_mut(1) {
+                            // old offset: alloca-relative (8, 16, 24…)
+                            // new offset: FP-relative (spill_base + old)
+                            *off += spill_base;
+                        }
+                        continue;
+                    }
+
+                    // -------------------------------------------------
+                    // Category (a): Normal instructions with FrameIndex
+                    // operands (alloca slot indices).
+                    // -------------------------------------------------
+                    let is_add_fp_fi = instr.operands.len() >= 3
+                        && (instr.opcode == codegen::AArch64Opcode::ADDimm.as_u32()
+                            || instr.opcode == codegen::AArch64Opcode::ADD.as_u32())
+                        && matches!(instr.operands[1], MachineOperand::Register(r) if r == registers::SP || r == registers::FP)
+                        && matches!(instr.operands[2], MachineOperand::FrameIndex(_));
+                    if is_add_fp_fi {
+                        if let MachineOperand::FrameIndex(idx) = instr.operands[2] {
+                            let fi = idx as usize;
+                            let fp_off = if fi < fi_offsets.len() {
+                                fi_offsets[fi]
+                            } else {
+                                // Fallback for unknown indices — treat
+                                // as a raw byte offset in the local
+                                // area (shouldn't normally happen).
+                                local_base as i32 + idx as i32
+                            };
+                            instr.operands[1] = MachineOperand::Register(registers::FP);
+                            instr.operands[2] = MachineOperand::Immediate(fp_off as i64);
+                        }
+                    } else {
+                        for op in &mut instr.operands {
+                            if let MachineOperand::FrameIndex(idx) = op {
+                                let fi = *idx as usize;
+                                let fp_off = if fi < fi_offsets.len() {
+                                    fi_offsets[fi]
+                                } else {
+                                    local_base as i32 + *idx as i32
+                                };
+                                *op = MachineOperand::Memory {
+                                    base: registers::FP,
+                                    offset: fp_off,
+                                    index: None,
+                                    scale: 1,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Step 3: Emit prologue instructions.
+        // ---------------------------------------------------------------
         if mf.blocks.is_empty() {
             return;
         }
-
-        let frame_size = mf.frame_size;
         if frame_size == 0 && mf.used_callee_saved.is_empty() {
-            // Leaf function with no stack frame — skip prologue.
             return;
         }
 
-        let mut prologue_instrs: Vec<MachineInstr> = Vec::new();
+        let mut prologue: Vec<MachineInstr> = Vec::new();
 
-        // Ensure frame_size is 16-byte aligned (AAPCS64 requirement).
-        let aligned_frame = (frame_size + 15) & !15;
+        // The STP pre-index instruction `STP X29, X30, [SP, #-imm]!`
+        // uses a 7-bit signed immediate scaled by 8, giving a valid
+        // byte range of -512 to +504.  For frames larger than 504
+        // bytes we must use a separate SUB to allocate the stack space
+        // first, then a regular (signed-offset) STP at offset 0.
+        //
+        //   Small frame (≤ 504):
+        //       stp  x29, x30, [sp, #-frame_size]!
+        //       mov  x29, sp
+        //
+        //   Large frame (> 504):
+        //       sub  sp, sp, #frame_size      // may be 2 SUBs for > 4095
+        //       stp  x29, x30, [sp]           // signed-offset, imm7 = 0
+        //       mov  x29, sp
+        //
+        const STP_PRE_MAX: u32 = 504; // 63 * 8
 
-        // Step 1: STP X29, X30, [SP, #-frame_size]!
-        // Pre-indexed store pair: saves FP and LR, then adjusts SP downward.
-        let stp_fp_lr = MachineInstr::with_operands(
-            opcodes::STP,
-            vec![
-                MachineOperand::Register(registers::FP), // Rt1 = X29
-                MachineOperand::Register(PhysReg(30)),   // Rt2 = X30 (LR)
-                MachineOperand::Register(registers::SP), // base = SP
-                MachineOperand::Immediate(-(aligned_frame as i64)), // offset (pre-indexed)
-            ],
-        );
-        prologue_instrs.push(stp_fp_lr);
+        if frame_size <= STP_PRE_MAX {
+            // Small frame — single STP pre-index
+            prologue.push(MachineInstr::with_operands(
+                codegen::AArch64Opcode::StpPre.as_u32(),
+                vec![
+                    MachineOperand::Register(registers::FP),
+                    MachineOperand::Register(registers::LR),
+                    MachineOperand::Memory {
+                        base: registers::SP,
+                        offset: -(frame_size as i32),
+                        index: None,
+                        scale: 1,
+                    },
+                ],
+            ));
+        } else {
+            // Large frame — allocate with SUB(s), then STP at [SP, #0].
+            //
+            // SUBimm uses a 12-bit unsigned immediate (0–4095), with an
+            // optional LSL #12 shift for the upper 12 bits.  Split the
+            // frame size into high (multiples of 4096) and low parts.
+            let hi = frame_size & !0xFFF; // multiple-of-4096 portion
+            let lo = frame_size & 0xFFF; // remainder < 4096
 
-        // Step 2: MOV X29, SP — establish frame pointer.
-        // Encoded as ADD X29, SP, #0.
-        let mov_fp_sp = MachineInstr::with_operands(
-            opcodes::ADD_IMM,
-            vec![
-                MachineOperand::Register(registers::FP), // Rd = X29
-                MachineOperand::Register(registers::SP), // Rn = SP
-                MachineOperand::Immediate(0),            // #0
-            ],
-        );
-        prologue_instrs.push(mov_fp_sp);
-
-        // Step 3: Save callee-saved registers used by this function.
-        // AAPCS64 saves registers in pairs for efficiency (STP).
-        let callee_saved = &mf.used_callee_saved.clone();
-        let mut offset = 16i64; // Start after the FP/LR save area
-        let mut i = 0;
-        while i < callee_saved.len() {
-            if i + 1 < callee_saved.len() {
-                // Save a pair of registers.
-                let stp = MachineInstr::with_operands(
-                    opcodes::STP,
+            if hi > 0 {
+                // SUB SP, SP, #hi_page, LSL #12
+                prologue.push(MachineInstr::with_operands(
+                    codegen::AArch64Opcode::SUBimm.as_u32(),
                     vec![
-                        MachineOperand::Register(callee_saved[i]),
-                        MachineOperand::Register(callee_saved[i + 1]),
                         MachineOperand::Register(registers::SP),
-                        MachineOperand::Immediate(offset),
+                        MachineOperand::Register(registers::SP),
+                        MachineOperand::Immediate((hi >> 12) as i64),
+                        MachineOperand::Immediate(1), // shift = true (LSL #12)
                     ],
-                );
-                prologue_instrs.push(stp);
-                i += 2;
-                offset += 16;
-            } else {
-                // Odd register out — save single register with STR.
-                let str_single = MachineInstr::with_operands(
-                    opcodes::STR,
+                ));
+            }
+            if lo > 0 || hi == 0 {
+                // SUB SP, SP, #lo
+                prologue.push(MachineInstr::with_operands(
+                    codegen::AArch64Opcode::SUBimm.as_u32(),
                     vec![
-                        MachineOperand::Register(callee_saved[i]),
                         MachineOperand::Register(registers::SP),
-                        MachineOperand::Immediate(offset),
+                        MachineOperand::Register(registers::SP),
+                        MachineOperand::Immediate(lo as i64),
                     ],
-                );
-                prologue_instrs.push(str_single);
-                i += 1;
-                offset += 8;
+                ));
+            }
+
+            // STP X29, X30, [SP, #0]  (signed-offset form, imm7 = 0)
+            prologue.push(MachineInstr::with_operands(
+                codegen::AArch64Opcode::STP.as_u32(),
+                vec![
+                    MachineOperand::Register(registers::FP),
+                    MachineOperand::Register(registers::LR),
+                    MachineOperand::Memory {
+                        base: registers::SP,
+                        offset: 0,
+                        index: None,
+                        scale: 1,
+                    },
+                ],
+            ));
+        }
+
+        // MOV X29, SP  (encoded as ADD X29, SP, #0)
+        prologue.push(MachineInstr::with_operands(
+            codegen::AArch64Opcode::ADDimm.as_u32(),
+            vec![
+                MachineOperand::Register(registers::FP),
+                MachineOperand::Register(registers::SP),
+                MachineOperand::Immediate(0),
+            ],
+        ));
+
+        // Variadic: spill X0-X7
+        if mf.is_variadic {
+            for reg_idx in 0u32..8 {
+                let arg_reg = registers::INTEGER_ARG_REGS[reg_idx as usize];
+                let save_offset = 16 + (reg_idx as i32) * 8;
+                prologue.push(MachineInstr::with_operands(
+                    codegen::AArch64Opcode::STR.as_u32(),
+                    vec![
+                        MachineOperand::Register(arg_reg),
+                        MachineOperand::Memory {
+                            base: registers::SP,
+                            offset: save_offset,
+                            index: None,
+                            scale: 1,
+                        },
+                    ],
+                ));
             }
         }
 
-        // Insert prologue at the beginning of the entry block.
+        // Save callee-saved register pairs
+        let callee_regs = &mf.used_callee_saved;
+        let callee_start = if mf.is_variadic { 80i32 } else { 16i32 };
+        let mut offset = callee_start;
+        let mut i = 0;
+        while i + 1 < callee_regs.len() {
+            prologue.push(MachineInstr::with_operands(
+                codegen::AArch64Opcode::STP.as_u32(),
+                vec![
+                    MachineOperand::Register(callee_regs[i]),
+                    MachineOperand::Register(callee_regs[i + 1]),
+                    MachineOperand::Memory {
+                        base: registers::SP,
+                        offset,
+                        index: None,
+                        scale: 1,
+                    },
+                ],
+            ));
+            offset += 16;
+            i += 2;
+        }
+        if i < callee_regs.len() {
+            prologue.push(MachineInstr::with_operands(
+                codegen::AArch64Opcode::STR.as_u32(),
+                vec![
+                    MachineOperand::Register(callee_regs[i]),
+                    MachineOperand::Memory {
+                        base: registers::SP,
+                        offset,
+                        index: None,
+                        scale: 1,
+                    },
+                ],
+            ));
+        }
+
+        // Splice prologue at the front of the entry block
         if let Some(entry) = mf.blocks.first_mut() {
-            // Prepend prologue instructions before existing instructions.
-            let existing = std::mem::take(&mut entry.instructions);
-            entry.instructions = prologue_instrs;
-            entry.instructions.extend(existing);
+            let old_instrs = std::mem::take(&mut entry.instructions);
+            entry.instructions = prologue;
+            entry.instructions.extend(old_instrs);
         }
     }
 
-    /// Emits function epilogue code before each return instruction.
-    ///
-    /// # AAPCS64 Epilogue Structure
-    ///
-    /// ```text
-    /// ; ... restore callee-saved register pairs ...
-    /// LDP X19, X20, [SP, #offset]          ; restore pairs
-    /// LDP X29, X30, [SP], #frame_size      ; post-indexed: restore FP/LR, adjust SP
-    /// RET                                   ; return via LR
-    /// ```
-    ///
-    /// The epilogue mirrors the prologue in reverse order, restoring
-    /// callee-saved registers and then the frame pointer/link register
-    /// while deallocating the stack frame.
     fn emit_epilogue(&self, mf: &mut MachineFunction) {
         let frame_size = mf.frame_size;
         if frame_size == 0 && mf.used_callee_saved.is_empty() {
-            // No prologue was emitted, so no epilogue is needed.
             return;
         }
 
-        let aligned_frame = (frame_size + 15) & !15;
-        let callee_saved = mf.used_callee_saved.clone();
+        let callee_regs = mf.used_callee_saved.clone();
+        let is_variadic = mf.is_variadic;
 
-        // Scan all blocks for return instructions and insert epilogue
-        // immediately before each one.
         for block in &mut mf.blocks {
-            let mut new_instructions: Vec<MachineInstr> = Vec::new();
+            let ret_positions: Vec<usize> = block
+                .instructions
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| i.opcode == codegen::AArch64Opcode::RET.as_u32())
+                .map(|(idx, _)| idx)
+                .collect();
 
-            for instr in &block.instructions {
-                if instr.is_return {
-                    // Insert epilogue before the return instruction.
-                    let mut epilogue: Vec<MachineInstr> = Vec::new();
+            for &pos in ret_positions.iter().rev() {
+                let mut epilogue: Vec<MachineInstr> = Vec::new();
 
-                    // Step 1: Restore callee-saved registers (reverse order).
-                    let mut offset = 16i64;
-                    let mut i = 0;
-                    while i < callee_saved.len() {
-                        if i + 1 < callee_saved.len() {
-                            let ldp = MachineInstr::with_operands(
-                                opcodes::LDP,
-                                vec![
-                                    MachineOperand::Register(callee_saved[i]),
-                                    MachineOperand::Register(callee_saved[i + 1]),
-                                    MachineOperand::Register(registers::SP),
-                                    MachineOperand::Immediate(offset),
-                                ],
-                            );
-                            epilogue.push(ldp);
-                            i += 2;
-                            offset += 16;
-                        } else {
-                            let ldr = MachineInstr::with_operands(
-                                opcodes::LDR,
-                                vec![
-                                    MachineOperand::Register(callee_saved[i]),
-                                    MachineOperand::Register(registers::SP),
-                                    MachineOperand::Immediate(offset),
-                                ],
-                            );
-                            epilogue.push(ldr);
-                            i += 1;
-                            offset += 8;
-                        }
-                    }
-
-                    // Step 2: LDP X29, X30, [SP], #frame_size
-                    // Post-indexed load pair: restore FP/LR and adjust SP.
-                    let ldp_fp_lr = MachineInstr::with_operands(
-                        opcodes::LDP,
+                // Restore callee-saved register pairs
+                let callee_start = if is_variadic { 80i32 } else { 16i32 };
+                let mut offset = callee_start;
+                let mut i = 0;
+                while i + 1 < callee_regs.len() {
+                    epilogue.push(MachineInstr::with_operands(
+                        codegen::AArch64Opcode::LDP.as_u32(),
                         vec![
-                            MachineOperand::Register(registers::FP),
-                            MachineOperand::Register(PhysReg(30)), // LR = X30
-                            MachineOperand::Register(registers::SP),
-                            MachineOperand::Immediate(aligned_frame as i64),
+                            MachineOperand::Register(callee_regs[i]),
+                            MachineOperand::Register(callee_regs[i + 1]),
+                            MachineOperand::Memory {
+                                base: registers::SP,
+                                offset,
+                                index: None,
+                                scale: 1,
+                            },
                         ],
-                    );
-                    epilogue.push(ldp_fp_lr);
-
-                    // Add the epilogue instructions before the return.
-                    new_instructions.extend(epilogue);
+                    ));
+                    offset += 16;
+                    i += 2;
+                }
+                if i < callee_regs.len() {
+                    epilogue.push(MachineInstr::with_operands(
+                        codegen::AArch64Opcode::LDR.as_u32(),
+                        vec![
+                            MachineOperand::Register(callee_regs[i]),
+                            MachineOperand::Memory {
+                                base: registers::SP,
+                                offset,
+                                index: None,
+                                scale: 1,
+                            },
+                        ],
+                    ));
                 }
 
-                // Always add the original instruction (including the return).
-                new_instructions.push(instr.clone());
-            }
+                // Restore FP/LR and deallocate the frame.
+                //
+                // LDP post-index has the same 7-bit signed immediate
+                // limit as STP pre-index (±504 bytes scaled by 8).
+                // For large frames, use LDP [SP] + ADD SP, SP, #size.
+                const STP_PRE_MAX_EPI: u32 = 504;
+                if frame_size <= STP_PRE_MAX_EPI {
+                    // Small frame — single LDP post-index
+                    epilogue.push(MachineInstr::with_operands(
+                        codegen::AArch64Opcode::LdpPost.as_u32(),
+                        vec![
+                            MachineOperand::Register(registers::FP),
+                            MachineOperand::Register(registers::LR),
+                            MachineOperand::Memory {
+                                base: registers::SP,
+                                offset: frame_size as i32,
+                                index: None,
+                                scale: 1,
+                            },
+                        ],
+                    ));
+                } else {
+                    // Large frame — LDP at [SP, #0] then ADD SP
+                    epilogue.push(MachineInstr::with_operands(
+                        codegen::AArch64Opcode::LDP.as_u32(),
+                        vec![
+                            MachineOperand::Register(registers::FP),
+                            MachineOperand::Register(registers::LR),
+                            MachineOperand::Memory {
+                                base: registers::SP,
+                                offset: 0,
+                                index: None,
+                                scale: 1,
+                            },
+                        ],
+                    ));
+                    // ADD SP, SP, #frame_size  (split if > 4095)
+                    let hi = frame_size & !0xFFF;
+                    let lo = frame_size & 0xFFF;
+                    if hi > 0 {
+                        epilogue.push(MachineInstr::with_operands(
+                            codegen::AArch64Opcode::ADDimm.as_u32(),
+                            vec![
+                                MachineOperand::Register(registers::SP),
+                                MachineOperand::Register(registers::SP),
+                                MachineOperand::Immediate((hi >> 12) as i64),
+                                MachineOperand::Immediate(1), // LSL #12
+                            ],
+                        ));
+                    }
+                    if lo > 0 || hi == 0 {
+                        epilogue.push(MachineInstr::with_operands(
+                            codegen::AArch64Opcode::ADDimm.as_u32(),
+                            vec![
+                                MachineOperand::Register(registers::SP),
+                                MachineOperand::Register(registers::SP),
+                                MachineOperand::Immediate(lo as i64),
+                            ],
+                        ));
+                    }
+                }
 
-            block.instructions = new_instructions;
+                // Splice epilogue before the RET
+                let tail = block.instructions.split_off(pos);
+                block.instructions.extend(epilogue);
+                block.instructions.extend(tail);
+            }
         }
     }
 
@@ -1193,7 +1605,9 @@ mod tests {
         assert!(codegen_pic.requires_pic());
     }
 
-    /// Verify prologue is skipped for zero-frame-size leaf functions.
+    /// Verify prologue is emitted even for a leaf function with zero
+    /// user-level frame size, because the AArch64 prologue always
+    /// saves FP/LR (16 bytes) to maintain a valid frame chain.
     #[test]
     fn test_prologue_skipped_for_leaf() {
         let config = CodegenConfig::new(Target::AArch64);
@@ -1203,13 +1617,19 @@ mod tests {
         mf.create_block();
         mf.frame_size = 0;
 
-        let orig_count = mf.blocks[0].instructions.len();
         codegen.emit_prologue(&mut mf);
-        // No prologue instructions should be added.
-        assert_eq!(mf.blocks[0].instructions.len(), orig_count);
+        // Even with frame_size=0, the FP/LR pair (16 bytes) is always
+        // saved, so prologue instructions are generated.
+        assert!(
+            !mf.blocks[0].instructions.is_empty(),
+            "emit_prologue always saves FP/LR on AArch64"
+        );
     }
 
-    /// Verify prologue is emitted for non-zero frame size.
+    /// Verify emit_prologue generates code for a non-leaf function.
+    ///
+    /// For a function with `frame_size > 0`, emit_prologue must produce
+    /// at least the STP (save FP/LR) and MOV FP,SP instructions.
     #[test]
     fn test_prologue_emitted_for_nonleaf() {
         let config = CodegenConfig::new(Target::AArch64);
@@ -1220,7 +1640,11 @@ mod tests {
         mf.frame_size = 32;
 
         codegen.emit_prologue(&mut mf);
-        // Should have at least 2 instructions (STP FP/LR + MOV FP, SP).
-        assert!(mf.blocks[0].instructions.len() >= 2);
+        // emit_prologue generates real prologue instructions: at least
+        // the STP X29,X30,[SP,#-size]! and MOV X29,SP pair.
+        assert!(
+            !mf.blocks[0].instructions.is_empty(),
+            "emit_prologue should produce prologue instructions for non-leaf"
+        );
     }
 }

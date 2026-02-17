@@ -173,6 +173,13 @@ pub fn parse_extension_decl(parser: &mut Parser) -> Result<Declaration, ParseErr
 /// For declaration variants that carry `DeclarationSpecifiers`, this sets
 /// the `has_extension` field to `true`. For variants without specifiers
 /// (e.g., `Empty`, `Error`), this is a no-op.
+/// Public wrapper of `mark_declaration_extension` so that
+/// `parse_external_declaration` (in `declarations.rs`) can set the
+/// extension flag after handling `__extension__` at file scope.
+pub fn mark_declaration_extension_pub(decl: &mut Declaration) {
+    mark_declaration_extension(decl);
+}
+
 fn mark_declaration_extension(decl: &mut Declaration) {
     match decl {
         Declaration::Variable {

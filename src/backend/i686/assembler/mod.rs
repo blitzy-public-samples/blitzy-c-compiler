@@ -179,6 +179,21 @@ struct PendingFixup {
     kind: FixupKind,
 }
 
+/// A pending fixup for an i686 LEA_LABEL (computed goto label-address load).
+///
+/// The LEA_LABEL sequence is: CALL $+5 | POP reg | ADD reg, imm32.
+/// The POP loads the current IP (address of POP instruction) into the register.
+/// The ADD's imm32 is patched with `target_label_offset - pop_instruction_offset`.
+#[derive(Debug, Clone)]
+struct LeaLabelFixup {
+    /// Byte offset in the code buffer where the ADD's imm32 placeholder is.
+    imm32_offset: u32,
+    /// Byte offset of the POP instruction (= reference point for delta).
+    pop_offset: u32,
+    /// Target label name whose address we want to load.
+    target_label: String,
+}
+
 // ---------------------------------------------------------------------------
 // RelocationEntry
 // ---------------------------------------------------------------------------
@@ -370,6 +385,8 @@ pub struct I686Assembler {
     /// Unresolved intra-function branch/jump targets awaiting fixup after
     /// all blocks in the current function have been encoded.
     pending_fixups: Vec<PendingFixup>,
+    /// Pending LEA_LABEL fixups for computed goto label-address loads.
+    lea_label_fixups: Vec<LeaLabelFixup>,
     /// Whether to generate PIC (Position-Independent Code) relocations.
     /// When true, symbol references use GOT/PLT-relative relocation types
     /// (`R_386_GOT32`, `R_386_GOTOFF`, `R_386_GOTPC`, `R_386_PLT32`)
@@ -415,6 +432,7 @@ impl I686Assembler {
             current_offset: 0,
             label_offsets: fx_hash_map(),
             pending_fixups: Vec::new(),
+            lea_label_fixups: Vec::new(),
             pic_mode: false,
             diagnostics: DiagnosticEngine::new(),
         }
@@ -467,6 +485,7 @@ impl I686Assembler {
         // Clear per-function state from any previous assembly pass.
         self.label_offsets.clear();
         self.pending_fixups.clear();
+        self.lea_label_fixups.clear();
 
         // Pre-build a block-ID → label-name mapping so that we can
         // translate MachineOperand::Label(id) references during encoding.
@@ -551,12 +570,30 @@ impl I686Assembler {
                     self.relocations.push(reloc);
                 }
 
-                // If the instruction references an internal label (branch
-                // or jump), record a fixup for later resolution. The
-                // displacement field is at the tail of the encoded bytes:
-                //   - rel32: last 4 bytes (Jcc rel32, JMP rel32, CALL rel32)
-                //   - rel8:  last 1 byte  (Jcc rel8, JMP rel8)
-                if let Some(target_label) = label_target {
+                // If this is a LEA_LABEL, record a special fixup. The
+                // encoded sequence is: CALL $+5 (5B) | POP reg (1B) | ADD reg, imm32 (5-6B)
+                // The imm32 to patch = target_offset - pop_offset.
+                use crate::backend::i686::codegen::I686Opcode;
+                if instr.opcode == I686Opcode::LeaLabel as u32 {
+                    if let Some(target_label) = label_target {
+                        // pop_offset = start of this instruction + 5 (after CALL $+5)
+                        let pop_offset = self.current_offset + 5;
+                        // imm32 is the last 4 bytes of the encoded instruction
+                        let imm32_offset = self.current_offset + instr_len - 4;
+                        self.lea_label_fixups.push(LeaLabelFixup {
+                            imm32_offset,
+                            pop_offset,
+                            target_label,
+                        });
+                    }
+                } else if instr.opcode == I686Opcode::JmpIndirect as u32 {
+                    // JMP_INDIRECT does not need a fixup — it jumps through a
+                    // register, not to a label. Skip the branch fixup path.
+                } else if let Some(target_label) = label_target {
+                    // Standard branch/jump: record a PC-relative fixup.
+                    // The displacement field is at the tail of the encoded bytes:
+                    //   - rel32: last 4 bytes (Jcc rel32, JMP rel32, CALL rel32)
+                    //   - rel8:  last 1 byte  (Jcc rel8, JMP rel8)
                     self.record_label_fixup(instr_len, target_label);
                 }
 
@@ -567,6 +604,7 @@ impl I686Assembler {
         // Resolve all intra-function branch/jump fixups now that every
         // label's byte offset is known.
         self.resolve_fixups();
+        self.resolve_lea_label_fixups();
 
         // Extract the function's code bytes from the accumulated buffer.
         let func_end = self.current_offset;
@@ -895,6 +933,40 @@ impl I686Assembler {
     ///
     /// * `instr_len` — Total encoded length of the instruction in bytes
     /// * `target_label` — Name of the target block's label
+    /// Resolves LEA_LABEL fixups (computed goto label-address loads).
+    ///
+    /// For each fixup, computes `target_offset - pop_offset` and patches
+    /// the ADD's imm32 field so that `POP reg; ADD reg, imm32` produces
+    /// the correct absolute address of the target label at runtime.
+    fn resolve_lea_label_fixups(&mut self) {
+        let fixups: Vec<LeaLabelFixup> = self.lea_label_fixups.drain(..).collect();
+        for fixup in fixups {
+            let target_offset = match self.label_offsets.get(&fixup.target_label) {
+                Some(&offset) => offset,
+                None => {
+                    self.diagnostics.error(
+                        Span::DUMMY,
+                        format!(
+                            "assembler: unresolved lea_label target '{}' at code offset 0x{:x}",
+                            fixup.target_label, fixup.imm32_offset
+                        ),
+                    );
+                    continue;
+                }
+            };
+
+            // Delta from the POP instruction (which loaded its own address)
+            // to the target label. The runtime address of the target is:
+            //   pop_runtime_addr + delta
+            let delta = target_offset as i64 - fixup.pop_offset as i64;
+            let delta_i32 = delta as i32;
+            let off = fixup.imm32_offset as usize;
+            if off + 4 <= self.code.len() {
+                self.code[off..off + 4].copy_from_slice(&delta_i32.to_le_bytes());
+            }
+        }
+    }
+
     fn record_label_fixup(&mut self, instr_len: u32, target_label: String) {
         if instr_len == 0 {
             return;
@@ -971,6 +1043,7 @@ impl I686Assembler {
         self.current_offset = 0;
         self.label_offsets.clear();
         self.pending_fixups.clear();
+        self.lea_label_fixups.clear();
         // Re-create diagnostics to clear any accumulated errors/warnings
         // from a previous assembly pass.
         self.diagnostics = DiagnosticEngine::new();

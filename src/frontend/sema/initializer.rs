@@ -211,6 +211,32 @@ pub fn zero_init_for_type(ty: &CType) -> CheckedInitializer {
     }
 }
 
+/// Counts the number of top-level elements in a checked initializer.
+///
+/// Used by the semantic analyzer to determine the size of arrays declared
+/// with an incomplete type (e.g., `int arr[] = {1, 2, 3}` → size 3).
+///
+/// For `Aggregate` initializers, this returns the number of field entries
+/// (each representing one array element or struct field). For `Scalar` and
+/// `ZeroInit`, returns 1 (a single value).
+pub fn count_top_level_initializer_elements(init: &CheckedInitializer) -> usize {
+    match init {
+        CheckedInitializer::Aggregate { fields, .. } => fields.len(),
+        CheckedInitializer::Scalar(typed_expr) => {
+            // Special case: string literal initializing a char array.
+            // The effective element count is the string byte length + 1
+            // (for the implicit null terminator), matching C11 §6.7.9p14.
+            if let crate::frontend::parser::ast::Expression::StringLiteral { value, .. } =
+                &typed_expr.expr
+            {
+                return value.len() + 1;
+            }
+            1
+        }
+        CheckedInitializer::ZeroInit => 0,
+    }
+}
+
 // ===========================================================================
 // Internal — Top-level Dispatch
 // ===========================================================================
@@ -323,15 +349,22 @@ fn analyze_scalar_init(
         ctx.target,
         ctx.diagnostics,
         None, // no return type context during initialization
+        ctx.interner,
     );
 
     let expr_span = typed_expr.span;
     let rhs_is_null = is_null_pointer_constant(&typed_expr);
 
+    // Apply lvalue conversion to the RHS type: this handles array-to-pointer
+    // decay (C11 §6.3.2.1p3) and function-to-pointer conversion (§6.3.2.1p4).
+    // For example, `char name[32]` decays to `char *` when used as an
+    // initializer for a pointer variable.
+    let rhs_ty_decayed = lvalue_conversion_for_init(&typed_expr.ty);
+
     // Validate assignment compatibility between target and initializer types.
     if !is_assignment_compatible(
         target_type,
-        &typed_expr.ty,
+        &rhs_ty_decayed,
         rhs_is_null,
         expr_span,
         ctx.diagnostics,
@@ -616,64 +649,118 @@ fn analyze_array_from_items(
                 break; // Brace elision: designator belongs to outer scope.
             }
 
-            // --- Array index designator: [N] = val ---
-            let (idx, remaining) =
-                resolve_first_array_designator(&item.designators, array_size, item.span, ctx)?;
+            // --- GCC Range Designator: [lo ... hi] = val ---
+            //
+            // Handled before the normal single-index path because range
+            // designators expand into multiple element initializations.
+            if matches!(&item.designators[0], Designator::IndexRange(_, _)) {
+                let (lo_idx, hi_idx, remaining) = resolve_first_array_range_designator(
+                    &item.designators,
+                    array_size,
+                    item.span,
+                    ctx,
+                )?;
 
-            // Validate index against declared array bounds.
-            if let Some(max) = array_size {
-                if idx >= max {
-                    ctx.diagnostics.error(
+                *pos += 1;
+
+                // Analyze the initializer value once; clone for each element.
+                let value = if remaining.is_empty() {
+                    analyze_init_inner(&item.initializer, element_type, ctx)?
+                } else {
+                    let sub_items = vec![InitializerItem {
+                        designators: remaining,
+                        initializer: item.initializer.clone(),
+                        span: item.span,
+                    }];
+                    analyze_init_inner(
+                        &Initializer::List {
+                            items: sub_items,
+                            span,
+                        },
+                        element_type,
+                        ctx,
+                    )?
+                };
+
+                for idx in lo_idx..=hi_idx {
+                    if initialized.contains(&idx) {
+                        ctx.diagnostics.warning(
+                            item.span,
+                            format!(
+                                "initializer overrides prior initialization of element [{}]",
+                                idx
+                            ),
+                        );
+                    }
+                    initialized.insert(idx);
+                    element_inits.push((idx, value.clone()));
+                    if idx >= max_index_seen {
+                        max_index_seen = idx + 1;
+                    }
+                }
+                // After a range designator, subsequent positional items
+                // continue from the index following the range's high bound.
+                current_index = hi_idx + 1;
+            } else {
+                // --- Single array index designator: [N] = val ---
+                let (idx, remaining) =
+                    resolve_first_array_designator(&item.designators, array_size, item.span, ctx)?;
+
+                // Validate index against declared array bounds.
+                if let Some(max) = array_size {
+                    if idx >= max {
+                        ctx.diagnostics.error(
+                            item.span,
+                            format!(
+                                "array designator index {} exceeds array bounds (size {})",
+                                idx, max
+                            ),
+                        );
+                        *pos += 1;
+                        continue;
+                    }
+                }
+
+                // Warn on duplicate initialization.
+                if initialized.contains(&idx) {
+                    ctx.diagnostics.warning(
                         item.span,
                         format!(
-                            "array designator index {} exceeds array bounds (size {})",
-                            idx, max
+                            "initializer overrides prior initialization of element [{}]",
+                            idx
                         ),
                     );
-                    *pos += 1;
-                    continue;
                 }
-            }
 
-            // Warn on duplicate initialization.
-            if initialized.contains(&idx) {
-                ctx.diagnostics.warning(
-                    item.span,
-                    format!(
-                        "initializer overrides prior initialization of element [{}]",
-                        idx
-                    ),
-                );
-            }
+                *pos += 1;
+                let value = if remaining.is_empty() {
+                    analyze_init_inner(&item.initializer, element_type, ctx)?
+                } else {
+                    // Nested designation into the element (e.g. [2].field = val).
+                    let sub_items = vec![InitializerItem {
+                        designators: remaining,
+                        initializer: item.initializer.clone(),
+                        span: item.span,
+                    }];
+                    analyze_init_inner(
+                        &Initializer::List {
+                            items: sub_items,
+                            span,
+                        },
+                        element_type,
+                        ctx,
+                    )?
+                };
 
-            *pos += 1;
-            let value = if remaining.is_empty() {
-                analyze_init_inner(&item.initializer, element_type, ctx)?
-            } else {
-                // Nested designation into the element (e.g. [2].field = val).
-                let sub_items = vec![InitializerItem {
-                    designators: remaining,
-                    initializer: item.initializer.clone(),
-                    span: item.span,
-                }];
-                analyze_init_inner(
-                    &Initializer::List {
-                        items: sub_items,
-                        span,
-                    },
-                    element_type,
-                    ctx,
-                )?
-            };
-
-            initialized.insert(idx);
-            element_inits.push((idx, value));
-            if idx >= max_index_seen {
-                max_index_seen = idx + 1;
+                initialized.insert(idx);
+                element_inits.push((idx, value));
+                if idx >= max_index_seen {
+                    max_index_seen = idx + 1;
+                }
+                // After a designator, subsequent positional items continue from
+                // the index following the designated one.
+                current_index = idx + 1;
             }
-            // After a designator, subsequent positional items continue from
-            // the index following the designated one.
-            current_index = idx + 1;
         } else {
             // --- Positional element initialization ---
             if let Some(max) = array_size {
@@ -797,6 +884,7 @@ fn analyze_string_literal_init(
         ctx.target,
         ctx.diagnostics,
         None,
+        ctx.interner,
     );
 
     // For string literal initialization of char arrays, we produce a Scalar
@@ -939,7 +1027,7 @@ fn resolve_first_field_designator(
                 }
             }
         }
-        Designator::Index(_) => {
+        Designator::Index(_) | Designator::IndexRange(_, _) => {
             ctx.diagnostics.error(
                 span,
                 "array index designator '[N]' cannot be used with struct/union type",
@@ -979,10 +1067,92 @@ fn resolve_first_array_designator(
             };
             Ok((index, remaining))
         }
+        Designator::IndexRange(_, _) => {
+            // Range designators are handled by the dedicated
+            // resolve_first_array_range_designator function.  They should
+            // never reach here; reaching this arm is an internal logic error.
+            ctx.diagnostics.error(
+                span,
+                "internal: range designator routed to single-index resolver",
+            );
+            Err(())
+        }
         Designator::Field(_) => {
             ctx.diagnostics.error(
                 span,
                 "field designator '.name' cannot be used with array type",
+            );
+            Err(())
+        }
+    }
+}
+
+/// Resolves a GCC range designator (`[lo ... hi]`) at the front of a
+/// designator chain, returning the inclusive (lo, hi) index pair and any
+/// remaining designators after the range.
+///
+/// Both `lo` and `hi` are evaluated as compile-time integer constants.
+/// Validation ensures `lo >= 0`, `hi >= lo`, and both are within the
+/// declared array bounds (if known).
+fn resolve_first_array_range_designator(
+    designators: &[Designator],
+    array_size: Option<usize>,
+    span: Span,
+    ctx: &mut InitContext<'_>,
+) -> Result<(usize, usize, Vec<Designator>), ()> {
+    match &designators[0] {
+        Designator::IndexRange(lo_expr, hi_expr) => {
+            let lo_val =
+                constant_eval::evaluate_integer_constant(lo_expr, ctx.diagnostics, ctx.target)?;
+            let hi_val =
+                constant_eval::evaluate_integer_constant(hi_expr, ctx.diagnostics, ctx.target)?;
+
+            if lo_val < 0 {
+                ctx.diagnostics.error(
+                    span,
+                    format!("array range designator low index {} is negative", lo_val),
+                );
+                return Err(());
+            }
+            if hi_val < lo_val {
+                ctx.diagnostics.error(
+                    span,
+                    format!(
+                        "array range designator high index {} is less than low index {}",
+                        hi_val, lo_val
+                    ),
+                );
+                return Err(());
+            }
+
+            let lo = lo_val as usize;
+            let hi = hi_val as usize;
+
+            // Validate against declared array bounds.
+            if let Some(max) = array_size {
+                if hi >= max {
+                    ctx.diagnostics.error(
+                        span,
+                        format!(
+                            "array range designator [{}...{}] exceeds array bounds (size {})",
+                            lo, hi, max
+                        ),
+                    );
+                    return Err(());
+                }
+            }
+
+            let remaining = if designators.len() > 1 {
+                designators[1..].to_vec()
+            } else {
+                Vec::new()
+            };
+            Ok((lo, hi, remaining))
+        }
+        _ => {
+            ctx.diagnostics.error(
+                span,
+                "internal: non-range designator routed to range resolver",
             );
             Err(())
         }
@@ -1155,6 +1325,20 @@ fn build_aggregate_result(
 /// initialized with a string literal (char, signed char, unsigned char).
 fn is_char_element_type(element: &CType) -> bool {
     matches!(element.canonical(), CType::Char { .. })
+}
+
+/// Applies lvalue-to-rvalue conversion for initializer expressions.
+///
+/// In C, arrays decay to pointers to their first element (C11 §6.3.2.1p3),
+/// and functions decay to pointers to themselves (C11 §6.3.2.1p4).  This
+/// conversion is required before checking assignment compatibility of
+/// initializer expressions against the target type.
+fn lvalue_conversion_for_init(ty: &CType) -> CType {
+    match ty.canonical() {
+        CType::Array { element, .. } => CType::Pointer(element.clone()),
+        CType::Function { .. } => CType::Pointer(Box::new(ty.clone())),
+        _ => ty.clone(),
+    }
 }
 
 /// Returns `true` if the field at `idx` is a flexible array member

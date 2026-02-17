@@ -295,8 +295,8 @@ fn section_order_priority(name: &str, section_type: u32, flags: u64) -> u32 {
         // ---- Dynamic linking resolution tables ----
         ".dynsym" => 30,
         ".dynstr" => 31,
-        ".rela.dyn" => 40,
-        ".rela.plt" => 41,
+        ".rela.dyn" | ".rel.dyn" => 40,
+        ".rela.plt" | ".rel.plt" => 41,
         n if n.starts_with(".rela.") || n.starts_with(".rel.") => 42,
 
         // ---- Executable code segment ----
@@ -620,7 +620,21 @@ impl SectionMerger {
     /// - `base_address` — The starting virtual address for the first allocatable
     ///   output section (e.g., `0x400000` for x86-64 executables).
     pub fn assign_addresses(&mut self, base_address: u64) {
+        /// Standard page size used for segment alignment in ELF binaries.
+        /// When allocatable sections with different permission groups
+        /// (e.g. R+X → R+W) are placed contiguously, the address must be
+        /// bumped to the next page boundary so the kernel can map them with
+        /// distinct `mmap` protections without conflicting on the same page.
+        const PAGE_SIZE: u64 = 0x1000;
+
+        /// Extracts the permission‐relevant flags from an ELF section's flags
+        /// field: writability (`SHF_WRITE`) and executability (`SHF_EXECINSTR`).
+        fn perm_group(flags: u64) -> u64 {
+            flags & (SHF_WRITE | SHF_EXECINSTR)
+        }
+
         let mut current_addr = base_address;
+        let mut prev_perm_group: Option<u64> = None;
 
         for section in &mut self.output_sections {
             // Non-allocatable sections are not loaded into memory
@@ -629,12 +643,39 @@ impl SectionMerger {
                 continue;
             }
 
+            let cur_perms = perm_group(section.flags);
+
+            // When the permission group changes (e.g. from executable
+            // .text to writable .data/.bss), advance to the next page
+            // boundary so the kernel can use separate mmap regions.
+            if let Some(prev) = prev_perm_group {
+                if prev != cur_perms {
+                    let page_padding = compute_padding(current_addr, PAGE_SIZE);
+                    if page_padding == 0 && current_addr % PAGE_SIZE != 0 {
+                        // Already at a page boundary — nothing to do.
+                    } else {
+                        current_addr += page_padding;
+                        if page_padding == 0 {
+                            // current_addr is already page-aligned — fine.
+                        }
+                    }
+                    // Guarantee we are on a fresh page if we are not
+                    // already at the start of one.
+                    if current_addr % PAGE_SIZE != 0 {
+                        current_addr = (current_addr + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+                    }
+                }
+            }
+            prev_perm_group = Some(cur_perms);
+
             // Align the current address to the section's alignment requirement
             let padding = compute_padding(current_addr, section.alignment);
             current_addr += padding;
 
             // Assign the virtual address
             section.addr = current_addr;
+
+            // Debug: assign_addresses output suppressed for performance
 
             // Advance past this section's content. BSS sections contribute
             // virtual size even though they have no file content.
@@ -660,12 +701,35 @@ impl SectionMerger {
     ///   header and program header table (e.g., `0x1000` or the first
     ///   page-aligned offset after headers).
     pub fn assign_file_offsets(&mut self, initial_offset: u64) {
+        /// Page size for the ELF congruence constraint:
+        /// `p_offset ≡ p_vaddr (mod p_align)`.
+        const PAGE_SIZE: u64 = 0x1000;
+
         let mut current_offset = initial_offset;
 
         for section in &mut self.output_sections {
-            // Align the file offset to the section's alignment
+            // Basic alignment
             let padding = compute_padding(current_offset, section.alignment);
             current_offset += padding;
+
+            // For allocatable sections the ELF spec requires
+            //   p_offset ≡ p_vaddr (mod p_align)
+            // This ensures the kernel can mmap the segment correctly.
+            // When a virtual address is page-aligned (e.g. after a
+            // permission-group boundary), we must ensure the file offset
+            // has the same page-offset residue.
+            if section.flags & SHF_ALLOC != 0 && section.addr != 0 {
+                let va_residue = section.addr % PAGE_SIZE;
+                let off_residue = current_offset % PAGE_SIZE;
+                if va_residue != off_residue {
+                    // Advance offset so residues match.
+                    if va_residue > off_residue {
+                        current_offset += va_residue - off_residue;
+                    } else {
+                        current_offset += PAGE_SIZE - off_residue + va_residue;
+                    }
+                }
+            }
 
             // Assign the file offset
             section.offset = current_offset;
@@ -1119,13 +1183,15 @@ mod tests {
         assert_eq!(sections[0].name, ".text");
         assert_eq!(sections[0].addr, 0x400000);
 
-        // .data: after .text (0x400000 + 64 = 0x400040), aligned to 8 → 0x400040
+        // .data: after .text (0x400000 + 64 = 0x400040); since .text is
+        // executable and .data is writable, page-align to 0x401000.
         assert_eq!(sections[1].name, ".data");
-        assert_eq!(sections[1].addr, 0x400040);
+        assert_eq!(sections[1].addr, 0x401000);
 
-        // .bss: after .data (0x400040 + 32 = 0x400060), aligned to 16 → 0x400060
+        // .bss: after .data (0x401000 + 32 = 0x401020); both .data and
+        // .bss are writable → same permission group → aligned to 16 only.
         assert_eq!(sections[2].name, ".bss");
-        assert_eq!(sections[2].addr, 0x400060);
+        assert_eq!(sections[2].addr, 0x401020);
     }
 
     #[test]

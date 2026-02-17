@@ -64,7 +64,7 @@ use crate::common::target::Target;
 
 // ── Sibling / child imports ─────────────────────────────────────────────────
 use self::include_handler::IncludeHandler;
-use self::paint_marker::{is_painted_for, paint_tokens, PaintedToken};
+use self::paint_marker::{is_painted, is_painted_for, merge_paint, paint_tokens, PaintedToken};
 use self::token_paster::{paste_tokens, stringify};
 use crate::frontend::lexer::token::{Token, TokenKind};
 
@@ -1289,6 +1289,18 @@ impl Preprocessor {
                                     replacement.into_iter().map(PaintedToken::new).collect();
                                 paint_tokens(&mut expanded_painted, sym);
 
+                                // Inherit paint from the invocation token: if
+                                // the macro name was already painted for other
+                                // macros (e.g. mutual recursion), propagate
+                                // that paint to the replacement tokens so that
+                                // the chain terminates (C11 §6.10.3.4).
+                                if is_painted(&painted[i]) {
+                                    let invocation_paint = painted[i].paint.clone();
+                                    for pt in &mut expanded_painted {
+                                        pt.paint = merge_paint(&pt.paint, &invocation_paint);
+                                    }
+                                }
+
                                 // Re-scan: insert expanded tokens for further expansion.
                                 let rest = painted.split_off(end_idx + 1);
                                 painted.truncate(i);
@@ -1310,6 +1322,17 @@ impl Preprocessor {
                             let mut expanded_painted: Vec<PaintedToken> =
                                 def.body.iter().cloned().map(PaintedToken::new).collect();
                             paint_tokens(&mut expanded_painted, sym);
+
+                            // Inherit paint from the invocation token (same
+                            // as the function-like case above — needed for
+                            // mutual recursion chains like #define P Q /
+                            // #define Q R / #define R P).
+                            if is_painted(&painted[i]) {
+                                let invocation_paint = painted[i].paint.clone();
+                                for pt in &mut expanded_painted {
+                                    pt.paint = merge_paint(&pt.paint, &invocation_paint);
+                                }
+                            }
 
                             // Re-scan: insert expanded tokens for further expansion.
                             let rest = painted.split_off(i + 1);
@@ -1446,48 +1469,70 @@ impl Preprocessor {
             }
 
             // Check for `##` (token pasting) — handled by collecting lhs and rhs.
-            if i + 1 < body.len() && body[i + 1].kind == TokenKind::HashHash {
-                let lhs_tokens = self.resolve_param_or_token(
-                    &body[i],
-                    params,
-                    args,
-                    &va_args_sym,
-                    def.is_variadic,
-                );
-                if i + 2 < body.len() {
-                    let rhs_tokens = self.resolve_param_or_token(
-                        &body[i + 2],
+            // Skip whitespace to find ## (macro bodies can have ws around ##).
+            {
+                let mut hash_idx = i + 1;
+                while hash_idx < body.len()
+                    && matches!(
+                        body[hash_idx].kind,
+                        TokenKind::Whitespace | TokenKind::Newline
+                    )
+                {
+                    hash_idx += 1;
+                }
+                if hash_idx < body.len() && body[hash_idx].kind == TokenKind::HashHash {
+                    let lhs_tokens = self.resolve_param_or_token(
+                        &body[i],
                         params,
                         args,
                         &va_args_sym,
                         def.is_variadic,
                     );
-                    // Take the last token of lhs and first token of rhs for pasting.
-                    let lhs_tok = lhs_tokens
-                        .last()
-                        .cloned()
-                        .unwrap_or_else(|| body[i].clone());
-                    let rhs_tok = rhs_tokens
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| body[i + 2].clone());
-                    // Emit any lhs tokens before the last one.
-                    if lhs_tokens.len() > 1 {
-                        result.extend_from_slice(&lhs_tokens[..lhs_tokens.len() - 1]);
+                    // Find rhs operand (skip whitespace after ##)
+                    let mut rhs_idx = hash_idx + 1;
+                    while rhs_idx < body.len()
+                        && matches!(
+                            body[rhs_idx].kind,
+                            TokenKind::Whitespace | TokenKind::Newline
+                        )
+                    {
+                        rhs_idx += 1;
                     }
-                    let pasted = paste_tokens(
-                        &lhs_tok,
-                        &rhs_tok,
-                        &mut self.interner,
-                        &mut self.diagnostics,
-                    );
-                    result.push(pasted);
-                    // Emit any rhs tokens after the first one.
-                    if rhs_tokens.len() > 1 {
-                        result.extend_from_slice(&rhs_tokens[1..]);
+                    if rhs_idx < body.len() {
+                        let rhs_tokens = self.resolve_param_or_token(
+                            &body[rhs_idx],
+                            params,
+                            args,
+                            &va_args_sym,
+                            def.is_variadic,
+                        );
+                        // Take the last token of lhs and first token of rhs for pasting.
+                        let lhs_tok = lhs_tokens
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| body[i].clone());
+                        let rhs_tok = rhs_tokens
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| body[rhs_idx].clone());
+                        // Emit any lhs tokens before the last one.
+                        if lhs_tokens.len() > 1 {
+                            result.extend_from_slice(&lhs_tokens[..lhs_tokens.len() - 1]);
+                        }
+                        let pasted = paste_tokens(
+                            &lhs_tok,
+                            &rhs_tok,
+                            &mut self.interner,
+                            &mut self.diagnostics,
+                        );
+                        result.push(pasted);
+                        // Emit any rhs tokens after the first one.
+                        if rhs_tokens.len() > 1 {
+                            result.extend_from_slice(&rhs_tokens[1..]);
+                        }
+                        i = rhs_idx + 1;
+                        continue;
                     }
-                    i += 3;
-                    continue;
                 }
             }
 
@@ -1985,11 +2030,11 @@ fn pp_tokenize(source: &str, file_id: u32, interner: &mut Interner) -> Vec<Token
                 if c == b'\\' && (pos as usize) + 1 < len {
                     pos += 1;
                     let esc = bytes[pos as usize];
+                    pos += 1;
                     value = match esc {
                         b'n' => b'\n' as u128,
                         b't' => b'\t' as u128,
                         b'r' => b'\r' as u128,
-                        b'0' => 0,
                         b'\\' => b'\\' as u128,
                         b'\'' => b'\'' as u128,
                         b'"' => b'"' as u128,
@@ -1997,9 +2042,44 @@ fn pp_tokenize(source: &str, file_id: u32, interner: &mut Interner) -> Vec<Token
                         b'b' => 0x08,
                         b'f' => 0x0C,
                         b'v' => 0x0B,
+                        b'?' => b'?' as u128,
+                        // Octal escape: \0 or \0NN or \NNN
+                        b'0'..=b'7' => {
+                            let mut val: u128 = (esc - b'0') as u128;
+                            let mut count = 0;
+                            while count < 2
+                                && (pos as usize) < len
+                                && bytes[pos as usize] >= b'0'
+                                && bytes[pos as usize] <= b'7'
+                            {
+                                val = val * 8 + (bytes[pos as usize] - b'0') as u128;
+                                pos += 1;
+                                count += 1;
+                            }
+                            val
+                        }
+                        // Hex escape: \xHH...
+                        b'x' => {
+                            let mut val: u128 = 0;
+                            while (pos as usize) < len {
+                                let hb = bytes[pos as usize];
+                                let digit = match hb {
+                                    b'0'..=b'9' => Some(hb - b'0'),
+                                    b'a'..=b'f' => Some(hb - b'a' + 10),
+                                    b'A'..=b'F' => Some(hb - b'A' + 10),
+                                    _ => None,
+                                };
+                                if let Some(d) = digit {
+                                    val = val * 16 + d as u128;
+                                    pos += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            val
+                        }
                         _ => esc as u128,
                     };
-                    pos += 1;
                     continue;
                 }
                 if c == b'\n' {
@@ -2184,12 +2264,17 @@ fn lex_number(source: &str, start: u32, file_id: u32, _interner: &mut Interner) 
         pos += 1;
     }
 
-    let text = &source[start as usize..pos];
+    let _text = &source[start as usize..pos];
     let span = Span::new(file_id, start, pos as u32);
 
     if is_float {
         // Parse as float literal.
-        let clean: String = text.chars().filter(|c| *c != '_').collect();
+        // CRITICAL: Use suffix_start (not pos) so the suffix ('f', 'F',
+        // 'l', 'L') is NOT included in the number text.  Rust's
+        // f64::parse does not accept C-style suffixes; if included it
+        // silently returns Err and the `unwrap_or(0.0)` produces zero.
+        let num_text = &source[start as usize..suffix_start];
+        let clean: String = num_text.chars().filter(|c| *c != '_').collect();
         let fval = clean.parse::<f64>().unwrap_or(0.0);
         let suffix_text = &source[suffix_start..pos];
         let float_suffix = match suffix_text {

@@ -59,6 +59,13 @@ use crate::frontend::parser::ast::{
 /// Without a resolver, such expressions fall back to `None` (evaluation failure).
 pub type TypedefResolver<'a> = Option<&'a dyn Fn(Symbol) -> Option<CType>>;
 
+/// Optional callback for resolving enum constant names to their integer values.
+///
+/// When provided, identifiers that name enum constants can be evaluated at
+/// compile time inside `_Static_assert`, case labels, and other integer
+/// constant expression contexts.
+pub type EnumResolver<'a> = Option<&'a dyn Fn(Symbol) -> Option<i128>>;
+
 // ===========================================================================
 // ConstValue — result of compile-time constant evaluation
 // ===========================================================================
@@ -266,7 +273,7 @@ pub fn evaluate_constant_expression(
     diagnostics: &mut DiagnosticEngine,
     target: &Target,
 ) -> Result<ConstValue, ()> {
-    eval_expr(expr, diagnostics, target, None)
+    eval_expr(expr, diagnostics, target, None, None)
 }
 
 /// Like [`evaluate_constant_expression`], but accepts a typedef resolver
@@ -281,7 +288,45 @@ pub fn evaluate_constant_expression_with_resolver(
     target: &Target,
     resolver: &dyn Fn(Symbol) -> Option<CType>,
 ) -> Result<ConstValue, ()> {
-    eval_expr(expr, diagnostics, target, Some(resolver))
+    eval_expr(expr, diagnostics, target, Some(resolver), None)
+}
+
+/// Full-featured constant expression evaluator accepting both typedef and
+/// enum resolvers.
+///
+/// Used in `_Static_assert` and other contexts where both enum constants
+/// and `sizeof(typedef)` may appear.
+pub fn evaluate_constant_expression_full(
+    expr: &Expression,
+    diagnostics: &mut DiagnosticEngine,
+    target: &Target,
+    typedef_resolver: &dyn Fn(Symbol) -> Option<CType>,
+    enum_resolver: &dyn Fn(Symbol) -> Option<i128>,
+) -> Result<ConstValue, ()> {
+    eval_expr(
+        expr,
+        diagnostics,
+        target,
+        Some(typedef_resolver),
+        Some(enum_resolver),
+    )
+}
+
+/// Integer constant evaluator accepting both typedef and enum resolvers.
+pub fn evaluate_integer_constant_full(
+    expr: &Expression,
+    diagnostics: &mut DiagnosticEngine,
+    target: &Target,
+    typedef_resolver: &dyn Fn(Symbol) -> Option<CType>,
+    enum_resolver: &dyn Fn(Symbol) -> Option<i128>,
+) -> Result<i128, ()> {
+    evaluate_integer_constant_impl(
+        expr,
+        diagnostics,
+        target,
+        Some(typedef_resolver),
+        Some(enum_resolver),
+    )
 }
 
 /// Convenience function for integer-only constant expression contexts.
@@ -296,7 +341,7 @@ pub fn evaluate_integer_constant(
     diagnostics: &mut DiagnosticEngine,
     target: &Target,
 ) -> Result<i128, ()> {
-    evaluate_integer_constant_impl(expr, diagnostics, target, None)
+    evaluate_integer_constant_impl(expr, diagnostics, target, None, None)
 }
 
 /// Like [`evaluate_integer_constant`], but accepts a typedef resolver
@@ -308,7 +353,7 @@ pub fn evaluate_integer_constant_with_resolver(
     target: &Target,
     resolver: &dyn Fn(Symbol) -> Option<CType>,
 ) -> Result<i128, ()> {
-    evaluate_integer_constant_impl(expr, diagnostics, target, Some(resolver))
+    evaluate_integer_constant_impl(expr, diagnostics, target, Some(resolver), None)
 }
 
 /// Internal implementation of integer constant evaluation with optional
@@ -318,8 +363,9 @@ fn evaluate_integer_constant_impl(
     diagnostics: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Result<i128, ()> {
-    let val = eval_expr(expr, diagnostics, target, tr)?;
+    let val = eval_expr(expr, diagnostics, target, tr, er)?;
     match &val {
         ConstValue::Integer { value, .. } => Ok(*value),
         ConstValue::UnsignedInteger { value, .. } => {
@@ -453,7 +499,21 @@ pub fn evaluate_static_assert(
     diagnostics: &mut DiagnosticEngine,
     target: &Target,
 ) -> Result<(), ()> {
-    let val = evaluate_integer_constant(condition, diagnostics, target)?;
+    evaluate_static_assert_full(condition, message, diagnostics, target, None, None)
+}
+
+/// Like [`evaluate_static_assert`] but accepts typedef and enum resolvers
+/// so that expressions like `sizeof(typedef_name)` and enum constants can
+/// be evaluated.
+pub fn evaluate_static_assert_full(
+    condition: &Expression,
+    message: &[u8],
+    diagnostics: &mut DiagnosticEngine,
+    target: &Target,
+    tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
+) -> Result<(), ()> {
+    let val = evaluate_integer_constant_impl(condition, diagnostics, target, tr, er)?;
     if val == 0 {
         let msg = String::from_utf8_lossy(message);
         diagnostics.error(
@@ -549,11 +609,12 @@ fn resolve_type_name_to_ctype(
     diag: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Option<CType> {
-    let base = resolve_specifiers_to_ctype(&type_name.specifiers, target, tr)?;
+    let base = resolve_specifiers_to_ctype(&type_name.specifiers, target, tr, er)?;
     match &type_name.declarator {
         None => Some(base),
-        Some(decl) => apply_declarator_to_ctype(base, &decl.derived, diag, target, tr),
+        Some(decl) => apply_declarator_to_ctype(base, &decl.derived, diag, target, tr, er),
     }
 }
 
@@ -566,6 +627,7 @@ fn resolve_specifiers_to_ctype(
     sqlist: &SpecifierQualifierList,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Option<CType> {
     let mut has_void = false;
     let mut has_bool = false;
@@ -598,6 +660,7 @@ fn resolve_specifiers_to_ctype(
                     &mut DiagnosticEngine::new(),
                     target,
                     tr,
+                    er,
                 )
                 .map(|t| CType::Atomic(Box::new(t)));
             }
@@ -690,6 +753,7 @@ fn apply_declarator_to_ctype(
     diag: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Option<CType> {
     let mut ty = base;
     for d in derived {
@@ -700,7 +764,7 @@ fn apply_declarator_to_ctype(
             DerivedDeclarator::Array { size, .. } => {
                 let array_size = match size {
                     Some(expr) => {
-                        match evaluate_integer_constant_impl(expr, diag, target, tr) {
+                        match evaluate_integer_constant_impl(expr, diag, target, tr, er) {
                             Ok(n) if n >= 0 => Some(n as usize),
                             _ => return None,
                         }
@@ -1006,6 +1070,7 @@ fn infer_expr_type(
     expr: &Expression,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Option<CType> {
     match expr {
         Expression::IntegerLiteral { value, suffix, .. } => {
@@ -1031,7 +1096,7 @@ fn infer_expr_type(
             })
         }
         Expression::Cast { type_name, .. } => {
-            resolve_type_name_to_ctype(type_name, &mut DiagnosticEngine::new(), target, tr)
+            resolve_type_name_to_ctype(type_name, &mut DiagnosticEngine::new(), target, tr, er)
         }
         Expression::Sizeof { .. } | Expression::Alignof { .. } => Some(make_size_t(target)),
         _ => None,
@@ -1053,6 +1118,7 @@ fn eval_expr(
     diag: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Result<ConstValue, ()> {
     match expr {
         // ----- Literals -----
@@ -1111,12 +1177,12 @@ fn eval_expr(
             left,
             right,
             span,
-        } => eval_binary_op(op, left, right, *span, diag, target, tr),
+        } => eval_binary_op(op, left, right, *span, diag, target, tr, er),
 
         // ----- Unary operations -----
         Expression::UnaryOp {
             op, operand, span, ..
-        } => eval_unary_op(op, operand, *span, diag, target, tr),
+        } => eval_unary_op(op, operand, *span, diag, target, tr, er),
 
         // ----- Conditional (ternary) expression -----
         Expression::Conditional {
@@ -1125,15 +1191,15 @@ fn eval_expr(
             else_expr,
             ..
         } => {
-            let cond = eval_expr(condition, diag, target, tr)?;
+            let cond = eval_expr(condition, diag, target, tr, er)?;
             if !cond.is_zero() {
                 match then_expr {
-                    Some(then_e) => eval_expr(then_e, diag, target, tr),
+                    Some(then_e) => eval_expr(then_e, diag, target, tr, er),
                     // GCC extension: `x ?: y` — condition value is the "then" value
                     None => Ok(cond),
                 }
             } else {
-                eval_expr(else_expr, diag, target, tr)
+                eval_expr(else_expr, diag, target, tr, er)
             }
         }
 
@@ -1142,18 +1208,26 @@ fn eval_expr(
             type_name,
             operand,
             span,
-        } => eval_cast(type_name, operand, *span, diag, target, tr),
+        } => eval_cast(type_name, operand, *span, diag, target, tr, er),
 
         // ----- sizeof / _Alignof -----
-        Expression::Sizeof { operand, span } => eval_sizeof(operand, *span, diag, target, tr),
+        Expression::Sizeof { operand, span } => eval_sizeof(operand, *span, diag, target, tr, er),
 
-        Expression::Alignof { operand, span } => eval_alignof(operand, *span, diag, target, tr),
+        Expression::Alignof { operand, span } => eval_alignof(operand, *span, diag, target, tr, er),
 
         // ----- Identifier (potentially an enum constant) -----
-        Expression::Identifier { name: _, span } => {
-            // Enum constants should be pre-resolved by the semantic analyzer
-            // before reaching the constant evaluator. If an identifier still
-            // appears here, it cannot be evaluated without a symbol table.
+        Expression::Identifier { name, span } => {
+            // Try the enum resolver first — enum constants are valid in
+            // integer constant expressions per C11 §6.6.
+            if let Some(resolve) = er {
+                if let Some(val) = resolve(*name) {
+                    return Ok(ConstValue::Integer {
+                        value: val,
+                        ty: CType::Int { signed: true },
+                    });
+                }
+            }
+            // If we reach here the identifier is not a known enum constant.
             diag.error(*span, "identifier is not a compile-time constant");
             Err(())
         }
@@ -1172,9 +1246,65 @@ fn eval_expr(
             // Evaluate all sub-expressions; the result is the last one
             let mut result = Err(());
             for sub_expr in expressions {
-                result = eval_expr(sub_expr, diag, target, tr);
+                result = eval_expr(sub_expr, diag, target, tr, er);
             }
             result
+        }
+
+        // ----- Compile-time builtin function calls -----
+        Expression::FunctionCall {
+            callee,
+            args,
+            span: call_span,
+        } => {
+            // Some builtins produce compile-time constant results.
+            if let Expression::Identifier { name, .. } = callee.as_ref() {
+                // We need the name as a string. Since we don't have an interner
+                // here, check the AST node. The interner stores Symbol as an
+                // index, but we can use the builtin_eval module's helpers.
+                // We pass through to our inline evaluation of known constant builtins.
+                // __builtin_constant_p(expr) → 1 if expr is a constant, 0 otherwise
+                // __builtin_types_compatible_p(t1, t2) → 1 if types match, 0 otherwise
+                // __builtin_choose_expr(const, e1, e2) → e1 if const!=0, e2 otherwise
+                // __builtin_offsetof(type, member) → byte offset
+                //
+                // We evaluate based on the Symbol value. Since we can't resolve
+                // Symbols without an interner, we fall through to the default case.
+                // However, the sema layer should have already expanded these.
+                //
+                // For now, handle the case where sema wraps these as
+                // BuiltinConstantP / BuiltinTypesCompatibleP AST nodes.
+                let _ = (name, args, call_span);
+            }
+            diag.error(expr.span(), "expression is not a constant expression");
+            Err(())
+        }
+
+        // ----- Builtin types_compatible_p -----
+        Expression::BuiltinTypesCompatibleP { type1, type2, .. } => {
+            // Resolve both TypeNames to concrete CTypes, then compare them
+            // structurally (ignoring top-level qualifiers per GCC semantics).
+            let ct1 = resolve_type_name_to_ctype(type1, diag, target, tr, er);
+            let ct2 = resolve_type_name_to_ctype(type2, diag, target, tr, er);
+            let compat = match (ct1, ct2) {
+                (Some(a), Some(b)) => {
+                    // Strip top-level qualifiers (const, volatile, restrict)
+                    // and compare the underlying types.
+                    let a_stripped = strip_qualifiers(&a);
+                    let b_stripped = strip_qualifiers(&b);
+                    a_stripped == b_stripped
+                }
+                _ => {
+                    // If we could not resolve one or both types (e.g. struct/
+                    // typeof that requires the symbol table), fall back to a
+                    // specifier-list comparison.
+                    types_compatible_fallback(type1, type2)
+                }
+            };
+            Ok(ConstValue::Integer {
+                value: if compat { 1 } else { 0 },
+                ty: CType::Int { signed: true },
+            })
         }
 
         // ----- Error recovery placeholder -----
@@ -1185,6 +1315,44 @@ fn eval_expr(
             diag.error(expr.span(), "expression is not a constant expression");
             Err(())
         }
+    }
+}
+
+/// Strips top-level type qualifiers from a CType, so that e.g.
+/// `const int` compares equal to `int` for `__builtin_types_compatible_p`.
+fn strip_qualifiers(ty: &CType) -> CType {
+    // CType currently does not wrap qualifiers at the top level,
+    // so just clone.
+    ty.clone()
+}
+
+/// Fallback comparison for `__builtin_types_compatible_p` when CType
+/// resolution is not possible (e.g. for struct/typeof types that require
+/// the symbol table).  Compares the specifier lists directly.
+fn types_compatible_fallback(t1: &TypeName, t2: &TypeName) -> bool {
+    // Compare specifier lists (ignoring spans)
+    let s1 = &t1.specifiers.specifiers;
+    let s2 = &t2.specifiers.specifiers;
+    if s1.len() != s2.len() {
+        return false;
+    }
+    for (a, b) in s1.iter().zip(s2.iter()) {
+        if std::mem::discriminant(a) != std::mem::discriminant(b) {
+            return false;
+        }
+    }
+    // Compare abstract declarators (pointer depth, array, function)
+    match (&t1.declarator, &t2.declarator) {
+        (None, None) => true,
+        (Some(d1), Some(d2)) => {
+            d1.derived.len() == d2.derived.len()
+                && d1
+                    .derived
+                    .iter()
+                    .zip(d2.derived.iter())
+                    .all(|(a, b)| std::mem::discriminant(a) == std::mem::discriminant(b))
+        }
+        _ => false,
     }
 }
 
@@ -1202,18 +1370,19 @@ fn eval_binary_op(
     diag: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Result<ConstValue, ()> {
     // ----- Short-circuit evaluation for logical operators -----
 
     if matches!(op, BinaryOperator::LogAnd) {
-        let lv = eval_expr(left, diag, target, tr)?;
+        let lv = eval_expr(left, diag, target, tr, er)?;
         if lv.is_zero() {
             return Ok(ConstValue::Integer {
                 value: 0,
                 ty: CType::Int { signed: true },
             });
         }
-        let rv = eval_expr(right, diag, target, tr)?;
+        let rv = eval_expr(right, diag, target, tr, er)?;
         let result = if rv.is_zero() { 0i128 } else { 1i128 };
         return Ok(ConstValue::Integer {
             value: result,
@@ -1222,14 +1391,14 @@ fn eval_binary_op(
     }
 
     if matches!(op, BinaryOperator::LogOr) {
-        let lv = eval_expr(left, diag, target, tr)?;
+        let lv = eval_expr(left, diag, target, tr, er)?;
         if !lv.is_zero() {
             return Ok(ConstValue::Integer {
                 value: 1,
                 ty: CType::Int { signed: true },
             });
         }
-        let rv = eval_expr(right, diag, target, tr)?;
+        let rv = eval_expr(right, diag, target, tr, er)?;
         let result = if rv.is_zero() { 0i128 } else { 1i128 };
         return Ok(ConstValue::Integer {
             value: result,
@@ -1239,8 +1408,8 @@ fn eval_binary_op(
 
     // ----- Evaluate both operands -----
 
-    let lv = eval_expr(left, diag, target, tr)?;
-    let rv = eval_expr(right, diag, target, tr)?;
+    let lv = eval_expr(left, diag, target, tr, er)?;
+    let rv = eval_expr(right, diag, target, tr, er)?;
 
     let lty = lv.get_type();
     let rty = rv.get_type();
@@ -1544,8 +1713,9 @@ fn eval_unary_op(
     diag: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Result<ConstValue, ()> {
-    let val = eval_expr(operand, diag, target, tr)?;
+    let val = eval_expr(operand, diag, target, tr, er)?;
     let promoted_ty = promote_to_int(&val.get_type());
 
     match op {
@@ -1638,10 +1808,11 @@ fn eval_cast(
     diag: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Result<ConstValue, ()> {
-    let val = eval_expr(operand, diag, target, tr)?;
+    let val = eval_expr(operand, diag, target, tr, er)?;
 
-    let target_ty = match resolve_type_name_to_ctype(type_name, diag, target, tr) {
+    let target_ty = match resolve_type_name_to_ctype(type_name, diag, target, tr, er) {
         Some(ty) => ty,
         None => {
             diag.error(
@@ -1688,9 +1859,10 @@ fn eval_sizeof(
     diag: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Result<ConstValue, ()> {
     let size = match operand {
-        SizeofOperand::TypeName(tn) => match resolve_type_name_to_ctype(tn, diag, target, tr) {
+        SizeofOperand::TypeName(tn) => match resolve_type_name_to_ctype(tn, diag, target, tr, er) {
             Some(ty) => types::size_of(&ty, target),
             None => {
                 diag.error(span, "cannot determine size of type in constant expression");
@@ -1700,11 +1872,11 @@ fn eval_sizeof(
         SizeofOperand::Expression(expr) => {
             // sizeof(expr): need the expression's type, not its value.
             // For simple expressions we can infer the type directly.
-            match infer_expr_type(expr, target, tr) {
+            match infer_expr_type(expr, target, tr, er) {
                 Some(ty) => types::size_of(&ty, target),
                 None => {
                     // Fall back: try to evaluate and use the result type
-                    match eval_expr(expr, diag, target, tr) {
+                    match eval_expr(expr, diag, target, tr, er) {
                         Ok(val) => {
                             let ty = val.get_type();
                             types::size_of(&ty, target)
@@ -1738,23 +1910,26 @@ fn eval_alignof(
     diag: &mut DiagnosticEngine,
     target: &Target,
     tr: TypedefResolver<'_>,
+    er: EnumResolver<'_>,
 ) -> Result<ConstValue, ()> {
     let alignment = match operand {
-        AlignofOperand::TypeName(tn) => match resolve_type_name_to_ctype(tn, diag, target, tr) {
-            Some(ty) => types::align_of(&ty, target),
-            None => {
-                diag.error(
-                    span,
-                    "cannot determine alignment of type in constant expression",
-                );
-                return Err(());
+        AlignofOperand::TypeName(tn) => {
+            match resolve_type_name_to_ctype(tn, diag, target, tr, er) {
+                Some(ty) => types::align_of(&ty, target),
+                None => {
+                    diag.error(
+                        span,
+                        "cannot determine alignment of type in constant expression",
+                    );
+                    return Err(());
+                }
             }
-        },
+        }
         AlignofOperand::Expression(expr) => {
             // GCC extension: __alignof__(expr) — alignment of the expression's type
-            match infer_expr_type(expr, target, tr) {
+            match infer_expr_type(expr, target, tr, er) {
                 Some(ty) => types::align_of(&ty, target),
-                None => match eval_expr(expr, diag, target, tr) {
+                None => match eval_expr(expr, diag, target, tr, er) {
                     Ok(val) => {
                         let ty = val.get_type();
                         types::align_of(&ty, target)

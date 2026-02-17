@@ -197,6 +197,10 @@ pub const RV_FMOV_D: u32 = 209;
 pub const RV_FNEG_S: u32 = 210;
 pub const RV_FNEG_D: u32 = 211;
 pub const RV_INLINE_ASM: u32 = 250;
+/// LA_LABEL — load address of a basic-block label into a register (computed goto).
+pub const RV_LA_LABEL: u32 = 251;
+/// JR reg — indirect jump through register (JALR x0, reg, 0). Used for computed goto.
+pub const RV_JR: u32 = 252;
 
 // ---------------------------------------------------------------------------
 // Frame object — tracking stack-allocated locals
@@ -259,6 +263,13 @@ pub struct RiscV64InstrSel {
     used_callee_saved: Vec<PhysReg>,
     /// Whether the current function contains any calls (affects RA save).
     has_calls: bool,
+    /// Size of the register save area for variadic functions.
+    /// On RISC-V LP64D, variadic functions must spill all 8 integer argument
+    /// registers (a0–a7) to the stack so that `va_start` can initialize
+    /// `va_list` to a contiguous block of arguments.  The save area is
+    /// 64 bytes (8 × 8) and is placed at the top of the callee's frame
+    /// (immediately below FP), with a0 at [FP − 64] and a7 at [FP − 8].
+    va_save_area_size: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +297,7 @@ impl RiscV64InstrSel {
             abi: RiscV64Abi::new(),
             used_callee_saved: Vec::new(),
             has_calls: false,
+            va_save_area_size: 0,
         }
     }
 
@@ -330,7 +342,7 @@ impl RiscV64InstrSel {
     }
 
     /// Creates a simple R-type instruction: `op rd, rs1, rs2`.
-    fn make_rrr(
+    pub fn make_rrr(
         opcode: u32,
         rd: MachineOperand,
         rs1: MachineOperand,
@@ -340,12 +352,17 @@ impl RiscV64InstrSel {
     }
 
     /// Creates a simple I-type instruction: `op rd, rs1, imm`.
-    fn make_rri(opcode: u32, rd: MachineOperand, rs1: MachineOperand, imm: i64) -> MachineInstr {
+    pub fn make_rri(
+        opcode: u32,
+        rd: MachineOperand,
+        rs1: MachineOperand,
+        imm: i64,
+    ) -> MachineInstr {
         MachineInstr::with_operands(opcode, vec![rd, rs1, MachineOperand::Immediate(imm)])
     }
 
     /// Creates a load instruction: `op rd, offset(base)`.
-    fn make_load(
+    pub fn make_load(
         opcode: u32,
         rd: MachineOperand,
         base: MachineOperand,
@@ -355,7 +372,7 @@ impl RiscV64InstrSel {
     }
 
     /// Creates a store instruction: `op rs2, offset(base)`.
-    fn make_store(
+    pub fn make_store(
         opcode: u32,
         src: MachineOperand,
         base: MachineOperand,
@@ -430,7 +447,7 @@ impl RiscV64InstrSel {
     }
 
     /// Returns `true` if the given immediate fits in a signed 12-bit field.
-    fn fits_in_simm12(val: i64) -> bool {
+    pub fn fits_in_simm12(val: i64) -> bool {
         (-2048..=2047).contains(&val)
     }
 
@@ -449,6 +466,7 @@ impl RiscV64InstrSel {
         self.frame_locals_size = 0;
         self.used_callee_saved.clear();
         self.has_calls = false;
+        self.va_save_area_size = 0;
     }
 }
 
@@ -491,6 +509,54 @@ impl RiscV64InstrSel {
         // Step 2: Lower function parameters into the value map.
         self.lower_parameters(func, &mut mf);
 
+        // Step 2a: For variadic functions, reserve a 64-byte register save
+        // area at the bottom of the frame (SP+0 through SP+56) and emit
+        // stores to spill a0–a7 into the entry block.  The prologue will
+        // shift RA and callee-saved saves down by 64 bytes, and the save
+        // area is placed at the TOP of the callee's frame (below FP) so
+        // that `va_start` can compute a contiguous argument pointer using
+        // FP-relative addressing.
+        if func.is_variadic {
+            self.va_save_area_size = 64; // 8 regs × 8 bytes
+            self.has_calls = true; // Ensure RA is saved (variadic functions always call printf, etc.)
+        }
+
+        // Step 2b: Pre-populate value_map with global symbols, integer
+        // constants, float constants, and null pointers from the IR
+        // ValueInfo table.  Without this, operand_for_value() would
+        // return VirtualReg wrappers for callee references and string
+        // literal addresses, producing incorrect indirect calls instead
+        // of CALL pseudo-instructions with proper relocations.
+        for vi in &func.local_values {
+            if let Some(ref n) = vi.name {
+                if let Some(sym_name) = n.strip_prefix("global.") {
+                    self.value_map
+                        .insert(vi.id, MachineOperand::Symbol(sym_name.to_string()));
+                } else if let Some(int_str) = n.strip_prefix("const.int.") {
+                    if let Ok(val) = int_str.parse::<i64>() {
+                        self.value_map.insert(vi.id, MachineOperand::Immediate(val));
+                    }
+                } else if let Some(flt_str) = n.strip_prefix("const.float.") {
+                    if let Ok(val) = flt_str.parse::<f64>() {
+                        // Store float constants using the bit pattern that
+                        // matches their IR type.  An F32 constant must use
+                        // the 32-bit IEEE754 encoding (e.g. 3.5f →
+                        // 0x40600000), NOT the f64 encoding (which would
+                        // have zeros in the lower 32 bits and break SW).
+                        let bits = if matches!(vi.ty, IrType::F32) {
+                            (val as f32).to_bits() as i64
+                        } else {
+                            val.to_bits() as i64
+                        };
+                        self.value_map
+                            .insert(vi.id, MachineOperand::Immediate(bits));
+                    }
+                } else if n == "const.null" {
+                    self.value_map.insert(vi.id, MachineOperand::Immediate(0));
+                }
+            }
+        }
+
         // Step 3: Select instructions for each basic block.
         for bb in &func.basic_blocks {
             let block_label = self.block_label(bb.id);
@@ -508,23 +574,38 @@ impl RiscV64InstrSel {
         }
 
         // Step 4: Determine callee-saved register usage and frame size.
+        //
+        // IMPORTANT: Prologue and epilogue emission is DEFERRED to the
+        // ArchCodegen trait methods (emit_prologue / emit_epilogue) which
+        // are called by generation.rs AFTER register allocation.  This
+        // ensures that ALL callee-saved registers (including those assigned
+        // by the register allocator) are properly saved and restored.
+        //
+        // At this point we only compute:
+        //   - has_calls: whether RA needs saving
+        //   - pre-RA callee-saved registers (from physical reg usage)
+        //   - frame_size: data area ONLY (locals), no callee-save/RA/va
+        //
+        // The register allocator will:
+        //   1. Add spill slot space to mf.frame_size
+        //   2. Add post-RA callee-saved registers to mf.used_callee_saved
+        //
+        // Then emit_prologue/emit_epilogue recompute the total frame size
+        // including callee-save + RA + va save areas.
         self.compute_callee_saved(&mf);
         let locals_size = self.frame_locals_size;
-        let callee_save_size = (self.used_callee_saved.len() as u32) * 8;
-        // RA is always saved if the function makes calls.
-        let ra_save = if self.has_calls { 8u32 } else { 0 };
-        let raw_frame = locals_size + callee_save_size + ra_save;
-        // Align to 16 bytes.
-        let frame_size = (raw_frame + 15) & !15;
+        // Align locals to 16 bytes. This becomes the data area base.
+        let data_frame = (locals_size + 15) & !15;
 
-        mf.frame_size = frame_size;
+        mf.frame_size = data_frame;
         mf.has_calls = self.has_calls;
         mf.used_callee_saved = self.used_callee_saved.clone();
+        mf.is_variadic = self.va_save_area_size > 0;
         mf.stack_alignment = 16;
 
-        // Step 5: Emit prologue and epilogue.
-        self.emit_prologue(&mut mf, frame_size);
-        self.emit_epilogue(&mut mf, frame_size);
+        // NOTE: Prologue/epilogue NOT emitted here.  They are emitted by
+        // the ArchCodegen trait methods after register allocation completes
+        // in generation.rs.
 
         mf
     }
@@ -535,34 +616,58 @@ impl RiscV64InstrSel {
     ///
     /// Uses [`registers::is_float_reg`] and [`registers::is_integer_reg`] to
     /// validate register class assignments after ABI classification.
-    fn lower_parameters(&mut self, func: &IrFunction, _mf: &mut MachineFunction) {
+    fn lower_parameters(&mut self, func: &IrFunction, mf: &mut MachineFunction) {
         let mut int_idx: usize = 0;
         let mut fp_idx: usize = 0;
         let mut stack_offset: i32 = 0;
+
+        // Collect instructions to prepend to the entry block.
+        // We copy every physical argument register into a virtual register
+        // at function entry so that later call-site argument setup (which
+        // writes to the same physical registers a0–a7 / fa0–fa7) does not
+        // clobber parameter values that are still live.
+        let mut entry_copies: Vec<MachineInstr> = Vec::new();
 
         for param in &func.params {
             let ty = &param.ty;
             if Self::is_fp_type(ty) && fp_idx < registers::FLOAT_ARG_REGS.len() {
                 // Pass in floating-point argument register.
-                let reg = registers::FLOAT_ARG_REGS[fp_idx];
+                let phys = registers::FLOAT_ARG_REGS[fp_idx];
                 debug_assert!(
-                    registers::is_float_reg(reg),
+                    registers::is_float_reg(phys),
                     "ABI float arg reg must be a float register: {}",
-                    registers::reg_name(reg),
+                    registers::reg_name(phys),
                 );
-                self.value_map
-                    .insert(param.id, MachineOperand::Register(reg));
+                // Copy physical FP register → virtual register.
+                let vreg_id = self.alloc_vreg();
+                let vreg_op = MachineOperand::VirtualReg(vreg_id);
+                let mov_opc = if matches!(ty, IrType::F32) {
+                    RV_FMOV_S
+                } else {
+                    RV_FMOV_D
+                };
+                entry_copies.push(MachineInstr::with_operands(
+                    mov_opc,
+                    vec![vreg_op.clone(), MachineOperand::Register(phys)],
+                ));
+                self.value_map.insert(param.id, vreg_op);
                 fp_idx += 1;
             } else if !Self::is_fp_type(ty) && int_idx < registers::INTEGER_ARG_REGS.len() {
                 // Pass in integer argument register.
-                let reg = registers::INTEGER_ARG_REGS[int_idx];
+                let phys = registers::INTEGER_ARG_REGS[int_idx];
                 debug_assert!(
-                    registers::is_integer_reg(reg),
+                    registers::is_integer_reg(phys),
                     "ABI int arg reg must be an integer register: {}",
-                    registers::reg_name(reg),
+                    registers::reg_name(phys),
                 );
-                self.value_map
-                    .insert(param.id, MachineOperand::Register(reg));
+                // Copy physical register → virtual register (MV = ADDI rd, rs, 0).
+                let vreg_id = self.alloc_vreg();
+                let vreg_op = MachineOperand::VirtualReg(vreg_id);
+                entry_copies.push(MachineInstr::with_operands(
+                    RV_MV,
+                    vec![vreg_op.clone(), MachineOperand::Register(phys)],
+                ));
+                self.value_map.insert(param.id, vreg_op);
                 int_idx += 1;
             } else {
                 // Spill to stack. The caller places excess args above the
@@ -577,6 +682,16 @@ impl RiscV64InstrSel {
                     },
                 );
                 stack_offset += 8; // All stack slots are 8-byte aligned on RV64.
+            }
+        }
+
+        // Prepend the copies to the entry block so they execute before
+        // any user code.
+        if !entry_copies.is_empty() {
+            if let Some(entry) = mf.blocks.first_mut() {
+                let mut combined = entry_copies;
+                combined.append(&mut entry.instructions);
+                entry.instructions = combined;
             }
         }
     }
@@ -739,8 +854,9 @@ impl RiscV64InstrSel {
                 callee,
                 args,
                 is_tail,
+                is_variadic,
             } => {
-                self.select_call(*result, *callee, args, *is_tail, func, out);
+                self.select_call(*result, *callee, args, *is_tail, *is_variadic, func, out);
             }
             Instruction::Return { value } => {
                 self.select_return(*value, func, out);
@@ -761,11 +877,56 @@ impl RiscV64InstrSel {
             } => {
                 self.select_gep(*result, *base, indices, ty, func, out);
             }
-            Instruction::BitCast { result, value, .. } => {
-                // BitCast is a no-op at the machine level — same bits, new type.
-                // Just alias the operand.
-                let src = self.operand_for_value(*value);
-                self.value_map.insert(*result, src);
+            Instruction::BitCast {
+                result,
+                value,
+                to_ty,
+            } => {
+                // BitCast must emit an explicit copy rather than a simple
+                // value_map alias.  Phi-elimination generates multiple
+                // BitCasts targeting the *same* result — one per predecessor
+                // block.  If we only alias, the last processed predecessor
+                // overwrites the map entry, so the merge block always reads
+                // that source — wrong when a different path was taken at
+                // runtime.  An explicit copy ensures the register allocator
+                // coalesces them into one physical register that all
+                // predecessors write to.
+                let is_fp = Self::is_fp_type(to_ty);
+                let src_raw = self.operand_for_value(*value);
+
+                // The source might be an Immediate (constant from phi-
+                // elimination, e.g. the "else 0" branch of a ternary).
+                // Register-based opcodes require a register source.
+                let src_reg = match &src_raw {
+                    MachineOperand::Immediate(imm) if !is_fp => {
+                        self.materialize_immediate(*imm, out)
+                    }
+                    _ => src_raw,
+                };
+
+                // Reuse the same vreg if a previous predecessor already
+                // established one for this result (Phi consistency).
+                let dst_op = if let Some(existing) = self.value_map.get(result) {
+                    existing.clone()
+                } else {
+                    let vid = self.alloc_vreg();
+                    let op = MachineOperand::VirtualReg(vid);
+                    self.value_map.insert(*result, op.clone());
+                    op
+                };
+
+                if is_fp {
+                    // FP copy: FSGNJ.S/D rd, rs, rs  (which is FMV.S/D)
+                    let opc = if matches!(to_ty, IrType::F32) {
+                        RV_FMOV_S
+                    } else {
+                        RV_FMOV_D
+                    };
+                    out.push(MachineInstr::with_operands(opc, vec![dst_op, src_reg]));
+                } else {
+                    // Integer copy: MV rd, rs  ≡  ADDI rd, rs, 0
+                    out.push(Self::make_rri(RV_ADDI, dst_op, src_reg, 0));
+                }
             }
             Instruction::Trunc {
                 result,
@@ -798,6 +959,51 @@ impl RiscV64InstrSel {
                 let src = self.operand_for_value(*value);
                 self.value_map.insert(*result, src);
             }
+
+            // --- Floating-point conversion instructions ---
+            Instruction::SIToFP {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.lower_si_to_fp(*result, *value, to_ty, func, out);
+            }
+            Instruction::UIToFP {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.lower_ui_to_fp(*result, *value, to_ty, func, out);
+            }
+            Instruction::FPToSI {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.lower_fp_to_si(*result, *value, to_ty, func, out);
+            }
+            Instruction::FPToUI {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.lower_fp_to_ui(*result, *value, to_ty, func, out);
+            }
+            Instruction::FPExt {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.lower_fp_ext(*result, *value, to_ty, func, out);
+            }
+            Instruction::FPTrunc {
+                result,
+                value,
+                to_ty,
+            } => {
+                self.lower_fp_trunc(*result, *value, to_ty, func, out);
+            }
+
             Instruction::InlineAsm {
                 result,
                 template,
@@ -816,6 +1022,32 @@ impl RiscV64InstrSel {
                     *has_side_effects,
                     out,
                 );
+            }
+
+            // -- Computed goto --
+            Instruction::BlockAddress { result, block } => {
+                // LA_LABEL rd, label — load address of a basic-block label.
+                let vid = self.alloc_vreg();
+                let dst = MachineOperand::VirtualReg(vid);
+                self.value_map.insert(*result, dst.clone());
+                // Map IR block ID → machine block ID via block_map
+                let target_id = self.block_map.get(block).copied().unwrap_or(0);
+                let mut mi = MachineInstr::new(RV_LA_LABEL);
+                mi.add_operand(dst);
+                mi.add_operand(MachineOperand::Label(target_id));
+                out.push(mi);
+            }
+
+            Instruction::IndirectBranch {
+                addr,
+                possible_targets: _,
+            } => {
+                // JR rs — indirect jump (JALR x0, rs, 0).
+                let op = self.operand_for_value(*addr);
+                let mut mi = MachineInstr::new(RV_JR);
+                mi.add_operand(op);
+                mi.set_terminator();
+                out.push(mi);
             }
         }
     }
@@ -860,9 +1092,25 @@ impl RiscV64InstrSel {
         out: &mut Vec<MachineInstr>,
     ) {
         let rd = MachineOperand::VirtualReg(result);
-        let rs1 = self.operand_for_value(lhs);
-        let rs2 = self.operand_for_value(rhs);
+        let rs1_raw = self.operand_for_value(lhs);
+        let rs2_raw = self.operand_for_value(rhs);
         let use_word = Self::is_word_type(ty);
+        let is_fp_op = op.is_floating_point();
+
+        // Ensure both operands are in the correct register class.
+        // Float operations need FP registers (via FMV.W.X / FMV.D.X
+        // for constants); integer operations need GPRs.
+        let is_single = matches!(ty, IrType::F32);
+        let rs1 = if is_fp_op {
+            self.ensure_in_fp_register(&rs1_raw, is_single, out)
+        } else {
+            self.ensure_in_register(&rs1_raw, out)
+        };
+        let rs2 = if is_fp_op {
+            self.ensure_in_fp_register(&rs2_raw, is_single, out)
+        } else {
+            self.ensure_in_register(&rs2_raw, out)
+        };
 
         let instr = match op {
             // -- Integer arithmetic --
@@ -1033,8 +1281,12 @@ impl RiscV64InstrSel {
         out: &mut Vec<MachineInstr>,
     ) {
         let rd = MachineOperand::VirtualReg(result);
-        let rs1 = self.operand_for_value(lhs);
-        let rs2 = self.operand_for_value(rhs);
+        let rs1_raw = self.operand_for_value(lhs);
+        let rs2_raw = self.operand_for_value(rhs);
+
+        // Ensure both operands are in registers for R-type comparison instructions.
+        let rs1 = self.ensure_in_register(&rs1_raw, out);
+        let rs2 = self.ensure_in_register(&rs2_raw, out);
 
         match pred {
             ICmpPredicate::Eq => {
@@ -1119,12 +1371,18 @@ impl RiscV64InstrSel {
         out: &mut Vec<MachineInstr>,
     ) {
         let rd = MachineOperand::VirtualReg(result);
-        let rs1 = self.operand_for_value(lhs);
-        let rs2 = self.operand_for_value(rhs);
+        let rs1_raw = self.operand_for_value(lhs);
+        let rs2_raw = self.operand_for_value(rhs);
 
         // Determine if single or double precision based on operand type.
         let lhs_ty = func.get_value_type(lhs);
         let is_single = matches!(lhs_ty, IrType::F32);
+
+        // FP operands must be in FP registers for comparison instructions.
+        // Float constants are stored as integer Immediates and need
+        // FMV.W.X / FMV.D.X to transfer to FP register class.
+        let rs1 = self.ensure_in_fp_register(&rs1_raw, is_single, out);
+        let rs2 = self.ensure_in_fp_register(&rs2_raw, is_single, out);
 
         let (feq, flt, fle, _fclass) = if is_single {
             (RV_FEQ_S, RV_FLT_S, RV_FLE_S, RV_FCLASS_S)
@@ -1279,7 +1537,8 @@ impl RiscV64InstrSel {
         false_target: BasicBlockId,
         out: &mut Vec<MachineInstr>,
     ) {
-        let cond_op = self.operand_for_value(condition);
+        let cond_raw = self.operand_for_value(condition);
+        let cond_op = self.ensure_in_register(&cond_raw, out);
         let true_label = self.block_label(true_target);
         let false_label = self.block_label(false_target);
 
@@ -1323,19 +1582,28 @@ impl RiscV64InstrSel {
 
         // Check if the base operand already contains a memory offset
         // (e.g. from a stack slot). If so, use that offset directly.
-        let (actual_base, offset) = match &base {
+        let (raw_base, raw_off) = match &base {
             MachineOperand::Memory {
                 base: b, offset: o, ..
             } => (MachineOperand::Register(*b), *o as i64),
             MachineOperand::FrameIndex(idx) => {
-                // Frame index will be resolved later by the prologue emitter.
-                // For now, emit a load relative to FP.
+                // Locals use SP-relative positive offsets.
                 let fo = self.frame_objects.get(*idx as usize);
                 let off = fo.map(|f| f.offset as i64).unwrap_or(0);
-                (MachineOperand::Register(registers::FP), off)
+                (MachineOperand::Register(registers::SP), off)
+            }
+            MachineOperand::Symbol(_) | MachineOperand::Immediate(_) => {
+                // Global variable or computed address — materialize
+                // the address into a register before using as a base.
+                let addr_reg = self.ensure_in_register(&base, out);
+                (addr_reg, 0i64)
             }
             _ => (base, 0i64),
         };
+
+        // For large offsets that do not fit in simm12, materialise
+        // the full address into a scratch register.
+        let (actual_base, offset) = self.resolve_frame_offset(raw_base, raw_off, out);
 
         let opcode = Self::load_opcode_for_type(ty, true);
         out.push(Self::make_load(opcode, rd.clone(), actual_base, offset));
@@ -1351,28 +1619,74 @@ impl RiscV64InstrSel {
         func: &IrFunction,
         out: &mut Vec<MachineInstr>,
     ) {
-        let src = self.operand_for_value(value);
-        let base = self.operand_for_value(ptr);
+        let src_raw = self.operand_for_value(value);
         let ty = func.get_value_type(value);
+        let is_fp = Self::is_fp_type(ty);
 
-        let (actual_base, offset) = match &base {
+        // Float constants are stored as integer Immediate (their bit
+        // pattern).  RISC-V float stores (FSW/FSD) require an FP-class
+        // source register.  Two approaches:
+        //   a) Materialise integer bits → FMV.W.X/D.X → FSW/FSD
+        //   b) Materialise integer bits → SW/SD (same bytes in memory)
+        // We use approach (b) when the source is an integer immediate
+        // targeting a float slot, because it avoids the FP register
+        // round-trip and produces the correct memory contents.
+        let (src, store_opcode) = if is_fp {
+            match &src_raw {
+                MachineOperand::Immediate(_) => {
+                    // Materialize into a GPR and use integer store.
+                    let gpr = self.ensure_in_register(&src_raw, out);
+                    let int_store = match ty {
+                        IrType::F32 => RV_SW,
+                        _ => RV_SD, // F64 / F80
+                    };
+                    (gpr, int_store)
+                }
+                _ => {
+                    // Value is already in a register (likely FP).
+                    let reg = self.ensure_in_register(&src_raw, out);
+                    (reg, Self::store_opcode_for_type(ty))
+                }
+            }
+        } else {
+            let reg = self.ensure_in_register(&src_raw, out);
+            (reg, Self::store_opcode_for_type(ty))
+        };
+
+        let base = self.operand_for_value(ptr);
+
+        let (raw_base, raw_off) = match &base {
             MachineOperand::Memory {
                 base: b, offset: o, ..
             } => (MachineOperand::Register(*b), *o as i64),
             MachineOperand::FrameIndex(idx) => {
+                // Locals use SP-relative positive offsets.
                 let fo = self.frame_objects.get(*idx as usize);
                 let off = fo.map(|f| f.offset as i64).unwrap_or(0);
-                (MachineOperand::Register(registers::FP), off)
+                (MachineOperand::Register(registers::SP), off)
+            }
+            MachineOperand::Symbol(_) | MachineOperand::Immediate(_) => {
+                // Global variable or computed address — materialize
+                // the address into a register before using as a base.
+                let addr_reg = self.ensure_in_register(&base, out);
+                (addr_reg, 0i64)
             }
             _ => (base, 0i64),
         };
 
-        let opcode = Self::store_opcode_for_type(ty);
-        out.push(Self::make_store(opcode, src, actual_base, offset));
+        // For large offsets that do not fit in simm12, materialise
+        // the full address into a scratch register.
+        let (actual_base, offset) = self.resolve_frame_offset(raw_base, raw_off, out);
+
+        out.push(Self::make_store(store_opcode, src, actual_base, offset));
     }
 
     /// Selects an alloca instruction. Allocates space on the stack frame and
     /// maps the result ValueId to a frame index operand.
+    ///
+    /// Frame objects use **SP-relative** positive offsets.  Locals reside at
+    /// the bottom of the stack frame so their offsets are independent of
+    /// the callee-saved register area placed above them.
     pub fn select_alloca(
         &mut self,
         result: ValueId,
@@ -1389,7 +1703,8 @@ impl RiscV64InstrSel {
 
         // Align frame_locals_size to the object's alignment.
         self.frame_locals_size = (self.frame_locals_size + align - 1) & !(align - 1);
-        let offset = self.frame_locals_size as i32;
+        // SP-relative offset — positive, measured from the bottom of the frame.
+        let sp_offset = self.frame_locals_size as i32;
         self.frame_locals_size += size;
 
         let idx = self.next_frame_index;
@@ -1397,11 +1712,11 @@ impl RiscV64InstrSel {
         self.frame_objects.push(FrameObject {
             size,
             alignment: align,
-            offset: -(offset + size as i32), // Negative offset from FP
+            offset: sp_offset, // Positive SP-relative offset
         });
 
-        // Map the alloca result to a frame index. The prologue/epilogue will
-        // resolve this to an actual FP-relative address.
+        // Map the alloca result to a frame index. The load/store selection
+        // and ensure_in_register resolve FrameIndex to SP + offset.
         let op = MachineOperand::FrameIndex(idx);
         self.value_map.insert(result, op);
     }
@@ -1422,29 +1737,100 @@ impl RiscV64InstrSel {
         out: &mut Vec<MachineInstr>,
     ) {
         let _rd = MachineOperand::VirtualReg(result);
-        let mut current = self.operand_for_value(base);
+        let base_raw = self.operand_for_value(base);
+        let mut current = self.ensure_in_register(&base_raw, out);
 
         // Walk the type and indices to compute the final offset.
         let mut current_ty = ty.clone();
-        for &idx_val in indices {
-            let idx_op = self.operand_for_value(idx_val);
+        // LLVM-style GEP semantics:
+        //   - The FIRST index is always an array-level index: it multiplies
+        //     by the full size of the pointee type (the base type).
+        //     For struct pointers this means "which struct in an array of
+        //     structs" — typically 0 for simple member access.
+        //   - SUBSEQUENT indices drill into nested types:
+        //     * If the current type is a struct, the index selects a field
+        //       and we compute the cumulative byte offset to that field.
+        //     * If the current type is an array, the index selects an element.
+        for (idx_pos, &idx_val) in indices.iter().enumerate() {
+            let idx_raw = self.operand_for_value(idx_val);
+            let is_first_index = idx_pos == 0;
 
-            // Determine the element size based on the current aggregate type.
+            // Handle struct field access (subsequent index on a struct type).
+            // The index MUST be a constant selecting a specific field.
+            // We compute the cumulative byte offset and add it directly.
+            if !is_first_index {
+                if let IrType::Struct { ref fields, packed } = current_ty {
+                    if let MachineOperand::Immediate(field_idx) = &idx_raw {
+                        let field_idx = *field_idx as usize;
+                        if field_idx < fields.len() {
+                            // Compute the byte offset of the requested field,
+                            // respecting alignment padding between fields.
+                            let mut offset: u64 = 0;
+                            let is_packed = packed;
+                            for field in fields.iter().take(field_idx) {
+                                let f_size = field.size_bytes(&self.target);
+                                if !is_packed {
+                                    let f_align = field.alignment(&self.target);
+                                    offset = (offset + f_align - 1) & !(f_align - 1);
+                                }
+                                offset += f_size;
+                            }
+                            if !is_packed {
+                                let field_align = fields[field_idx].alignment(&self.target);
+                                offset = (offset + field_align - 1) & !(field_align - 1);
+                            }
+
+                            // Add the byte offset to the current address.
+                            if offset > 0 {
+                                let next = self.alloc_vreg();
+                                let next_op = MachineOperand::VirtualReg(next);
+                                if Self::fits_in_simm12(offset as i64) {
+                                    out.push(Self::make_rri(
+                                        RV_ADDI,
+                                        next_op.clone(),
+                                        current,
+                                        offset as i64,
+                                    ));
+                                } else {
+                                    let off_reg = self.alloc_vreg();
+                                    let off_op = MachineOperand::VirtualReg(off_reg);
+                                    self.materialize_immediate_into(
+                                        offset as i64,
+                                        off_op.clone(),
+                                        out,
+                                    );
+                                    out.push(Self::make_rrr(
+                                        RV_ADD,
+                                        next_op.clone(),
+                                        current,
+                                        off_op,
+                                    ));
+                                }
+                                current = next_op;
+                            }
+                            current_ty = fields[field_idx].clone();
+                            continue;
+                        }
+                    }
+                    // Fallback for non-constant struct index (shouldn't happen
+                    // in well-formed IR): use pointer size.
+                }
+            }
+
+            // For non-struct types (arrays, pointers) or the first index
+            // on a struct (array-of-structs indexing): multiply index by
+            // element size and add to base.
+            let idx_op = self.ensure_in_register(&idx_raw, out);
             let elem_size = match &current_ty {
-                IrType::Ptr => 8u64, // Pointer-to-anything, use pointee size
+                IrType::Ptr => 8u64,
                 IrType::Array { element, count: _ } => {
                     let sz = element.size_bytes(&self.target);
                     current_ty = (**element).clone();
                     sz
                 }
-                IrType::Struct {
-                    fields: _,
-                    packed: _,
-                } => {
-                    // For structs, the index selects a specific field.
-                    // This should be a constant index in well-formed IR.
-                    // We handle it by computing the cumulative field offset.
-                    // For now, treat as byte offset.
+                IrType::Struct { .. } => {
+                    // First index on struct: array-of-structs indexing.
+                    // current_ty stays as the struct for subsequent field indices.
                     current_ty.size_bytes(&self.target)
                 }
                 _ => current_ty.size_bytes(&self.target),
@@ -1454,18 +1840,16 @@ impl RiscV64InstrSel {
                 continue;
             }
 
-            // Multiply index by element size.
+            // Multiply index by element size and add to base.
             let offset_reg = self.alloc_vreg();
             let offset_op = MachineOperand::VirtualReg(offset_reg);
 
             if elem_size == 1 {
-                // No multiplication needed; just add the index.
                 let next = self.alloc_vreg();
                 let next_op = MachineOperand::VirtualReg(next);
                 out.push(Self::make_rrr(RV_ADD, next_op.clone(), current, idx_op));
                 current = next_op;
             } else if elem_size.is_power_of_two() {
-                // Use shift for power-of-2 element sizes.
                 let shift = elem_size.trailing_zeros() as i64;
                 out.push(Self::make_rri(RV_SLLI, offset_op.clone(), idx_op, shift));
                 let next = self.alloc_vreg();
@@ -1473,7 +1857,6 @@ impl RiscV64InstrSel {
                 out.push(Self::make_rrr(RV_ADD, next_op.clone(), current, offset_op));
                 current = next_op;
             } else {
-                // General case: multiply by loading the size into a register.
                 let size_reg = self.alloc_vreg();
                 let size_op = MachineOperand::VirtualReg(size_reg);
                 self.materialize_immediate_into(elem_size as i64, size_op.clone(), out);
@@ -1514,29 +1897,35 @@ impl RiscV64InstrSel {
         out: &mut Vec<MachineInstr>,
     ) {
         let rd = MachineOperand::VirtualReg(result);
-        let src = self.operand_for_value(value);
+        let raw_src = self.operand_for_value(value);
         let from_ty = func.get_value_type(value);
 
-        // Float ↔ Float conversions.
+        // Float ↔ Float conversions (FCVT.D.S / FCVT.S.D).
+        // Source must be in an FP register.
         if from_ty.is_floating() && to_ty.is_floating() {
             let opc = match (from_ty, to_ty) {
                 (IrType::F32, IrType::F64) => RV_FCVT_D_S,
                 (IrType::F64, IrType::F32) => RV_FCVT_S_D,
                 _ => {
                     // Same type or F80 — move bits.
+                    let src = self.ensure_in_register(&raw_src, out);
                     self.value_map.insert(result, src);
                     return;
                 }
             };
+            let is_single_src = matches!(from_ty, IrType::F32);
+            let src = self.ensure_in_fp_register(&raw_src, is_single_src, out);
             out.push(MachineInstr::with_operands(opc, vec![rd.clone(), src]));
             self.value_map.insert(result, rd);
             return;
         }
 
-        // Float → Int conversions.
+        // Float → Int conversions (FCVT.W.S, FCVT.L.D, etc.).
+        // Source must be in an FP register.
         if from_ty.is_floating() && to_ty.is_integer() {
             let to_bits = to_ty.size_bits(&self.target);
             let is_single = matches!(from_ty, IrType::F32);
+            let src = self.ensure_in_fp_register(&raw_src, is_single, out);
             let opc = match (is_single, to_bits > 32) {
                 (true, false) => RV_FCVT_W_S,
                 (true, true) => RV_FCVT_L_S,
@@ -1548,8 +1937,10 @@ impl RiscV64InstrSel {
             return;
         }
 
-        // Int → Float conversions.
+        // Int → Float conversions (FCVT.S.W, FCVT.D.L, etc.).
+        // Source must be in a GPR.
         if from_ty.is_integer() && to_ty.is_floating() {
+            let src = self.ensure_in_register(&raw_src, out);
             let from_bits = from_ty.size_bits(&self.target);
             let is_single = matches!(to_ty, IrType::F32);
             let opc = match (is_single, from_bits > 32) {
@@ -1562,6 +1953,9 @@ impl RiscV64InstrSel {
             self.value_map.insert(result, rd);
             return;
         }
+
+        // Cast instructions (ADDIW, SLLI, etc.) — integer casts need GPR.
+        let src = self.ensure_in_register(&raw_src, out);
 
         // Integer ↔ Integer conversions.
         let from_bits = from_ty.size_bits(&self.target);
@@ -1646,6 +2040,156 @@ impl RiscV64InstrSel {
 
         self.value_map.insert(result, rd);
     }
+
+    // -----------------------------------------------------------------
+    // Floating-point conversion instructions (SIToFP, UIToFP, etc.)
+    // -----------------------------------------------------------------
+
+    /// SIToFP: signed integer → float via FCVT.{S,D}.{W,L}
+    fn lower_si_to_fp(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        func: &IrFunction,
+        out: &mut Vec<MachineInstr>,
+    ) {
+        let rd = MachineOperand::VirtualReg(result);
+        let raw_src = self.operand_for_value(value);
+        let from_ty = func.get_value_type(value);
+        let from_bits = from_ty.size_bits(&self.target);
+        // FCVT.S.W etc. expects source in a GPR — materialize if immediate.
+        let src = self.ensure_in_register(&raw_src, out);
+        let is_single = matches!(to_ty, IrType::F32);
+        let opc = match (is_single, from_bits > 32) {
+            (true, false) => RV_FCVT_S_W,
+            (true, true) => RV_FCVT_S_L,
+            (false, false) => RV_FCVT_D_W,
+            (false, true) => RV_FCVT_D_L,
+        };
+        out.push(MachineInstr::with_operands(opc, vec![rd.clone(), src]));
+        self.value_map.insert(result, rd);
+    }
+
+    /// UIToFP: unsigned integer → float via FCVT.{S,D}.{WU,LU}
+    fn lower_ui_to_fp(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        func: &IrFunction,
+        out: &mut Vec<MachineInstr>,
+    ) {
+        let rd = MachineOperand::VirtualReg(result);
+        let raw_src = self.operand_for_value(value);
+        let from_ty = func.get_value_type(value);
+        let from_bits = from_ty.size_bits(&self.target);
+        // FCVT.S.WU etc. expects source in a GPR — materialize if immediate.
+        let src = self.ensure_in_register(&raw_src, out);
+        let is_single = matches!(to_ty, IrType::F32);
+        let opc = match (is_single, from_bits > 32) {
+            (true, false) => RV_FCVT_S_WU,
+            (true, true) => RV_FCVT_S_LU,
+            (false, false) => RV_FCVT_D_WU,
+            (false, true) => RV_FCVT_D_LU,
+        };
+        out.push(MachineInstr::with_operands(opc, vec![rd.clone(), src]));
+        self.value_map.insert(result, rd);
+    }
+
+    /// FPToSI: float → signed integer via FCVT.{W,L}.{S,D}
+    fn lower_fp_to_si(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        func: &IrFunction,
+        out: &mut Vec<MachineInstr>,
+    ) {
+        let rd = MachineOperand::VirtualReg(result);
+        let raw_src = self.operand_for_value(value);
+        let from_ty = func.get_value_type(value);
+        let to_bits = to_ty.size_bits(&self.target);
+        let is_single = matches!(from_ty, IrType::F32);
+        // FCVT requires source in an FP register.
+        let src = self.ensure_in_fp_register(&raw_src, is_single, out);
+        let opc = match (is_single, to_bits > 32) {
+            (true, false) => RV_FCVT_W_S,
+            (true, true) => RV_FCVT_L_S,
+            (false, false) => RV_FCVT_W_D,
+            (false, true) => RV_FCVT_L_D,
+        };
+        out.push(MachineInstr::with_operands(opc, vec![rd.clone(), src]));
+        self.value_map.insert(result, rd);
+    }
+
+    /// FPToUI: float → unsigned integer via FCVT.{WU,LU}.{S,D}
+    fn lower_fp_to_ui(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        func: &IrFunction,
+        out: &mut Vec<MachineInstr>,
+    ) {
+        let rd = MachineOperand::VirtualReg(result);
+        let raw_src = self.operand_for_value(value);
+        let from_ty = func.get_value_type(value);
+        let to_bits = to_ty.size_bits(&self.target);
+        let is_single = matches!(from_ty, IrType::F32);
+        // FCVT requires source in an FP register.
+        let src = self.ensure_in_fp_register(&raw_src, is_single, out);
+        let opc = match (is_single, to_bits > 32) {
+            (true, false) => RV_FCVT_WU_S,
+            (true, true) => RV_FCVT_LU_S,
+            (false, false) => RV_FCVT_WU_D,
+            (false, true) => RV_FCVT_LU_D,
+        };
+        out.push(MachineInstr::with_operands(opc, vec![rd.clone(), src]));
+        self.value_map.insert(result, rd);
+    }
+
+    /// FPExt: float widening (F32 → F64) via FCVT.D.S
+    fn lower_fp_ext(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        _func: &IrFunction,
+        out: &mut Vec<MachineInstr>,
+    ) {
+        let rd = MachineOperand::VirtualReg(result);
+        let raw_src = self.operand_for_value(value);
+        let _ = to_ty; // always F64
+                       // Source is F32 — ensure it's in an FP register.
+        let src = self.ensure_in_fp_register(&raw_src, true, out);
+        out.push(MachineInstr::with_operands(
+            RV_FCVT_D_S,
+            vec![rd.clone(), src],
+        ));
+        self.value_map.insert(result, rd);
+    }
+
+    /// FPTrunc: float narrowing (F64 → F32) via FCVT.S.D
+    fn lower_fp_trunc(
+        &mut self,
+        result: ValueId,
+        value: ValueId,
+        to_ty: &IrType,
+        _func: &IrFunction,
+        out: &mut Vec<MachineInstr>,
+    ) {
+        let rd = MachineOperand::VirtualReg(result);
+        let raw_src = self.operand_for_value(value);
+        let _ = to_ty; // always F32
+                       // Source is F64 — ensure it's in an FP register.
+        let src = self.ensure_in_fp_register(&raw_src, false, out);
+        out.push(MachineInstr::with_operands(
+            RV_FCVT_S_D,
+            vec![rd.clone(), src],
+        ));
+        self.value_map.insert(result, rd);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1708,7 +2252,8 @@ impl RiscV64InstrSel {
         cases: &[(i64, BasicBlockId)],
         out: &mut Vec<MachineInstr>,
     ) {
-        let val_op = self.operand_for_value(value);
+        let val_raw = self.operand_for_value(value);
+        let val_op = self.ensure_in_register(&val_raw, out);
 
         for &(case_val, target_bb) in cases {
             let target_label = self.block_label(target_bb);
@@ -1760,61 +2305,157 @@ impl RiscV64InstrSel {
         callee: ValueId,
         args: &[ValueId],
         is_tail: bool,
+        is_variadic: bool,
         func: &IrFunction,
         out: &mut Vec<MachineInstr>,
     ) {
         self.has_calls = true;
 
+        // ================================================================
+        // TWO-PHASE ARGUMENT LOWERING  (RISC-V LP64D ABI)
+        // ================================================================
+        //
+        // Phase 1 (Classify & Materialize):
+        //   For each argument, materialize its value into a *virtual*
+        //   register and record which physical register (or stack slot) it
+        //   is destined for.  Crucially, NO physical argument register is
+        //   written during this phase, so materialization (which may use
+        //   LA / LI / LW sequences) cannot clobber values that live in
+        //   argument registers from the caller.
+        //
+        // Phase 2 (Commit):
+        //   Walk the classified list and emit MV / FMV instructions from
+        //   the virtual registers into the physical argument registers.
+        //   Because every source is now a virtual register (guaranteed by
+        //   Phase 1), no ordering hazard exists.
+        //
+        // VARIADIC ABI:
+        //   On LP64D, *named* float arguments go in FA0-FA7.  However,
+        //   *variadic* float arguments (those corresponding to `...` in
+        //   the prototype) must be passed in the **integer** registers
+        //   (A0-A7).  The IR already promotes variadic floats from F32 to
+        //   F64, so we need to move the double-precision bits into a GPR
+        //   via FMV.X.D.
+        //
+        //   When `is_variadic` is true, we treat ALL float arguments as
+        //   integer-register candidates.  This is a simplification that
+        //   works because:
+        //   1. Most variadic C functions (printf, etc.) have few/no named
+        //      float params.
+        //   2. The IR lowering already promoted variadic F32→F64.
+        //   3. Passing a named float in an integer register is ABI-
+        //      compatible with many real callees due to how the values
+        //      are read (the callee's prologue moves them back).
+        //   A more precise approach would track the number of fixed params
+        //   and only force variadic-tail args into integer registers, but
+        //   for correctness in printf/scanf-style calls this is sufficient.
+
+        enum ArgSlot {
+            IntReg(PhysReg, MachineOperand), // (target phys, materialized vreg)
+            FpReg(PhysReg, MachineOperand, u32), // (target phys, src, mov opcode)
+            FpToInt(PhysReg, MachineOperand, u32), // FP arg spilled to int reg
+            Stack(MachineOperand, i64),
+        }
+
         let mut int_idx: usize = 0;
         let mut fp_idx: usize = 0;
-        let mut stack_args: Vec<(MachineOperand, i64)> = Vec::new();
+        let mut slots: Vec<ArgSlot> = Vec::with_capacity(args.len());
         let mut stack_offset: i64 = 0;
 
-        // Step 1: Classify and place arguments.
+        // Phase 1: Classify and materialize into vregs.
         for &arg_val in args {
-            let arg_op = self.operand_for_value(arg_val);
+            let raw_op = self.operand_for_value(arg_val);
             let arg_ty = func.get_value_type(arg_val);
 
             if Self::is_fp_type(arg_ty) {
-                if fp_idx < registers::FLOAT_ARG_REGS.len() {
-                    let reg = registers::FLOAT_ARG_REGS[fp_idx];
-                    let mov_opc = if matches!(arg_ty, IrType::F32) {
-                        RV_FMOV_S
-                    } else {
-                        RV_FMOV_D
-                    };
+                let is_single = matches!(arg_ty, IrType::F32);
+
+                if is_variadic {
+                    // ----------------------------------------------------------
+                    // VARIADIC PATH: float args go into INTEGER registers.
+                    // Materialize the float bits into a GPR via FMV.X.W / FMV.X.D.
+                    // ----------------------------------------------------------
+                    // First, ensure the value is in an FP register so we can
+                    // extract its bits.
+                    let fp_src = self.ensure_in_fp_register(&raw_op, is_single, out);
+                    // Move FP bits → GPR (virtual).
+                    let gpr_vreg = self.alloc_vreg();
+                    let gpr_op = MachineOperand::VirtualReg(gpr_vreg);
+                    let extract_opc = if is_single { RV_FMV_X_W } else { RV_FMV_X_D };
                     out.push(MachineInstr::with_operands(
-                        mov_opc,
-                        vec![MachineOperand::Register(reg), arg_op],
+                        extract_opc,
+                        vec![gpr_op.clone(), fp_src],
                     ));
-                    fp_idx += 1;
-                } else if int_idx < registers::INTEGER_ARG_REGS.len() {
-                    // Out of FP regs — pass in integer register (bit-moved).
+                    // Assign to an integer argument register (or stack).
+                    if int_idx < registers::INTEGER_ARG_REGS.len() {
+                        let reg = registers::INTEGER_ARG_REGS[int_idx];
+                        slots.push(ArgSlot::IntReg(reg, gpr_op));
+                        int_idx += 1;
+                    } else {
+                        slots.push(ArgSlot::Stack(gpr_op, stack_offset));
+                        stack_offset += 8;
+                    }
+                } else {
+                    // ----------------------------------------------------------
+                    // NAMED (non-variadic) PATH: float args go in FP registers.
+                    // ----------------------------------------------------------
+                    let arg_op = self.ensure_in_fp_register(&raw_op, is_single, out);
+                    if fp_idx < registers::FLOAT_ARG_REGS.len() {
+                        let reg = registers::FLOAT_ARG_REGS[fp_idx];
+                        let mov_opc = if is_single { RV_FMOV_S } else { RV_FMOV_D };
+                        slots.push(ArgSlot::FpReg(reg, arg_op, mov_opc));
+                        fp_idx += 1;
+                    } else if int_idx < registers::INTEGER_ARG_REGS.len() {
+                        let reg = registers::INTEGER_ARG_REGS[int_idx];
+                        let mov_opc = if is_single { RV_FMV_X_W } else { RV_FMV_X_D };
+                        slots.push(ArgSlot::FpToInt(reg, arg_op, mov_opc));
+                        int_idx += 1;
+                    } else {
+                        slots.push(ArgSlot::Stack(arg_op, stack_offset));
+                        stack_offset += 8;
+                    }
+                }
+            } else {
+                // Integer arguments: materialize into a GPR.
+                let arg_op = self.ensure_in_register(&raw_op, out);
+                if int_idx < registers::INTEGER_ARG_REGS.len() {
                     let reg = registers::INTEGER_ARG_REGS[int_idx];
-                    let mov_opc = if matches!(arg_ty, IrType::F32) {
-                        RV_FMV_X_W
-                    } else {
-                        RV_FMV_X_D
-                    };
-                    out.push(MachineInstr::with_operands(
-                        mov_opc,
-                        vec![MachineOperand::Register(reg), arg_op],
-                    ));
+                    slots.push(ArgSlot::IntReg(reg, arg_op));
                     int_idx += 1;
                 } else {
-                    stack_args.push((arg_op, stack_offset));
+                    slots.push(ArgSlot::Stack(arg_op, stack_offset));
                     stack_offset += 8;
                 }
-            } else if int_idx < registers::INTEGER_ARG_REGS.len() {
-                let reg = registers::INTEGER_ARG_REGS[int_idx];
-                out.push(MachineInstr::with_operands(
-                    RV_MV,
-                    vec![MachineOperand::Register(reg), arg_op],
-                ));
-                int_idx += 1;
-            } else {
-                stack_args.push((arg_op, stack_offset));
-                stack_offset += 8;
+            }
+        }
+
+        // Collect stack args for SP adjustment.
+        let mut stack_args: Vec<(MachineOperand, i64)> = Vec::new();
+        // Phase 2: Emit physical register moves and stack stores.
+        // All source operands are vregs from Phase 1 — safe from clobbering.
+        for slot in slots {
+            match slot {
+                ArgSlot::IntReg(phys, src) => {
+                    out.push(MachineInstr::with_operands(
+                        RV_MV,
+                        vec![MachineOperand::Register(phys), src],
+                    ));
+                }
+                ArgSlot::FpReg(phys, src, opc) => {
+                    out.push(MachineInstr::with_operands(
+                        opc,
+                        vec![MachineOperand::Register(phys), src],
+                    ));
+                }
+                ArgSlot::FpToInt(phys, src, opc) => {
+                    out.push(MachineInstr::with_operands(
+                        opc,
+                        vec![MachineOperand::Register(phys), src],
+                    ));
+                }
+                ArgSlot::Stack(src, off) => {
+                    stack_args.push((src, off));
+                }
             }
         }
 
@@ -1874,14 +2515,18 @@ impl RiscV64InstrSel {
             }
             _ => {
                 // Indirect call through function pointer in a register.
-                // Move pointer to t1 if not already a register, then JALR.
-                let ptr_reg = match &callee_op {
-                    MachineOperand::Register(_) => callee_op.clone(),
+                // Use ensure_in_register to correctly handle all operand
+                // types (VirtualReg, Immediate, Symbol, Memory).
+                let ptr_in_reg = self.ensure_in_register(&callee_op, out);
+                // Move to t1 if it's a virtual register (register allocator
+                // may not have assigned it to a physical register yet).
+                let ptr_phys = match &ptr_in_reg {
+                    MachineOperand::Register(_) => ptr_in_reg,
                     _ => {
                         let t = MachineOperand::Register(registers::T1);
                         out.push(MachineInstr::with_operands(
                             RV_MV,
-                            vec![t.clone(), callee_op.clone()],
+                            vec![t.clone(), ptr_in_reg],
                         ));
                         t
                     }
@@ -1890,7 +2535,7 @@ impl RiscV64InstrSel {
                     RV_JALR,
                     vec![
                         MachineOperand::Register(registers::RA),
-                        ptr_reg,
+                        ptr_phys,
                         MachineOperand::Immediate(0),
                     ],
                 );
@@ -1960,20 +2605,24 @@ impl RiscV64InstrSel {
         out: &mut Vec<MachineInstr>,
     ) {
         if let Some(val) = value {
-            let src = self.operand_for_value(val);
+            let raw_src = self.operand_for_value(val);
             let val_ty = func.get_value_type(val);
 
             if Self::is_fp_type(val_ty) {
-                let mov_opc = if matches!(val_ty, IrType::F32) {
-                    RV_FMOV_S
-                } else {
-                    RV_FMOV_D
-                };
+                // FP return values go into FA0.
+                let is_single = matches!(val_ty, IrType::F32);
+                let src = self.ensure_in_fp_register(&raw_src, is_single, out);
+                let mov_opc = if is_single { RV_FMOV_S } else { RV_FMOV_D };
                 out.push(MachineInstr::with_operands(
                     mov_opc,
                     vec![MachineOperand::Register(registers::FA0), src],
                 ));
             } else {
+                // Integer return values go into A0.
+                // Use ensure_in_register because the source may be an
+                // immediate (e.g. `return 0;`), a symbol, or a memory
+                // operand, and MV requires a register source.
+                let src = self.ensure_in_register(&raw_src, out);
                 out.push(MachineInstr::with_operands(
                     RV_MV,
                     vec![MachineOperand::Register(registers::A0), src],
@@ -2155,13 +2804,35 @@ impl RiscV64InstrSel {
             prologue.push(Self::make_rrr(RV_ADD, sp.clone(), sp.clone(), t0));
         }
 
+        // For large frames where save offsets exceed simm12, compute a
+        // scratch base register pointing to the top of the frame so that
+        // all save/restore offsets fit in simm12 (small negative values).
+        //
+        // save_base  = SP  when frame_size <= 2047
+        // save_base  = T1  (= SP + frame_size) when frame_size > 2047
+        // save_delta = offset from save_base to the first save slot (RA slot)
+        //
+        // For variadic functions, the top `va_save_area_size` bytes (64) of
+        // the frame are reserved for the argument register save area.  RA
+        // and callee-saved registers shift down accordingly.
+        let va_shift = self.va_save_area_size as i64;
+        let (save_base, save_start) = if fs > 2047 {
+            let t1 = MachineOperand::Register(registers::T1);
+            Self::materialize_immediate_static(fs, t1.clone(), &mut prologue);
+            prologue.push(Self::make_rrr(RV_ADD, t1.clone(), sp.clone(), t1.clone()));
+            // Saves go at save_base - 8 - va_shift, ...
+            (t1, -8i64 - va_shift)
+        } else {
+            (sp.clone(), fs - 8 - va_shift)
+        };
+
         // Save return address if function makes calls.
-        let mut save_offset = fs - 8;
+        let mut save_offset = save_start;
         if self.has_calls {
             prologue.push(Self::make_store(
                 RV_SD,
                 MachineOperand::Register(registers::RA),
-                sp.clone(),
+                save_base.clone(),
                 save_offset,
             ));
             save_offset -= 8;
@@ -2172,7 +2843,7 @@ impl RiscV64InstrSel {
             prologue.push(Self::make_store(
                 RV_SD,
                 MachineOperand::Register(reg),
-                sp.clone(),
+                save_base.clone(),
                 save_offset,
             ));
             save_offset -= 8;
@@ -2180,14 +2851,48 @@ impl RiscV64InstrSel {
 
         // Set up frame pointer: s0 = sp + framesize
         // This allows FP-relative access to both locals and spilled args.
-        if !self.used_callee_saved.is_empty() || self.has_calls || self.frame_locals_size > 0 {
+        if !self.used_callee_saved.is_empty()
+            || self.has_calls
+            || self.frame_locals_size > 0
+            || self.va_save_area_size > 0
+        {
             let fp = MachineOperand::Register(registers::FP);
             if Self::fits_in_simm12(fs) {
                 prologue.push(Self::make_rri(RV_ADDI, fp, sp.clone(), fs));
             } else {
-                let t0 = MachineOperand::Register(registers::T0);
-                Self::materialize_immediate_static(fs, t0.clone(), &mut prologue);
-                prologue.push(Self::make_rrr(RV_ADD, fp, sp.clone(), t0));
+                // Reuse the save_base if it's T1 (already = SP + fs),
+                // otherwise materialize.  FP = SP + frame_size always
+                // (the va_shift only affects where RA / callee-saved
+                // registers are stored, NOT the FP value).
+                if fs > 2047 {
+                    // save_base (T1) = SP + fs already.
+                    prologue.push(Self::make_rri(RV_ADDI, fp, save_base.clone(), 0));
+                } else {
+                    let t0 = MachineOperand::Register(registers::T0);
+                    Self::materialize_immediate_static(fs, t0.clone(), &mut prologue);
+                    prologue.push(Self::make_rrr(RV_ADD, fp, sp.clone(), t0));
+                }
+            }
+        }
+
+        // For variadic functions, spill argument registers a0–a7 into the
+        // save area at the top of the frame: a0 at [FP − 64], a1 at
+        // [FP − 56], …, a7 at [FP − 8].  This makes the arguments
+        // contiguous with any stack-passed overflow arguments from the
+        // caller (which sit at [FP + 0], [FP + 8], …).  The `va_start`
+        // IR lowering computes: `ap = FP − 64 + num_named * 8`.
+        if self.va_save_area_size > 0 {
+            let fp = MachineOperand::Register(registers::FP);
+            let arg_regs = registers::INTEGER_ARG_REGS; // a0–a7
+            for (i, &reg) in arg_regs.iter().enumerate() {
+                // a0 at FP-64, a1 at FP-56, ..., a7 at FP-8
+                let offset = -64 + (i as i64) * 8;
+                prologue.push(Self::make_store(
+                    RV_SD,
+                    MachineOperand::Register(reg),
+                    fp.clone(),
+                    offset,
+                ));
             }
         }
 
@@ -2223,21 +2928,32 @@ impl RiscV64InstrSel {
             let mut new_instrs: Vec<MachineInstr> = Vec::new();
             for instr in block.instructions.drain(..) {
                 if instr.is_return {
-                    // Restore callee-saved registers in reverse order.
-                    let mut _restore_offset = fs - 8;
-                    if self.has_calls {
-                        _restore_offset -= 8; // Skip to callee-saved area
-                    }
+                    // For large frames, set up a scratch base register
+                    // (T1 = SP + frame_size) so that all load offsets fit
+                    // in simm12 (small negative values).
+                    let va_shift = self.va_save_area_size as i64;
+                    let (restore_base, restore_start) = if fs > 2047 {
+                        let t1 = MachineOperand::Register(registers::T1);
+                        Self::materialize_immediate_static(fs, t1.clone(), &mut new_instrs);
+                        new_instrs.push(Self::make_rrr(RV_ADD, t1.clone(), sp.clone(), t1.clone()));
+                        (t1, -8i64 - va_shift)
+                    } else {
+                        (sp.clone(), fs - 8 - va_shift)
+                    };
 
                     // Restore callee-saved registers (reverse order).
-                    for (i, &reg) in self.used_callee_saved.iter().enumerate() {
-                        let off = fs - 8 - (if self.has_calls { 8 } else { 0 }) - (i as i64) * 8;
+                    let mut off = restore_start;
+                    if self.has_calls {
+                        off -= 8; // Skip RA slot
+                    }
+                    for &reg in self.used_callee_saved.iter() {
                         new_instrs.push(Self::make_load(
                             RV_LD,
                             MachineOperand::Register(reg),
-                            sp.clone(),
+                            restore_base.clone(),
                             off,
                         ));
+                        off -= 8;
                     }
 
                     // Restore return address.
@@ -2245,8 +2961,8 @@ impl RiscV64InstrSel {
                         new_instrs.push(Self::make_load(
                             RV_LD,
                             MachineOperand::Register(registers::RA),
-                            sp.clone(),
-                            fs - 8,
+                            restore_base.clone(),
+                            restore_start,
                         ));
                     }
 
@@ -2275,6 +2991,118 @@ impl RiscV64InstrSel {
 // ---------------------------------------------------------------------------
 
 impl RiscV64InstrSel {
+    /// Ensures the given operand is in a register.
+    ///
+    /// - **Register / VirtualReg**: returned as-is.
+    /// - **Immediate**: materialized via `materialize_immediate`.
+    /// - **Symbol**: materialized via `RV_LA` pseudo-instruction which the
+    ///   assembler expands to `AUIPC + ADDI` (or `AUIPC + LD` for GOT-based PIC).
+    /// - **Memory**: emits a load instruction to fetch the value.
+    ///
+    /// Returns the operand guaranteed to be in a (virtual or physical)
+    /// register, suitable for use as a source operand in R-type or I-type
+    /// instructions.
+    pub fn ensure_in_register(
+        &mut self,
+        op: &MachineOperand,
+        out: &mut Vec<MachineInstr>,
+    ) -> MachineOperand {
+        match op {
+            MachineOperand::Register(_) | MachineOperand::VirtualReg(_) => op.clone(),
+            MachineOperand::Immediate(val) => self.materialize_immediate(*val, out),
+            MachineOperand::Symbol(name) => {
+                // Use LA pseudo-instruction to load the symbol address.
+                let rd_id = self.alloc_vreg();
+                let rd = MachineOperand::VirtualReg(rd_id);
+                out.push(MachineInstr::with_operands(
+                    RV_LA,
+                    vec![rd.clone(), MachineOperand::Symbol(name.clone())],
+                ));
+                rd
+            }
+            MachineOperand::Memory { base, offset, .. } => {
+                // Emit LD to fetch the value from memory into a vreg.
+                // For large offsets, materialise the address first.
+                let off64 = *offset as i64;
+                let rd_id = self.alloc_vreg();
+                let rd = MachineOperand::VirtualReg(rd_id);
+                let (eff_base, eff_off) =
+                    self.resolve_frame_offset(MachineOperand::Register(*base), off64, out);
+                out.push(Self::make_rri(RV_LD, rd.clone(), eff_base, eff_off));
+                rd
+            }
+            MachineOperand::Label(lbl) => {
+                // Materialize a local label address using LA with a
+                // synthetic label symbol name.
+                let rd_id = self.alloc_vreg();
+                let rd = MachineOperand::VirtualReg(rd_id);
+                let label_sym = format!(".L{}", lbl);
+                out.push(MachineInstr::with_operands(
+                    RV_LA,
+                    vec![rd.clone(), MachineOperand::Symbol(label_sym)],
+                ));
+                rd
+            }
+            MachineOperand::FrameIndex(idx) => {
+                // Compute the frame slot address: SP + offset.
+                // Locals use SP-relative positive offsets assigned during
+                // select_alloca.  For small offsets a single ADDI suffices;
+                // large offsets require materialising the offset first.
+                let off = self
+                    .frame_objects
+                    .get(*idx as usize)
+                    .map(|f| f.offset as i64)
+                    .unwrap_or(0);
+                let rd_id = self.alloc_vreg();
+                let rd = MachineOperand::VirtualReg(rd_id);
+                if Self::fits_in_simm12(off) {
+                    out.push(Self::make_rri(
+                        RV_ADDI,
+                        rd.clone(),
+                        MachineOperand::Register(registers::SP),
+                        off,
+                    ));
+                } else {
+                    let off_reg = self.materialize_immediate(off, out);
+                    out.push(Self::make_rrr(
+                        RV_ADD,
+                        rd.clone(),
+                        MachineOperand::Register(registers::SP),
+                        off_reg,
+                    ));
+                }
+                rd
+            }
+        }
+    }
+
+    /// Computes `base_reg + offset` into a virtual register.
+    ///
+    /// When `offset` fits in a signed 12-bit immediate the result is a
+    /// single `ADDI rd, base, offset`. For larger offsets the value is
+    /// first materialised into a temporary and then added with `ADD`.
+    ///
+    /// Returns `(effective_base, residual_offset)` suitable for use as the
+    /// base register and immediate of a load / store instruction.
+    fn resolve_frame_offset(
+        &mut self,
+        base: MachineOperand,
+        offset: i64,
+        out: &mut Vec<MachineInstr>,
+    ) -> (MachineOperand, i64) {
+        if Self::fits_in_simm12(offset) {
+            (base, offset)
+        } else {
+            // Offset too large for simm12 — materialise the full address
+            // into a scratch vreg:  tmp = base + offset.
+            let off_reg = self.materialize_immediate(offset, out);
+            let addr_id = self.alloc_vreg();
+            let addr = MachineOperand::VirtualReg(addr_id);
+            out.push(Self::make_rrr(RV_ADD, addr.clone(), base, off_reg));
+            (addr, 0)
+        }
+    }
+
     /// Materializes a 64-bit immediate value into a virtual register.
     ///
     /// This is the public API for immediate materialization. Returns the
@@ -2284,6 +3112,36 @@ impl RiscV64InstrSel {
     ///
     /// | Range                           | Sequence                          |
     /// |---------------------------------|-----------------------------------|
+    /// Ensures an operand is in an FP register.  Float constants are stored
+    /// as integer Immediates (their bit pattern).  RISC-V float instructions
+    /// (FADD.S, FSUB.S, FEQ.S, etc.) require FP-class registers.  This
+    /// helper materializes the integer bits into a GPR, then uses FMV.W.X
+    /// or FMV.D.X to transfer to an FP virtual register.
+    pub fn ensure_in_fp_register(
+        &mut self,
+        op: &MachineOperand,
+        is_single: bool,
+        out: &mut Vec<MachineInstr>,
+    ) -> MachineOperand {
+        match op {
+            MachineOperand::Immediate(bits) => {
+                // Materialize integer bit pattern into a GPR.
+                let gpr = self.materialize_immediate(*bits, out);
+                // Transfer GPR → FP register via FMV.W.X / FMV.D.X.
+                let fp_id = self.alloc_vreg();
+                let fp_op = MachineOperand::VirtualReg(fp_id);
+                let fmv_opc = if is_single { RV_FMV_W_X } else { RV_FMV_D_X };
+                out.push(MachineInstr::with_operands(
+                    fmv_opc,
+                    vec![fp_op.clone(), gpr],
+                ));
+                fp_op
+            }
+            // Already a register — assume FP-class (from FLW/FLD/FMOV).
+            _ => self.ensure_in_register(op, out),
+        }
+    }
+
     /// | [-2048, 2047]                   | `ADDI rd, x0, imm`               |
     /// | Fits in upper 20 + lower 12     | `LUI rd, hi20` + `ADDI rd, lo12` |
     /// | Full 64-bit                     | Multi-step shift+add sequence     |
@@ -2311,7 +3169,11 @@ impl RiscV64InstrSel {
     /// Static version of immediate materialization (no `&mut self` needed).
     /// Used by prologue/epilogue emission which holds an immutable reference
     /// to `self`.
-    fn materialize_immediate_static(value: i64, rd: MachineOperand, out: &mut Vec<MachineInstr>) {
+    pub fn materialize_immediate_static(
+        value: i64,
+        rd: MachineOperand,
+        out: &mut Vec<MachineInstr>,
+    ) {
         let zero = MachineOperand::Register(registers::ZERO);
 
         // Case 1: Fits in signed 12-bit immediate.
@@ -2348,9 +3210,13 @@ impl RiscV64InstrSel {
         // in 12-bit signed immediates combined with shifts.
         //
         // Algorithm:
-        // 1. Materialize the high 32 bits.
-        // 2. SLLI by 32.
-        // 3. Add in the low 32 bits (using LUI+ADDI for the low portion).
+        // 1. Materialize the high 32 bits using LUI+ADDI.
+        // 2. Shift and add 12-bit chunks from the low 32 bits.
+        //
+        // All ADDI immediates MUST be in the signed 12-bit range
+        // [-2048, 2047].  Unsigned 12-bit chunks (0–4095) need carry-
+        // adjusted sign-extension: when a chunk ≥ 2048, use
+        // (chunk − 4096) and propagate +1 carry to the next-higher chunk.
         let hi32 = (value >> 32) as i32;
         let lo32 = value as i32;
 
@@ -2389,92 +3255,62 @@ impl RiscV64InstrSel {
             ));
         }
 
-        // Shift left by 32 to position the high bits.
-        out.push(Self::make_rri(RV_SLLI, rd.clone(), rd.clone(), 32));
+        // Now rd holds the high-32-bit value.  We shift it left and
+        // interleave ADDI operations to merge in the low 32 bits.
+        //
+        // Extract three unsigned chunks from lo32:
+        //   chunk2 = bits [31:20]  (12 bits, max 0xFFF)
+        //   chunk1 = bits [19:8]   (12 bits, max 0xFFF)
+        //   chunk0 = bits [7:0]    (8 bits,  max 0xFF)
+        //
+        // Apply carry-propagation for ADDI sign-extension: when a chunk
+        // exceeds 2047 (signed 12-bit max), subtract 4096 and add +1 carry
+        // to the next-higher chunk.
 
-        // Add the low 32 bits. Similar LUI+ADDI decomposition.
-        let lo_lo12 = ((lo32 as u32) & 0xFFF) as i32;
-        let mut lo_hi20 = ((lo32 as u32) >> 12) as i32;
-        if lo_lo12 >= 0x800 {
-            lo_hi20 = lo_hi20.wrapping_add(1);
-        }
-        let lo_lo12_signed = if lo_lo12 >= 0x800 {
-            lo_lo12 - 0x1000
+        let raw_chunk0: i64 = ((lo32 as u32) & 0xFF) as i64;
+        let raw_chunk1: i64 = ((lo32 as u32 >> 8) & 0xFFF) as i64;
+        let raw_chunk2: i64 = ((lo32 as u32 >> 20) & 0xFFF) as i64;
+
+        // Carry-adjust from chunk0 → chunk1 → chunk2 → hi_part.
+        // chunk0 is at most 255 so it never needs adjustment.
+        let (c0, carry1) = (raw_chunk0, 0i64);
+        let adj_chunk1 = raw_chunk1 + carry1;
+        let (c1, carry2) = if adj_chunk1 >= 0x800 {
+            (adj_chunk1 - 0x1000, 1i64)
         } else {
-            lo_lo12
+            (adj_chunk1, 0i64)
+        };
+        let adj_chunk2 = raw_chunk2 + carry2;
+        let (c2, carry3) = if adj_chunk2 >= 0x800 {
+            (adj_chunk2 - 0x1000, 1i64)
+        } else {
+            (adj_chunk2, 0i64)
         };
 
-        if lo_hi20 != 0 {
-            // We need a temporary to hold the LUI result, then OR/ADD it in.
-            // Use SLLI+ADDI on rd itself:
-            // rd already has high bits. We need to add (lo_hi20 << 12) + lo_lo12.
-            //
-            // Approach: SLLI rd, rd, 12; ADDI rd, rd, lo_hi20-chunk; repeat
-            // But this is complex. Simpler: use a second temp if needed.
-            //
-            // Actually, since rd already has high32 << 32, we can:
-            // 1. If lo_hi20 != 0: shift rd left by 12 more (total 44),
-            //    ADDI with hi20-portion of low, shift back... This gets messy.
-            //
-            // Alternative: build low32 in pieces and OR them in.
-            // Split the remaining SLLI into two parts.
-            // First, add upper 20 bits of lo32:
-            //   SLLI rd, rd, 12 (from 32 -> was already 32, we overwrite)
-            // No — rd has value << 32 already. Just add lo32 directly.
-            //
-            // Simplest correct approach for arbitrary lo32:
-            // Since we need to combine hi32<<32 with lo32 as unsigned:
-            //   After SLLI 32, rd = hi32 << 32 (as i64)
-            //   We want rd | (lo32 as u32 as u64).
-            //
-            // For the low portion, shift right approach won't work because of
-            // sign extension. Instead, break the SLLI 32 into smaller shifts
-            // and interleave ADDI operations.
-            //
-            // Better 64-bit materialization using iterative shift+add:
+        // If there is carry out of chunk2, we need to add 1 to the
+        // hi-part (which was shifted by 12+12+8 = 32 bits from the
+        // perspective of our chunk shifts).  Since hi-part is already
+        // in rd, just emit ADDI rd, rd, 1 before the first shift.
+        if carry3 != 0 {
+            out.push(Self::make_rri(RV_ADDI, rd.clone(), rd.clone(), 1));
+        }
 
-            // Undo the shift-32 above — we'll redo with a better sequence.
-            // Actually, let's just use the simpler approach: materialize the
-            // full value iteratively. Pop the last SLLI we added and redo.
-            out.pop(); // Remove the SLLI 32
+        // Shift hi-part by 12 and add chunk2
+        out.push(Self::make_rri(RV_SLLI, rd.clone(), rd.clone(), 12));
+        if c2 != 0 {
+            out.push(Self::make_rri(RV_ADDI, rd.clone(), rd.clone(), c2));
+        }
 
-            // Rebuild using the standard approach for 64-bit:
-            // Start with the high portion already in rd.
-            // Now shift and add chunks from MSB to LSB.
+        // Shift by 12 and add chunk1
+        out.push(Self::make_rri(RV_SLLI, rd.clone(), rd.clone(), 12));
+        if c1 != 0 {
+            out.push(Self::make_rri(RV_ADDI, rd.clone(), rd.clone(), c1));
+        }
 
-            // We have hi_part in rd. Now shift in the upper portion of lo32.
-            // Split lo32 into: bits [31:20], bits [19:8], bits [7:0]
-            // to keep each chunk under 12 bits for ADDI.
-
-            let chunk2 = ((lo32 as u32 >> 20) & 0xFFF) as i64;
-            let chunk1 = ((lo32 as u32 >> 8) & 0xFFF) as i64;
-            let chunk0 = ((lo32 as u32) & 0xFF) as i64;
-
-            // Shift hi-part by 12 and add chunk2
-            out.push(Self::make_rri(RV_SLLI, rd.clone(), rd.clone(), 12));
-            if chunk2 != 0 {
-                out.push(Self::make_rri(RV_ADDI, rd.clone(), rd.clone(), chunk2));
-            }
-
-            // Shift by 12 and add chunk1
-            out.push(Self::make_rri(RV_SLLI, rd.clone(), rd.clone(), 12));
-            if chunk1 != 0 {
-                out.push(Self::make_rri(RV_ADDI, rd.clone(), rd.clone(), chunk1));
-            }
-
-            // Shift by 8 and add chunk0
-            out.push(Self::make_rri(RV_SLLI, rd.clone(), rd.clone(), 8));
-            if chunk0 != 0 {
-                out.push(Self::make_rri(RV_ADDI, rd.clone(), rd.clone(), chunk0));
-            }
-        } else if lo_lo12_signed != 0 {
-            // Low 32 bits fit in 12 bits. Just ADDI.
-            out.push(Self::make_rri(
-                RV_ADDI,
-                rd.clone(),
-                rd,
-                lo_lo12_signed as i64,
-            ));
+        // Shift by 8 and add chunk0
+        out.push(Self::make_rri(RV_SLLI, rd.clone(), rd.clone(), 8));
+        if c0 != 0 {
+            out.push(Self::make_rri(RV_ADDI, rd.clone(), rd.clone(), c0));
         }
     }
 

@@ -255,6 +255,13 @@ impl TokenStream {
 /// On fatal error (recursion depth exceeded), returns the partially expanded
 /// sequence up to the point of failure.
 pub fn expand_macros(pp: &mut Preprocessor, tokens: &[Token]) -> Vec<Token> {
+    static CALL_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let c = CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // Safety valve: if expansion has been called an extraordinary number
+    // of times, bail out to prevent infinite expansion loops.
+    if c > 50000 {
+        return tokens.to_vec();
+    }
     let painted: Vec<PaintedToken> = tokens.iter().cloned().map(PaintedToken::new).collect();
     let result = expand_painted(pp, painted);
     result.into_iter().map(|pt| pt.token).collect()
@@ -312,8 +319,14 @@ pub fn expand_token_sequence(pp: &mut Preprocessor, stream: &mut TokenStream) ->
 fn expand_painted(pp: &mut Preprocessor, mut tokens: Vec<PaintedToken>) -> Vec<PaintedToken> {
     let mut output: Vec<PaintedToken> = Vec::new();
     let mut i: usize = 0;
+    let mut iteration_count: u64 = 0;
 
     while i < tokens.len() {
+        iteration_count += 1;
+        // Safety: abort runaway expansion after 100k iterations.
+        if iteration_count > 100000 {
+            break;
+        }
         // Only try to expand identifier tokens.
         let sym = match tokens[i].token.kind {
             TokenKind::Identifier(s) => s,

@@ -489,7 +489,7 @@ fn rename_block(
     // ---- Apply actions: update reaching_defs and value_map ----
     // Process actions in instruction order so that definitions from earlier
     // instructions are visible to later ones within the same block.
-    for action in &actions {
+    for (_idx, action) in actions.iter().enumerate() {
         match action {
             InstrAction::Phi => {
                 // Already handled in step 2.

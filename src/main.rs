@@ -427,7 +427,10 @@ fn print_usage() {
         stderr,
         "  -fPIC              Generate position-independent code"
     );
-    let _ = writeln!(stderr, "  -shared            Produce shared object (ET_DYN)");
+    let _ = writeln!(
+        stderr,
+        "  -shared            Produce shared object (ET_DYN)"
+    );
     let _ = writeln!(
         stderr,
         "  -mretpoline        Enable retpoline mitigation (x86-64 only)"
@@ -437,10 +440,7 @@ fn print_usage() {
         "  -fcf-protection    Enable CET/IBT protection (x86-64 only)"
     );
     let _ = writeln!(stderr, "  -I<dir>            Add include search path");
-    let _ = writeln!(
-        stderr,
-        "  -D<macro>[=value]  Define preprocessor macro"
-    );
+    let _ = writeln!(stderr, "  -D<macro>[=value]  Define preprocessor macro");
     let _ = writeln!(stderr, "  -L<dir>            Add library search path");
     let _ = writeln!(stderr, "  -l<lib>            Link against library");
     let _ = writeln!(stderr, "  --help, -h         Show this help message");
@@ -562,34 +562,60 @@ fn configure_preprocessor(pp: &mut Preprocessor, ctx: &CompilationContext) {
     pp.add_include_path(PathBuf::from("/usr/local/include"));
 
     // Architecture-specific system include paths.
+    // On a typical Linux host, cross-compilation headers are installed at
+    // /usr/<triple>/include/ (e.g., /usr/aarch64-linux-gnu/include/).
+    // Native x86-64 headers live at /usr/include/x86_64-linux-gnu/.
     match ctx.target {
         TargetArch::X86_64 => {
             pp.add_include_path(PathBuf::from("/usr/include/x86_64-linux-gnu"));
         }
         TargetArch::I686 => {
+            // On x86_64 hosts, 32-bit headers share the x86_64-linux-gnu path.
+            pp.add_include_path(PathBuf::from("/usr/include/x86_64-linux-gnu"));
             pp.add_include_path(PathBuf::from("/usr/include/i386-linux-gnu"));
         }
         TargetArch::AArch64 => {
+            // Cross-compilation sysroot: /usr/aarch64-linux-gnu/include/
+            pp.add_include_path(PathBuf::from("/usr/aarch64-linux-gnu/include"));
             pp.add_include_path(PathBuf::from("/usr/include/aarch64-linux-gnu"));
         }
         TargetArch::RiscV64 => {
+            // Cross-compilation sysroot: /usr/riscv64-linux-gnu/include/
+            pp.add_include_path(PathBuf::from("/usr/riscv64-linux-gnu/include"));
             pp.add_include_path(PathBuf::from("/usr/include/riscv64-linux-gnu"));
         }
     }
 
     // GCC internal include paths for compiler builtins (stdarg.h,
-    // stddef.h, etc.). Scan for the latest installed version.
-    if let Ok(entries) = std::fs::read_dir("/usr/lib/gcc/x86_64-linux-gnu/") {
-        let mut versions: Vec<String> = entries
-            .filter_map(|e| e.ok())
-            .filter_map(|e| e.file_name().into_string().ok())
-            .collect();
-        versions.sort();
-        if let Some(latest) = versions.last() {
-            pp.add_include_path(PathBuf::from(format!(
-                "/usr/lib/gcc/x86_64-linux-gnu/{}/include",
-                latest
-            )));
+    // stddef.h, etc.). Scan for the latest installed version per target.
+    let gcc_search_dirs: &[&str] = match ctx.target {
+        TargetArch::X86_64 => &["/usr/lib/gcc/x86_64-linux-gnu/"],
+        TargetArch::I686 => &[
+            "/usr/lib/gcc/x86_64-linux-gnu/",
+            "/usr/lib/gcc/i686-linux-gnu/",
+        ],
+        TargetArch::AArch64 => &[
+            "/usr/lib/gcc-cross/aarch64-linux-gnu/",
+            "/usr/lib/gcc/aarch64-linux-gnu/",
+            "/usr/lib/gcc/x86_64-linux-gnu/",
+        ],
+        TargetArch::RiscV64 => &[
+            "/usr/lib/gcc-cross/riscv64-linux-gnu/",
+            "/usr/lib/gcc/riscv64-linux-gnu/",
+            "/usr/lib/gcc/x86_64-linux-gnu/",
+        ],
+    };
+    for gcc_dir in gcc_search_dirs {
+        if let Ok(entries) = std::fs::read_dir(gcc_dir) {
+            let mut versions: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect();
+            versions.sort();
+            if let Some(latest) = versions.last() {
+                pp.add_include_path(PathBuf::from(format!("{}{}/include", gcc_dir, latest)));
+                break; // Use the first GCC dir that exists
+            }
         }
     }
 
@@ -655,7 +681,9 @@ fn token_to_text(token: &LexToken, interner: &Interner) -> String {
             match prefix {
                 StringPrefix::None => {}
                 StringPrefix::L => s.push('L'),
-                StringPrefix::U8 => { s.push_str("u8"); }
+                StringPrefix::U8 => {
+                    s.push_str("u8");
+                }
                 StringPrefix::SmallU => s.push('u'),
                 StringPrefix::BigU => s.push('U'),
             }
@@ -1025,7 +1053,6 @@ fn compile_frontend_and_middleend(
     let mut pp = Preprocessor::new(source_map, diagnostics, lib_target, interner);
     configure_preprocessor(&mut pp, ctx);
 
-    eprintln!("[DEBUG] Starting preprocessing for {:?}", input_path);
     let tokens = match pp.preprocess(input_path) {
         Ok(tokens) => tokens,
         Err(()) => {
@@ -1038,8 +1065,6 @@ fn compile_frontend_and_middleend(
         pp.diagnostics.print_all(&pp.source_map);
         return Err(());
     }
-
-    eprintln!("[DEBUG] Preprocessing done, {} tokens produced", tokens.len());
 
     // ══════════════════════════════════════════════════════════════════
     // Phase 3: Lexing — Keyword Classification
@@ -1058,12 +1083,7 @@ fn compile_frontend_and_middleend(
     // syntactically significant tokens only. The preprocessor preserves
     // these for directive-boundary detection, but they must be removed
     // before the parser sees the stream.
-    tokens.retain(|t| {
-        !matches!(
-            t.kind,
-            TokenKind::Newline | TokenKind::Whitespace
-        )
-    });
+    tokens.retain(|t| !matches!(t.kind, TokenKind::Newline | TokenKind::Whitespace));
 
     // ══════════════════════════════════════════════════════════════════
     // Phase 4: Parsing
@@ -1101,7 +1121,6 @@ fn compile_frontend_and_middleend(
     // ══════════════════════════════════════════════════════════════════
     // The semantic analyzer borrows the same shared state from pp.
     // Again scoped to release borrows before error handling.
-    eprintln!("[DEBUG] Starting Phase 5: Semantic Analysis");
     let sema_result = {
         let mut sema = SemanticAnalyzer::new(
             &mut pp.diagnostics,
@@ -1152,7 +1171,6 @@ fn compile_frontend_and_middleend(
     // Every local variable is initially emitted as an `alloca` instruction
     // in the function entry block — the "alloca" half of the mandated
     // alloca-then-promote SSA construction architecture.
-    eprintln!("[DEBUG] Starting Phase 6: IR Lowering");
     let lowering_ctx = match lower_translation_unit(
         &checked_tu,
         lib_target,
@@ -1170,9 +1188,7 @@ fn compile_frontend_and_middleend(
     };
 
     if lowering_ctx.diagnostics.has_errors() {
-        lowering_ctx
-            .diagnostics
-            .print_all(&lowering_ctx.source_map);
+        lowering_ctx.diagnostics.print_all(&lowering_ctx.source_map);
         return Err(());
     }
 
@@ -1182,78 +1198,25 @@ fn compile_frontend_and_middleend(
     let diagnostics = lowering_ctx.diagnostics;
     let source_map_for_diag = lowering_ctx.source_map;
 
-    // DEBUG: dump IR after lowering
-    for func in &ir_module.functions {
-        if func.is_definition {
-            eprintln!("[DEBUG after Phase6] func='{}' blocks={}", func.name, func.basic_blocks.len());
-            for (bi, bb) in func.basic_blocks.iter().enumerate() {
-                eprintln!("[DEBUG after Phase6]   block[{}] id={:?} instructions={}", bi, bb.id, bb.instructions().len());
-                for (ii, inst) in bb.instructions().iter().enumerate() {
-                    eprintln!("[DEBUG after Phase6]     instr[{}]: {:?}", ii, inst);
-                }
-            }
-        }
-    }
-
     // ══════════════════════════════════════════════════════════════════
     // Phase 7: mem2reg (SSA Construction)
     // ══════════════════════════════════════════════════════════════════
-    // Promote eligible alloca instructions to SSA virtual registers using
-    // dominance-frontier computation. This is the "promote" half of the
-    // alloca-then-promote architecture. Only scalar, non-address-taken
-    // allocas are promoted; complex aggregates remain in memory.
-    eprintln!("[DEBUG] Starting Phase 7: mem2reg ({} functions)", ir_module.functions.len());
     for func in ir_module.functions.iter_mut() {
         promote_allocas_to_registers(func);
-    }
-
-    // DEBUG: dump IR after mem2reg
-    for func in &ir_module.functions {
-        if func.is_definition {
-            eprintln!("[DEBUG after Phase7] func='{}' blocks={}", func.name, func.basic_blocks.len());
-            for (bi, bb) in func.basic_blocks.iter().enumerate() {
-                eprintln!("[DEBUG after Phase7]   block[{}] id={:?} instructions={}", bi, bb.id, bb.instructions().len());
-                for (ii, inst) in bb.instructions().iter().enumerate() {
-                    eprintln!("[DEBUG after Phase7]     instr[{}]: {:?}", ii, inst);
-                }
-            }
-        }
     }
 
     // ══════════════════════════════════════════════════════════════════
     // Phase 8: Optimization Passes
     // ══════════════════════════════════════════════════════════════════
-    // Run the fixed optimization pipeline: constant folding → dead code
-    // elimination → CFG simplification, iterated to a fixpoint. The pass
-    // manager operates on all functions in the module.
-    eprintln!("[DEBUG] Starting Phase 8: Optimization Passes");
     let mut pass_manager = PassManager::default_pipeline();
     let _opt_stats = pass_manager.run_on_module(&mut ir_module);
-
-    // DEBUG: dump IR after optimization
-    for func in &ir_module.functions {
-        if func.is_definition {
-            eprintln!("[DEBUG after Phase8] func='{}' blocks={}", func.name, func.basic_blocks.len());
-            for (bi, bb) in func.basic_blocks.iter().enumerate() {
-                eprintln!("[DEBUG after Phase8]   block[{}] id={:?} instructions={}", bi, bb.id, bb.instructions().len());
-                for (ii, inst) in bb.instructions().iter().enumerate() {
-                    eprintln!("[DEBUG after Phase8]     instr[{}]: {:?}", ii, inst);
-                }
-            }
-        }
-    }
 
     // ══════════════════════════════════════════════════════════════════
     // Phase 9: Phi Elimination
     // ══════════════════════════════════════════════════════════════════
-    // Convert SSA phi nodes to parallel copies placed before predecessor
-    // block terminators, then sequentialise copies. This produces a form
-    // suitable for register allocation in the backend.
-    eprintln!("[DEBUG] Starting Phase 9: Phi Elimination");
     for func in ir_module.functions.iter_mut() {
         eliminate_phis(func);
     }
-    eprintln!("[DEBUG] Pipeline Phases 1-9 complete");
 
     Ok(PipelineResult {
         ir_module,
@@ -1446,8 +1409,7 @@ fn compile_multi_file(ctx: &CompilationContext) -> bool {
             }
             Some(mut base) => {
                 // Merge functions from the new module into the base.
-                base.functions
-                    .extend(pipeline_result.ir_module.functions);
+                base.functions.extend(pipeline_result.ir_module.functions);
                 // Merge global variables.
                 base.globals.extend(pipeline_result.ir_module.globals);
                 // Merge string literals.

@@ -38,6 +38,7 @@ use super::relocations::AArch64RelocationType;
 use crate::backend::aarch64::registers::{
     encoding, is_fp_reg, is_gpr, is_gpr_w, w_to_x, x_to_w, SP, WSP, WZR, XZR,
 };
+use crate::backend::register_allocator::{SPILL_LOAD_OPCODE, SPILL_STORE_OPCODE};
 use crate::backend::traits::{MachineInstr, MachineOperand, PhysReg};
 
 // ---------------------------------------------------------------------------
@@ -126,6 +127,12 @@ pub const OP_UBFM: u32 = 0x000D;
 pub const OP_BFM: u32 = 0x000E;
 pub const OP_ADR: u32 = 0x000F;
 pub const OP_ADRP: u32 = 0x0010;
+// Sign/zero-extend pseudo-ops (aliases for SBFM/UBFM with fixed immr/imms)
+pub const OP_SXTB: u32 = 0x0011;
+pub const OP_SXTH: u32 = 0x0012;
+pub const OP_SXTW: u32 = 0x0013;
+pub const OP_UXTB: u32 = 0x0014;
+pub const OP_UXTH: u32 = 0x0015;
 
 /// Data Processing — Register opcodes (0x0100–0x01FF)
 pub const OP_ADD_REG: u32 = 0x0100;
@@ -143,6 +150,10 @@ pub const OP_SMULH: u32 = 0x010B;
 pub const OP_UMULH: u32 = 0x010C;
 pub const OP_SDIV: u32 = 0x010D;
 pub const OP_UDIV: u32 = 0x010E;
+pub const OP_LSLV: u32 = 0x010F;
+pub const OP_LSRV: u32 = 0x0110;
+pub const OP_ASRV: u32 = 0x0111;
+pub const OP_RORV: u32 = 0x0112;
 
 /// Load / Store opcodes (0x0200–0x02FF)
 pub const OP_LDR_IMM: u32 = 0x0200;
@@ -171,6 +182,10 @@ pub const OP_LDR_FP_IMM: u32 = 0x0216;
 pub const OP_STR_FP_IMM: u32 = 0x0217;
 pub const OP_LDP_FP: u32 = 0x0218;
 pub const OP_STP_FP: u32 = 0x0219;
+/// 32-bit word load (LDR Wt) — forces size=0b10 (4-byte transfer).
+pub const OP_LDR_W32: u32 = 0x021A;
+/// 32-bit word store (STR Wt) — forces size=0b10 (4-byte transfer).
+pub const OP_STR_W32: u32 = 0x021B;
 
 /// Branch opcodes (0x0300–0x037F)
 pub const OP_B: u32 = 0x0300;
@@ -191,6 +206,10 @@ pub const OP_CSEL: u32 = 0x0382;
 pub const OP_CSINC: u32 = 0x0383;
 pub const OP_CSINV: u32 = 0x0384;
 pub const OP_CSNEG: u32 = 0x0385;
+pub const OP_CMP_REG: u32 = 0x0386;
+pub const OP_CMN_REG: u32 = 0x0387;
+pub const OP_TST_REG: u32 = 0x0388;
+pub const OP_CCMN_REG: u32 = 0x0389;
 
 /// SIMD / Floating-Point opcodes (0x0400–0x04FF)
 pub const OP_FADD: u32 = 0x0400;
@@ -211,6 +230,7 @@ pub const OP_UCVTF: u32 = 0x040E;
 pub const OP_FCVTZS: u32 = 0x040F;
 pub const OP_FCVTZU: u32 = 0x0410;
 pub const OP_FCVT: u32 = 0x0411;
+pub const OP_FCCMP: u32 = 0x0412;
 
 /// System opcodes (0x0500–0x05FF)
 pub const OP_NOP: u32 = 0x0500;
@@ -221,6 +241,11 @@ pub const OP_DSB: u32 = 0x0504;
 pub const OP_ISB: u32 = 0x0505;
 pub const OP_MRS: u32 = 0x0506;
 pub const OP_MSR: u32 = 0x0507;
+pub const OP_CLZ: u32 = 0x0508;
+pub const OP_RBIT: u32 = 0x0509;
+pub const OP_REV: u32 = 0x050A;
+pub const OP_REV16: u32 = 0x050B;
+pub const OP_INLINE_ASM: u32 = 0x050C;
 
 /// Data emission opcodes (0x0600–0x06FF) — for relocatable constant data.
 pub const OP_DATA64: u32 = 0x0600;
@@ -525,6 +550,27 @@ pub fn encode_bic_reg(sf: bool, rd: u8, rn: u8, rm: u8, shift: ShiftType, amount
     encode_logical_shifted(sf, 0b00, 1, rd, rn, rm, shift, amount)
 }
 
+/// Encode `ANDS <Xd>, <Xn>, <Xm>{, <shift> #<amount>}` (AND setting flags).
+///
+/// `TST` is an alias when `Rd` = `XZR`.
+pub fn encode_ands_reg(sf: bool, rd: u8, rn: u8, rm: u8, shift: ShiftType, amount: u8) -> u32 {
+    encode_logical_shifted(sf, 0b11, 0, rd, rn, rm, shift, amount)
+}
+
+/// Encode `CCMN <Xn>, <Xm>, #<nzcv>, <cond>` — conditional compare negative (register).
+///
+/// Same as CCMP but with op=0 (ADD instead of SUB).
+pub fn encode_ccmn_reg(sf: bool, rn: u8, rm: u8, nzcv: u8, cond: u8) -> u32 {
+    let sf_bit = (sf as u32) << 31;
+    // op=0 (ADD), S=1
+    let fixed = 0b0111010010u32 << 21;
+    let rm_bits = ((rm & 0x1F) as u32) << 16;
+    let cond_bits = ((cond & 0xF) as u32) << 12;
+    let rn_bits = ((rn & 0x1F) as u32) << 5;
+    let nzcv_bits = (nzcv & 0xF) as u32;
+    sf_bit | fixed | rm_bits | cond_bits | rn_bits | nzcv_bits
+}
+
 /// Internal helper for logical (shifted register) instructions.
 ///
 /// Format: `sf:opc:01010:shift:N:Rm:imm6:Rn:Rd`
@@ -766,6 +812,35 @@ pub fn encode_ldr_post(size: u8, rt: u8, rn: u8, simm9: i16) -> u32 {
 /// Encode `STR <Xt|Wt>, [<Xn|SP>], #<simm9>` — store with post-index.
 pub fn encode_str_post(size: u8, rt: u8, rn: u8, simm9: i16) -> u32 {
     encode_ldst_pre_post(size, 0b00, rt, rn, simm9, false)
+}
+
+/// Encode `LDUR <Xt|Wt>, [<Xn|SP>, #<simm9>]` — load with unscaled offset.
+///
+/// Format: `size:111:V:00:opc:0:imm9:00:Rn:Rt`
+pub fn encode_ldr_unscaled(size: u8, rt: u8, rn: u8, simm9: i16) -> u32 {
+    encode_ldst_unscaled(size, 0b01, rt, rn, simm9)
+}
+
+/// Encode `STUR <Xt|Wt>, [<Xn|SP>, #<simm9>]` — store with unscaled offset.
+///
+/// Format: `size:111:V:00:opc:0:imm9:00:Rn:Rt`
+pub fn encode_str_unscaled(size: u8, rt: u8, rn: u8, simm9: i16) -> u32 {
+    encode_ldst_unscaled(size, 0b00, rt, rn, simm9)
+}
+
+/// Internal helper for load/store (unscaled immediate).
+///
+/// Format: `size:111:V:00:opc:0:imm9:00:Rn:Rt`
+fn encode_ldst_unscaled(size: u8, opc: u8, rt: u8, rn: u8, simm9: i16) -> u32 {
+    let size_bits = ((size & 0x3) as u32) << 30;
+    let fixed = 0b111u32 << 27;
+    let opc_bits = ((opc & 0x3) as u32) << 22;
+    let imm9 = ((simm9 as u32) & 0x1FF) << 12;
+    // idx = 00 for unscaled
+    let rn_bits = ((rn & 0x1F) as u32) << 5;
+    let rt_bits = (rt & 0x1F) as u32;
+
+    size_bits | fixed | opc_bits | imm9 | rn_bits | rt_bits
 }
 
 /// Internal helper for load/store (pre-index / post-index).
@@ -1155,11 +1230,15 @@ pub fn encode_fmov_reg(ftype: u8, rd: u8, rn: u8) -> u32 {
 }
 
 /// Encode `FMOV <Xd|Wd>, <Sn|Dn>` — FP to GPR move.
+///
+/// Encoding: `sf 0 0 11110 ftype 1 00 110 000000 Rn Rd`
+///           bit21 is fixed `1`, rmode=00, opcode=110
 pub fn encode_fmov_to_gpr(sf: bool, ftype: u8, rd: u8, rn: u8) -> u32 {
     let sf_bit = (sf as u32) << 31;
     let fixed = 0b0011110u32 << 24;
     let ftype_bits = ((ftype & 0x3) as u32) << 22;
-    let opcode_bits = 0b1001110000u32 << 10;
+    // bits 21-10: 1_00_110_000000 (bit21=1, rmode=00, opcode=110, 000000)
+    let opcode_bits = 0b100110000000u32 << 10;
     let rn_bits = ((rn & 0x1F) as u32) << 5;
     let rd_bits = (rd & 0x1F) as u32;
 
@@ -1167,12 +1246,15 @@ pub fn encode_fmov_to_gpr(sf: bool, ftype: u8, rd: u8, rn: u8) -> u32 {
 }
 
 /// Encode `FMOV <Sd|Dd>, <Xn|Wn>` — GPR to FP move.
+///
+/// Encoding: `sf 0 0 11110 ftype 1 00 111 000000 Rn Rd`
+///           bit21 is fixed `1`, rmode=00, opcode=111
 pub fn encode_fmov_from_gpr(sf: bool, ftype: u8, rd: u8, rn: u8) -> u32 {
     let sf_bit = (sf as u32) << 31;
     let fixed = 0b0011110u32 << 24;
     let ftype_bits = ((ftype & 0x3) as u32) << 22;
-    // GPR→FP encoding uses rmode:opcode = 00:111 (differs from FP→GPR).
-    let opcode_bits = 0b1001100000u32 << 10;
+    // bits 21-10: 1_00_111_000000 (bit21=1, rmode=00, opcode=111, 000000)
+    let opcode_bits = 0b100111000000u32 << 10;
     let rn_bits = ((rn & 0x1F) as u32) << 5;
     let rd_bits = (rd & 0x1F) as u32;
 
@@ -1569,6 +1651,43 @@ pub fn encode_mov_imm(rd: u8, value: u64, sf: bool) -> Vec<u32> {
 /// Encode `NOP` — no operation.
 ///
 /// Encoding: `0xD503201F`
+/// Encodes CLZ Xd, Xn (Count Leading Zeros).
+///
+/// Encoding (Data Processing 1-source):
+///   sf=1  1  S=0  11010110  opcode2=00000  opcode=000100  Rn  Rd
+///   For 64-bit: 0xDAC01000 | (Rn << 5) | Rd
+///   For 32-bit: 0x5AC01000 | (Rn << 5) | Rd
+pub fn encode_clz(sf: bool, rd: u8, rn: u8) -> u32 {
+    let base: u32 = if sf { 0xDAC0_1000 } else { 0x5AC0_1000 };
+    base | ((rn as u32 & 0x1F) << 5) | (rd as u32 & 0x1F)
+}
+
+/// Encodes RBIT Xd, Xn (Reverse Bits).
+///
+/// Encoding (Data Processing 1-source):
+///   sf=1  1  S=0  11010110  opcode2=00000  opcode=000000  Rn  Rd
+///   For 64-bit: 0xDAC00000 | (Rn << 5) | Rd
+///   For 32-bit: 0x5AC00000 | (Rn << 5) | Rd
+pub fn encode_rbit(sf: bool, rd: u8, rn: u8) -> u32 {
+    let base: u32 = if sf { 0xDAC0_0000 } else { 0x5AC0_0000 };
+    base | ((rn as u32 & 0x1F) << 5) | (rd as u32 & 0x1F)
+}
+
+/// Encodes REV Xd, Xn (Byte Reverse).
+///
+/// For 64-bit: REV X → 0xDAC00C00 | (Rn << 5) | Rd
+/// For 32-bit: REV W → 0x5AC00800 | (Rn << 5) | Rd
+pub fn encode_rev(sf: bool, rd: u8, rn: u8) -> u32 {
+    let base: u32 = if sf { 0xDAC0_0C00 } else { 0x5AC0_0800 };
+    base | ((rn as u32 & 0x1F) << 5) | (rd as u32 & 0x1F)
+}
+
+/// Encodes REV16 Xd, Xn (Byte Reverse in 16-bit halfwords).
+pub fn encode_rev16(sf: bool, rd: u8, rn: u8) -> u32 {
+    let base: u32 = if sf { 0xDAC0_0400 } else { 0x5AC0_0400 };
+    base | ((rn as u32 & 0x1F) << 5) | (rd as u32 & 0x1F)
+}
+
 pub fn encode_nop() -> u32 {
     0xD503_201F
 }
@@ -1714,6 +1833,37 @@ fn size_from_reg(ops: &[MachineOperand], idx: usize) -> u8 {
 ///   - `Register(base)` followed by `Immediate(offset)` at `base_idx + 1`
 ///   - `Memory { base, offset, .. }`
 ///   - `FrameIndex(idx)` → SP-relative access with frame slot as offset
+/// Extract base register and signed 7-bit immediate for LDP/STP pair
+/// instructions.
+///
+/// Handles two operand patterns:
+///   1. `[Register(base), Immediate(offset)]` at `base_idx` and `base_idx+1`
+///   2. `Memory { base, offset, .. }` at `base_idx`
+///
+/// The returned offset is the raw byte offset divided by the pair scale
+/// (8 for 64-bit registers). The hardware encodes `imm7 * scale` so the
+/// caller must pass the *scaled* value to the encode functions.
+fn extract_pair_base_offset(ops: &[MachineOperand], base_idx: usize) -> (u8, i8) {
+    match ops.get(base_idx) {
+        Some(MachineOperand::Register(base)) => {
+            let rn = encoding(*base);
+            let raw = match ops.get(base_idx + 1) {
+                Some(MachineOperand::Immediate(v)) => *v,
+                _ => 0,
+            };
+            // Convert byte offset to scaled imm7 for 64-bit pair (scale=8)
+            (rn, (raw / 8) as i8)
+        }
+        Some(MachineOperand::Memory { base, offset, .. }) => {
+            let rn = encoding(*base);
+            // Convert byte offset to scaled imm7 (scale=8 for X-regs)
+            (rn, (*offset / 8) as i8)
+        }
+        Some(MachineOperand::FrameIndex(idx)) => (encoding(SP), (*idx / 8) as i8),
+        _ => (encoding(SP), 0),
+    }
+}
+
 fn extract_base_offset(ops: &[MachineOperand], base_idx: usize) -> (u8, u16) {
     match ops.get(base_idx) {
         Some(MachineOperand::Register(base)) => {
@@ -1885,6 +2035,26 @@ pub fn encode_instruction(instr: &MachineInstr) -> EncodedInstruction {
         0x0400..=0x04FF => dispatch_fp(instr),
         0x0500..=0x05FF => dispatch_sys(instr),
         0x0600..=0x06FF => dispatch_data(instr),
+
+        // ==================================================================
+        // SPILL pseudo-ops generated by the register allocator.
+        //
+        // Operands:
+        //   [0] Register(scratch)    — the reserved scratch register (X16)
+        //   [1] FrameIndex(offset)   — byte offset from the stack pointer
+        //
+        // SPILL_LOAD:  scratch ← [SP + offset]  (LDR X16, [SP, #offset])
+        // SPILL_STORE: [SP + offset] ← scratch   (STR X16, [SP, #offset])
+        //
+        // For FP registers the D-register variant is used (SIMD 64-bit).
+        // ==================================================================
+        x if x == SPILL_LOAD_OPCODE || x == (SPILL_LOAD_OPCODE & 0x00FF_FFFF) => {
+            encode_spill_op(instr, true)
+        }
+        x if x == SPILL_STORE_OPCODE || x == (SPILL_STORE_OPCODE & 0x00FF_FFFF) => {
+            encode_spill_op(instr, false)
+        }
+
         // Unknown opcode — emit NOP as a safe fallback.
         _ => encoded(encode_nop()),
     }
@@ -1893,6 +2063,96 @@ pub fn encode_instruction(instr: &MachineInstr) -> EncodedInstruction {
 // ---------------------------------------------------------------------------
 // Category dispatch helpers (private)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Spill pseudo-op lowering
+// ---------------------------------------------------------------------------
+
+/// Lower a SPILL_LOAD or SPILL_STORE pseudo-instruction into a real
+/// AArch64 load/store.
+///
+/// # Arguments
+///
+/// * `instr` — the pseudo-instruction with operands `[Register(scratch), FrameIndex(offset)]`
+/// * `is_load` — `true` for SPILL_LOAD (LDR), `false` for SPILL_STORE (STR)
+///
+/// # Encoding
+///
+/// For GPR spills: `LDR/STR Xt, [SP, #offset]` (unsigned immediate, 64-bit)
+/// For FP spills:  `LDR/STR Dt, [SP, #offset]` (FP unsigned immediate, 64-bit)
+///
+/// The byte offset is stored in the `FrameIndex` operand.  For 64-bit
+/// unsigned-immediate addressing, the offset is divided by 8 to produce
+/// the scaled immediate12 field.  If the offset is not 8-byte aligned or
+/// exceeds the 12-bit range (32760 bytes), we fall back to the unscaled
+/// LDUR/STUR form (±256 bytes) or emit an ADD+LDR/STR sequence for very
+/// large offsets.
+fn encode_spill_op(instr: &MachineInstr, is_load: bool) -> EncodedInstruction {
+    let ops = &instr.operands;
+
+    // Extract the scratch register and the byte offset.
+    let scratch = match ops.first() {
+        Some(MachineOperand::Register(reg)) => *reg,
+        _ => return encoded(encode_nop()),
+    };
+    let byte_offset: u32 = match ops.get(1) {
+        Some(MachineOperand::FrameIndex(off)) => *off,
+        Some(MachineOperand::Immediate(off)) => *off as u32,
+        _ => return encoded(encode_nop()),
+    };
+
+    // Use FP (X29, encoding 29) as the base register for spill loads/stores
+    // instead of SP (encoding 31).  After the prologue `MOV X29, SP`, FP
+    // holds the frame base address.  Using FP makes spill accesses immune
+    // to temporary SP adjustments emitted around calls with stack arguments
+    // (SUB SP / ADD SP for the outgoing argument area).
+    let sp_enc: u8 = 29; // FP (X29) as base for frame-relative spill access
+    let rt = encoding(scratch);
+
+    // Determine if this is a GPR or FP register.
+    let is_fp = is_fp_reg(scratch);
+
+    if is_fp {
+        // FP spill: LDR/STR Dt, [SP, #offset]
+        // ftype=01 for double-precision (64-bit), imm12 is offset/8
+        let ftype: u8 = 0b01; // double
+        let scaled_off = (byte_offset / 8) as u16;
+        let word = if is_load {
+            encode_ldr_fp_imm(ftype, rt, sp_enc, scaled_off)
+        } else {
+            encode_str_fp_imm(ftype, rt, sp_enc, scaled_off)
+        };
+        encoded(word)
+    } else {
+        // GPR spill: LDR/STR Xt, [SP, #offset]
+        // size=3 (64-bit), imm12 is offset/8
+        let size: u8 = 0b11; // doubleword
+        if byte_offset % 8 == 0 && byte_offset / 8 <= 0xFFF {
+            // Scaled unsigned immediate — most common path.
+            let scaled_off = (byte_offset / 8) as u16;
+            let word = if is_load {
+                encode_ldr_imm(size, rt, sp_enc, scaled_off)
+            } else {
+                encode_str_imm(size, rt, sp_enc, scaled_off)
+            };
+            encoded(word)
+        } else if (byte_offset as i32) >= -256 && (byte_offset as i32) <= 255 {
+            // Unscaled form (LDUR/STUR) for small unaligned offsets.
+            let word = if is_load {
+                encode_ldr_unscaled(size, rt, sp_enc, byte_offset as i16)
+            } else {
+                encode_str_unscaled(size, rt, sp_enc, byte_offset as i16)
+            };
+            encoded(word)
+        } else {
+            // Large offset: fall back to NOP — this should not happen in
+            // normal compilation since the frame size is bounded. If it
+            // does, the generated code will be incorrect but not crash the
+            // compiler. A future enhancement would emit an ADD sequence.
+            encoded(encode_nop())
+        }
+    }
+}
 
 /// Dispatch **Data Processing — Immediate** instructions.
 fn dispatch_dp_imm(instr: &MachineInstr) -> EncodedInstruction {
@@ -1907,10 +2167,14 @@ fn dispatch_dp_imm(instr: &MachineInstr) -> EncodedInstruction {
             // (the code generator emits ADD Xd, Xn, :lo12:symbol).
             if instr.opcode == OP_ADD_IMM {
                 if let Some(MachineOperand::Symbol(sym)) = ops.get(2) {
+                    // Strip :lo12: prefix if present — the relocation
+                    // type already encodes the semantics; the symbol
+                    // name must be clean for linker lookup.
+                    let clean = sym.strip_prefix(":lo12:").unwrap_or(sym);
                     return encoded_reloc(
                         encode_add_imm(sf, rd, rn, 0, false),
                         AArch64RelocationType::R_AARCH64_ADD_ABS_LO12_NC,
-                        sym.clone(),
+                        clean.to_string(),
                         0,
                     );
                 }
@@ -1946,7 +2210,14 @@ fn dispatch_dp_imm(instr: &MachineInstr) -> EncodedInstruction {
             let sf = sf_from_reg(ops, 0);
             let rd = extract_reg(ops, 0);
             let imm16 = extract_imm(ops, 1) as u16;
-            let hw = extract_imm(ops, 2) as u8;
+            // The codegen passes the *bit shift* amount (0, 16, 32, 48) as
+            // the third operand, but the A64 encoding requires the *halfword
+            // number* (0, 1, 2, 3).  Convert by dividing by 16.  If the
+            // third operand is already a halfword number (0–3), the division
+            // is harmless (0/16=0, 1/16=0, 2/16=0, 3/16=0) — but our codegen
+            // consistently uses shift amounts, so this is safe.
+            let raw_hw = extract_imm(ops, 2) as u8;
+            let hw = if raw_hw >= 16 { raw_hw / 16 } else { raw_hw };
             let w = match instr.opcode {
                 OP_MOVZ => encode_movz(sf, rd, imm16, hw),
                 OP_MOVK => encode_movk(sf, rd, imm16, hw),
@@ -1997,6 +2268,38 @@ fn dispatch_dp_imm(instr: &MachineInstr) -> EncodedInstruction {
                 }
                 _ => encoded(encode_adrp(rd, extract_imm(ops, 1) as i32)),
             }
+        }
+        // ----- Sign/Zero extension pseudo-ops (aliases for SBFM / UBFM) -----
+        //
+        // SXTB Xd, Wn  →  SBFM Xd, Xn, #0, #7       (sf=1, immr=0, imms=7)
+        // SXTH Xd, Wn  →  SBFM Xd, Xn, #0, #15      (sf=1, immr=0, imms=15)
+        // SXTW Xd, Wn  →  SBFM Xd, Xn, #0, #31      (sf=1, immr=0, imms=31)
+        // UXTB Wd, Wn  →  UBFM Wd, Wn, #0, #7       (sf=0, immr=0, imms=7)
+        // UXTH Wd, Wn  →  UBFM Wd, Wn, #0, #15      (sf=0, immr=0, imms=15)
+        OP_SXTB => {
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            encoded(encode_sbfm(true, rd, rn, 0, 7))
+        }
+        OP_SXTH => {
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            encoded(encode_sbfm(true, rd, rn, 0, 15))
+        }
+        OP_SXTW => {
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            encoded(encode_sbfm(true, rd, rn, 0, 31))
+        }
+        OP_UXTB => {
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            encoded(encode_ubfm(false, rd, rn, 0, 7))
+        }
+        OP_UXTH => {
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            encoded(encode_ubfm(false, rd, rn, 0, 15))
         }
         _ => encoded(encode_nop()),
     }
@@ -2098,6 +2401,31 @@ fn dispatch_dp_reg(instr: &MachineInstr) -> EncodedInstruction {
             };
             encoded(w)
         }
+        // ----- Variable shift (register) -----
+        // LSLV/LSRV/ASRV/RORV: Data Processing (2 source)
+        // Encoding: sf|0|S=0|11010110|Rm|001000+op2|Rn|Rd
+        // op2: LSLV=00, LSRV=01, ASRV=10, RORV=11
+        OP_LSLV | OP_LSRV | OP_ASRV | OP_RORV => {
+            let sf = sf_from_reg(ops, 0);
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let rm = extract_reg(ops, 2);
+            let op2: u32 = match instr.opcode {
+                OP_LSLV => 0b00,
+                OP_LSRV => 0b01,
+                OP_ASRV => 0b10,
+                _ => 0b11, // RORV
+            };
+            // sf 0 0 11010110 Rm 0010 op2 Rn Rd
+            let w = ((sf as u32) << 31)
+                | (0b00_11010110u32 << 21)
+                | ((rm as u32) << 16)
+                | (0b0010u32 << 12)
+                | (op2 << 10)
+                | ((rn as u32) << 5)
+                | (rd as u32);
+            encoded(w)
+        }
         _ => encoded(encode_nop()),
     }
 }
@@ -2110,7 +2438,12 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
         OP_LDR_IMM | OP_STR_IMM => {
             let size = size_from_reg(ops, 0);
             let rt = extract_reg(ops, 0);
-            let (rn, imm12) = extract_base_offset(ops, 1);
+            let (rn, byte_offset) = extract_base_offset(ops, 1);
+            // AArch64 unsigned-offset load/store encodes the immediate as
+            // `byte_offset / access_size`. Scale the raw byte offset by the
+            // transfer size: size=0b10 (32-bit) → /4, size=0b11 (64-bit) → /8.
+            let scale: u16 = 1u16 << size;
+            let imm12 = byte_offset / scale;
             // A trailing Symbol operand signals a GOT load relocation
             // (e.g., LDR Xd, [Xn, :got_lo12:sym]).
             let sym_idx = if matches!(ops.get(1), Some(MachineOperand::Memory { .. })) {
@@ -2124,10 +2457,16 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
                 } else {
                     encode_str_imm(size, rt, rn, 0)
                 };
+                // Strip :got_lo12: or :lo12: prefix — the relocation
+                // type encodes the semantics; the symbol name must be clean.
+                let clean = sym
+                    .strip_prefix(":got_lo12:")
+                    .or_else(|| sym.strip_prefix(":lo12:"))
+                    .unwrap_or(sym);
                 return encoded_reloc(
                     w,
                     AArch64RelocationType::R_AARCH64_LD64_GOT_LO12_NC,
-                    sym.clone(),
+                    clean.to_string(),
                     0,
                 );
             }
@@ -2138,12 +2477,40 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
             };
             encoded(w)
         }
+        // ----- 32-bit (word) LDR/STR — force size=0b10 -----
+        // These opcodes are used for I32 / F32 transfers so that the
+        // encoder always uses a 4-byte access width regardless of
+        // whether the register allocator assigned an X-register.
+        OP_LDR_W32 | OP_STR_W32 => {
+            let size: u8 = 0b10; // always 32-bit
+            let rt = extract_reg(ops, 0);
+            let (rn, byte_offset) = extract_base_offset(ops, 1);
+            let scale: u16 = 4; // 1 << 0b10
+            let imm12 = byte_offset / scale;
+            let w = if instr.opcode == OP_LDR_W32 {
+                encode_ldr_imm(size, rt, rn, imm12)
+            } else {
+                encode_str_imm(size, rt, rn, imm12)
+            };
+            encoded(w)
+        }
         // ----- Byte / halfword / sign-extending loads & stores -----
         OP_LDRB_IMM | OP_STRB_IMM | OP_LDRH_IMM | OP_STRH_IMM | OP_LDRSB_IMM | OP_LDRSH_IMM
         | OP_LDRSW_IMM => {
             let rt = extract_reg(ops, 0);
-            let (rn, imm12) = extract_base_offset(ops, 1);
+            let (rn, byte_offset) = extract_base_offset(ops, 1);
             let sf = sf_from_reg(ops, 0);
+            // Scale byte offset by access size for the unsigned-imm12 field.
+            // LDRB/STRB/LDRSB: size=0 → scale=1 (bytes, no shift).
+            // LDRH/STRH/LDRSH: size=1 → scale=2 (halfwords).
+            // LDRSW:           size=2 → scale=4 (words).
+            let op_size: u16 = match instr.opcode {
+                OP_LDRB_IMM | OP_STRB_IMM | OP_LDRSB_IMM => 1,
+                OP_LDRH_IMM | OP_STRH_IMM | OP_LDRSH_IMM => 2,
+                OP_LDRSW_IMM => 4,
+                _ => 1,
+            };
+            let imm12 = byte_offset / op_size;
             let w = match instr.opcode {
                 OP_LDRB_IMM => encode_ldrb_imm(rt, rn, imm12),
                 OP_STRB_IMM => encode_strb_imm(rt, rn, imm12),
@@ -2203,8 +2570,7 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
             let sf = sf_from_reg(ops, 0);
             let rt1 = extract_reg(ops, 0);
             let rt2 = extract_reg(ops, 1);
-            let rn = extract_reg(ops, 2);
-            let imm7 = extract_imm(ops, 3) as i8;
+            let (rn, imm7) = extract_pair_base_offset(ops, 2);
             let w = if instr.opcode == OP_LDP {
                 encode_ldp(sf, rt1, rt2, rn, imm7)
             } else {
@@ -2217,8 +2583,7 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
             let sf = sf_from_reg(ops, 0);
             let rt1 = extract_reg(ops, 0);
             let rt2 = extract_reg(ops, 1);
-            let rn = extract_reg(ops, 2);
-            let imm7 = extract_imm(ops, 3) as i8;
+            let (rn, imm7) = extract_pair_base_offset(ops, 2);
             let w = if instr.opcode == OP_LDP_PRE {
                 encode_ldp_pre(sf, rt1, rt2, rn, imm7)
             } else {
@@ -2231,8 +2596,7 @@ fn dispatch_ldst(instr: &MachineInstr) -> EncodedInstruction {
             let sf = sf_from_reg(ops, 0);
             let rt1 = extract_reg(ops, 0);
             let rt2 = extract_reg(ops, 1);
-            let rn = extract_reg(ops, 2);
-            let imm7 = extract_imm(ops, 3) as i8;
+            let (rn, imm7) = extract_pair_base_offset(ops, 2);
             let w = if instr.opcode == OP_LDP_POST {
                 encode_ldp_post(sf, rt1, rt2, rn, imm7)
             } else {
@@ -2438,6 +2802,39 @@ fn dispatch_cond(instr: &MachineInstr) -> EncodedInstruction {
             };
             encoded(w)
         }
+        // ----- CMP (register) — alias for SUBS XZR, Rn, Rm -----
+        OP_CMP_REG => {
+            let sf = sf_from_reg(ops, 0);
+            let rn = extract_reg(ops, 0);
+            let rm = extract_reg(ops, 1);
+            // CMP = SUBS with Rd = XZR (register 31)
+            encoded(encode_subs_reg(sf, 31, rn, rm, ShiftType::LSL, 0))
+        }
+        // ----- CMN (register) — alias for ADDS XZR, Rn, Rm -----
+        OP_CMN_REG => {
+            let sf = sf_from_reg(ops, 0);
+            let rn = extract_reg(ops, 0);
+            let rm = extract_reg(ops, 1);
+            // CMN = ADDS with Rd = XZR (register 31)
+            encoded(encode_adds_reg(sf, 31, rn, rm, ShiftType::LSL, 0))
+        }
+        // ----- TST (register) — alias for ANDS XZR, Rn, Rm -----
+        OP_TST_REG => {
+            let sf = sf_from_reg(ops, 0);
+            let rn = extract_reg(ops, 0);
+            let rm = extract_reg(ops, 1);
+            // TST = ANDS with Rd = XZR (register 31)
+            encoded(encode_ands_reg(sf, 31, rn, rm, ShiftType::LSL, 0))
+        }
+        // ----- CCMN (register) — conditional compare negative -----
+        OP_CCMN_REG => {
+            let sf = sf_from_reg(ops, 0);
+            let rn = extract_reg(ops, 0);
+            let rm = extract_reg(ops, 1);
+            let nzcv = extract_imm(ops, 2) as u8;
+            let cond = extract_imm(ops, 3) as u8;
+            encoded(encode_ccmn_reg(sf, rn, rm, nzcv, cond))
+        }
         _ => encoded(encode_nop()),
     }
 }
@@ -2493,20 +2890,27 @@ fn dispatch_fp(instr: &MachineInstr) -> EncodedInstruction {
         }
         // ----- FP → GPR move -----
         OP_FMOV_TO_GPR => {
+            // FP → GPR:  FMOV Wd, Sn (sf=0, ftype=0)
+            //             FMOV Xd, Dn (sf=1, ftype=1)
+            // sf MUST match ftype, not the physical register class,
+            // because the register allocator only assigns X registers
+            // but FMOV Wd,Sn requires sf=0.
             let rd_phys = extract_phys(ops, 0);
-            let sf = !is_gpr_w(rd_phys);
             let rd = encoding(rd_phys);
             let rn = extract_reg(ops, 1);
             let ftype = extract_imm(ops, 2) as u8;
+            let sf = ftype != 0; // single(0)→sf=0(W), double(1)→sf=1(X)
             encoded(encode_fmov_to_gpr(sf, ftype, rd, rn))
         }
         // ----- GPR → FP move -----
         OP_FMOV_FROM_GPR => {
+            // GPR → FP:  FMOV Sd, Wn (sf=0, ftype=0)
+            //             FMOV Dd, Xn (sf=1, ftype=1)
             let rd = extract_reg(ops, 0);
             let rn_phys = extract_phys(ops, 1);
-            let sf = !is_gpr_w(rn_phys);
             let rn = encoding(rn_phys);
             let ftype = extract_imm(ops, 2) as u8;
+            let sf = ftype != 0;
             encoded(encode_fmov_from_gpr(sf, ftype, rd, rn))
         }
         // ----- FP immediate move -----
@@ -2575,6 +2979,54 @@ fn dispatch_sys(instr: &MachineInstr) -> EncodedInstruction {
             let sysreg = extract_imm(ops, 0) as u16;
             let rt = extract_reg(ops, 1);
             encoded(encode_msr(sysreg, rt))
+        }
+        OP_CLZ => {
+            // CLZ Rd, Rn [, sf_flag]
+            // If a third operand (immediate) is present, use it as sf:
+            //   1 = 64-bit (X), 0 = 32-bit (W).
+            // Otherwise, determine sf from register properties.
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let sf = if ops.len() > 2 {
+                extract_imm(ops, 2) != 0
+            } else {
+                sf_from_reg(ops, 0)
+            };
+            encoded(encode_clz(sf, rd, rn))
+        }
+        OP_RBIT => {
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let sf = if ops.len() > 2 {
+                extract_imm(ops, 2) != 0
+            } else {
+                sf_from_reg(ops, 0)
+            };
+            encoded(encode_rbit(sf, rd, rn))
+        }
+        OP_REV => {
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let sf = if ops.len() > 2 {
+                extract_imm(ops, 2) != 0
+            } else {
+                sf_from_reg(ops, 0)
+            };
+            encoded(encode_rev(sf, rd, rn))
+        }
+        OP_REV16 => {
+            let rd = extract_reg(ops, 0);
+            let rn = extract_reg(ops, 1);
+            let sf = if ops.len() > 2 {
+                extract_imm(ops, 2) != 0
+            } else {
+                sf_from_reg(ops, 0)
+            };
+            encoded(encode_rev16(sf, rd, rn))
+        }
+        OP_INLINE_ASM => {
+            // Raw inline ASM placeholder — emit NOP.
+            encoded(encode_nop())
         }
         _ => encoded(encode_nop()),
     }

@@ -46,7 +46,10 @@
 use crate::common::diagnostics::Span;
 use crate::common::fx_hash::FxHashMap;
 use crate::common::string_interner::Symbol;
-use crate::frontend::parser::ast::{BlockItem, Declaration, Expression, ForInit, Statement};
+use crate::common::types::CType;
+use crate::frontend::parser::ast::{
+    BlockItem, Declaration, Expression, ForInit, Initializer, Statement,
+};
 use crate::frontend::sema::constant_eval::evaluate_integer_constant;
 use crate::ir::basic_block::BasicBlockId;
 use crate::ir::instructions::ValueId;
@@ -55,31 +58,6 @@ use crate::ir::types::IrType;
 use super::asm_lowering::lower_asm_statement;
 use super::expr_lowering::lower_expression;
 use super::{check_recursion_depth, ensure_not_terminated, LoweringContext, LoweringError};
-
-/// Debug helper: returns the variant name of a Statement for tracing.
-fn stmt_variant_name(stmt: &Statement) -> &'static str {
-    match stmt {
-        Statement::Compound { .. } => "Compound",
-        Statement::If { .. } => "If",
-        Statement::While { .. } => "While",
-        Statement::DoWhile { .. } => "DoWhile",
-        Statement::For { .. } => "For",
-        Statement::Switch { .. } => "Switch",
-        Statement::Case { .. } => "Case",
-        Statement::CaseRange { .. } => "CaseRange",
-        Statement::Default { .. } => "Default",
-        Statement::Goto { .. } => "Goto",
-        Statement::ComputedGoto { .. } => "ComputedGoto",
-        Statement::Break { .. } => "Break",
-        Statement::Continue { .. } => "Continue",
-        Statement::Return { .. } => "Return",
-        Statement::Labeled { .. } => "Labeled",
-        Statement::Expression { .. } => "Expression",
-        Statement::Null { .. } => "Null",
-        Statement::Asm(_) => "Asm",
-        Statement::Error { .. } => "Error",
-    }
-}
 
 // ============================================================================
 // Public API
@@ -135,13 +113,9 @@ fn lower_statement_inner(
     }
 
     // DEBUG: trace statement lowering
-    eprintln!("[DEBUG stmt_lower] lowering statement variant: {}", stmt_variant_name(stmt));
 
     match stmt {
-        Statement::Compound { items, span } => {
-            eprintln!("[DEBUG stmt_lower] Compound with {} items", items.len());
-            lower_compound_stmt(ctx, items, *span)
-        }
+        Statement::Compound { items, span } => lower_compound_stmt(ctx, items, *span),
 
         Statement::If {
             condition,
@@ -231,17 +205,24 @@ fn lower_compound_stmt(
     items: &[BlockItem],
     _span: Span,
 ) -> Result<(), LoweringError> {
-    for (idx, item) in items.iter().enumerate() {
+    // eprintln!("[COMPOUND_DBG] Lowering compound statement with {} items", items.len());
+    for (_idx, item) in items.iter().enumerate() {
+        // eprintln!("[COMPOUND_DBG]   Item {}: {:?}", idx, match item {
+        // BlockItem::Statement(s) => format!("Statement({:?})", std::mem::discriminant(s)),
+        // BlockItem::Declaration(_) => "Declaration".to_string(),
+        // });
         match item {
             BlockItem::Statement(stmt) => {
-                eprintln!("[DEBUG compound] item[{}] = Statement({})", idx, stmt_variant_name(stmt));
                 lower_statement(ctx, stmt)?;
             }
             BlockItem::Declaration(decl) => {
-                eprintln!("[DEBUG compound] item[{}] = Declaration({:?})", idx, std::mem::discriminant(decl));
                 lower_block_declaration(ctx, decl)?;
             }
         }
+        // eprintln!("[COMPOUND_DBG]   After item {}: insert_block={:?}, terminated={}",
+        // idx,
+        // ctx.builder.get_insert_block(),
+        // ctx.current_block_terminated());
     }
     Ok(())
 }
@@ -873,15 +854,15 @@ fn lower_computed_goto(
     target: &Expression,
     _span: Span,
 ) -> Result<(), LoweringError> {
-    // Lower the target expression to a pointer value.
+    // Lower the target expression to a pointer value (a block address).
     let target_val = lower_expression(ctx, target)?;
 
     // Collect all address-taken labels and their blocks.
     let taken_labels: Vec<Symbol> = ctx.address_taken_labels.iter().copied().collect();
 
     if taken_labels.is_empty() {
-        // No address-taken labels — degenerate case. Emit an unreachable-
-        // style branch to a dead block.
+        // No address-taken labels — degenerate case.  Emit an
+        // unreachable-style branch to a dead block.
         let dead_bb = ctx
             .builder
             .create_block(ctx.function, Some("computed.goto.dead"));
@@ -892,31 +873,18 @@ fn lower_computed_goto(
         return Ok(());
     }
 
-    // Build case entries: map each label to a small integer address.
-    // The convention is that &&label produces the block's index as an
-    // integer (PtrToInt). We use the BasicBlockId's internal index.
-    let mut cases: Vec<(i64, BasicBlockId)> = Vec::new();
-    let mut first_block = None;
+    // Gather the basic blocks of all address-taken labels.  These are
+    // the possible targets of the indirect branch.
+    let mut possible_targets: Vec<crate::ir::basic_block::BasicBlockId> = Vec::new();
     for label in &taken_labels {
         let block = ctx.get_or_create_label_block(*label);
-        // Use the block ID's numeric value as the switch case value.
-        // This must match the value produced by Expression::LabelAddress
-        // in expr_lowering.
-        cases.push((block.0 as i64, block));
-        if first_block.is_none() {
-            first_block = Some(block);
-        }
+        possible_targets.push(block);
     }
 
-    // The default target of the switch is the first label (or a dead block).
-    let default_target = first_block.unwrap_or_else(|| {
-        ctx.builder
-            .create_block(ctx.function, Some("computed.goto.default"))
-    });
-
+    // Emit IndirectBranch — a true indirect jump through the pointer.
     if ensure_not_terminated(ctx) {
         ctx.builder
-            .build_switch(ctx.function, target_val, default_target, cases);
+            .build_indirect_branch(ctx.function, target_val, possible_targets);
     }
 
     // After computed goto, subsequent code is unreachable.
@@ -1037,7 +1005,7 @@ fn lower_expr_stmt(ctx: &mut LoweringContext<'_>, expr: &Expression) -> Result<(
 /// for pointers, and `IrType::I8` arrays for character arrays. Full type
 /// resolution depends on the semantic analysis layer; this inline handler
 /// covers the common cases needed for control flow lowering.
-fn lower_block_declaration(
+pub(crate) fn lower_block_declaration(
     ctx: &mut LoweringContext<'_>,
     decl: &Declaration,
 ) -> Result<(), LoweringError> {
@@ -1047,8 +1015,22 @@ fn lower_block_declaration(
             declarators,
             ..
         } => {
+            // Register struct/union field names from the type specifiers
+            // before resolving the IR type, so that the field name→index
+            // mapping is available for member access expressions.
+            // For anonymous structs, this returns a synthetic tag symbol.
+            let anon_tag = register_struct_fields_from_specifiers(ctx, specifiers);
+
+            // Track whether this declaration uses unsigned integer types.
+            let is_unsigned = is_unsigned_from_specifiers(ctx, specifiers);
+
             // Resolve the base IR type from declaration specifiers.
             let base_ir_type = resolve_base_ir_type_from_specifiers(ctx, specifiers);
+
+            // Detect the struct/union tag name for variable→struct mapping.
+            // Prefer the explicit tag from the source, fall back to the
+            // synthetic tag generated for anonymous structs.
+            let struct_tag = extract_struct_tag_from_specifiers(specifiers).or(anon_tag);
 
             for init_decl in declarators {
                 // Extract the variable name from the declarator.
@@ -1058,26 +1040,193 @@ fn lower_block_declaration(
                 };
 
                 // Adjust the type based on derived declarators (pointers, arrays).
-                let ir_type =
+                let mut ir_type =
                     apply_derived_declarators(&base_ir_type, &init_decl.declarator.derived);
+
+                // For unsized arrays, infer the element count from the
+                // initializer when possible.
+                if let IrType::Array { count: 0, .. } = ir_type {
+                    if let Some(ref initializer) = init_decl.initializer {
+                        // Special case: char arrays with string literal
+                        // initializers use the string length.
+                        let elem_cloned = if let IrType::Array { ref element, .. } = ir_type {
+                            Some(element.clone())
+                        } else {
+                            None
+                        };
+
+                        if let Some(ref elem) = elem_cloned {
+                            if matches!(**elem, IrType::I8) {
+                                if let Some(str_len) = get_string_literal_array_size(initializer) {
+                                    ir_type = IrType::Array {
+                                        element: elem.clone(),
+                                        count: str_len,
+                                    };
+                                }
+                            }
+                        }
+
+                        // General case: for list initializers like
+                        //   `int arr[] = {1, 2, 3}`  or
+                        //   `void *table[] = {&&l1, &&l2, &&l3}`
+                        // count the top-level initializer items to infer size.
+                        if let IrType::Array { count: 0, .. } = ir_type {
+                            if let Some(ref elem) = elem_cloned {
+                                if let Initializer::List { items, .. } = initializer {
+                                    if !items.is_empty() {
+                                        ir_type = IrType::Array {
+                                            element: elem.clone(),
+                                            count: items.len(),
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Create an alloca for this variable.
                 let alloca = ctx.create_local_alloca(var_name, ir_type.clone());
 
+                // Track unsigned variables for correct comparison predicates.
+                if is_unsigned {
+                    ctx.variable_unsigned.insert(var_name);
+                }
+
+                // If this variable is a pointer, record what type is
+                // produced when it is dereferenced.  This enables correct
+                // code generation for loads through multi-level pointers
+                // (e.g. `int **pp`  →  `*pp` produces `int *` = Ptr).
+                if ir_type == IrType::Ptr {
+                    let mut pointee =
+                        compute_pointee_type(&base_ir_type, &init_decl.declarator.derived);
+
+                    // When the base type is already Ptr (e.g. from a typeof
+                    // or typedef that evaluates to a pointer type) AND there
+                    // are no pointer-derivation tokens in the declarator,
+                    // `compute_pointee_type` returns Ptr (the base type
+                    // itself) which loses the actual pointee information.
+                    // Recover it from the typeof/typedef expression.
+                    if pointee == IrType::Ptr {
+                        let has_ptr_deriv = init_decl.declarator.derived.iter().any(|d| {
+                            matches!(
+                                d,
+                                crate::frontend::parser::ast::DerivedDeclarator::Pointer { .. }
+                            )
+                        });
+                        if !has_ptr_deriv {
+                            if let Some(better) = resolve_pointee_from_specifiers(ctx, specifiers) {
+                                pointee = better;
+                            }
+                        }
+                    }
+
+                    ctx.variable_pointee_types.insert(var_name, pointee.clone());
+
+                    // For multi-level pointers (e.g. `int **pp`), also
+                    // record the "deep" pointee type — the type obtained
+                    // after fully dereferencing all pointer layers.
+                    //
+                    // `int **pp`  →  pointee = Ptr, deep_pointee = base = I32
+                    // `int ***ppp` → pointee = Ptr, deep_pointee = base = I32
+                    //
+                    // This is used by `infer_dereference_type` to correctly
+                    // type the innermost dereference (e.g. `**pp` → I32).
+                    if pointee == IrType::Ptr {
+                        // First, try to inherit the deep_pointee from the
+                        // source variable when declared via typeof.
+                        //   typeof(pp) pp2  →  inherit deep_pointee["pp"]
+                        let inherited = resolve_deep_pointee_from_typeof(ctx, specifiers);
+                        if let Some(deep) = inherited {
+                            ctx.variable_deep_pointee_types.insert(var_name, deep);
+                        } else if base_ir_type != IrType::Ptr {
+                            // The base type is the actual element type
+                            // (e.g. I32 for `int **pp`).
+                            ctx.variable_deep_pointee_types
+                                .insert(var_name, base_ir_type.clone());
+                        }
+                    }
+                }
+
+                // Track the C type for this variable. This is essential for
+                // _Generic selection and member access resolution.
+                if let Some(tag) = struct_tag {
+                    let tag_name_str = ctx.module_ctx.interner.resolve(tag).to_string();
+                    // Determine if this is a union or struct from the specifiers.
+                    let is_union_type = is_union_specifier(specifiers);
+                    if is_union_type {
+                        ctx.variable_ctypes.insert(
+                            var_name,
+                            CType::Union {
+                                name: Some(tag_name_str),
+                                fields: Vec::new(),
+                            },
+                        );
+                    } else {
+                        ctx.variable_ctypes.insert(
+                            var_name,
+                            CType::Struct {
+                                name: Some(tag_name_str),
+                                fields: Vec::new(),
+                            },
+                        );
+                    }
+                } else if let Some(ref_ctype) = extract_typeof_ctype(ctx, specifiers) {
+                    // typeof-derived variable: propagate the CType so that
+                    // member access can resolve field indices correctly.
+                    ctx.variable_ctypes.insert(var_name, ref_ctype);
+                } else {
+                    // For all other types (int, unsigned int, float, char *,
+                    // etc.), resolve the C type from the specifiers and
+                    // derived declarators so that _Generic can correctly
+                    // match controlling expression types.
+                    if let Some(ctype) =
+                        specifiers_to_ctype(ctx, specifiers, &init_decl.declarator.derived)
+                    {
+                        ctx.variable_ctypes.insert(var_name, ctype);
+                    }
+                }
+
                 // If there is an initializer, lower it and store the value.
                 if let Some(ref initializer) = init_decl.initializer {
-                    lower_variable_initializer(ctx, alloca, initializer, &ir_type)?;
+                    lower_variable_initializer(ctx, alloca, initializer, &ir_type, is_unsigned)?;
                 }
             }
             Ok(())
         }
 
-        // Typedef, struct/union/enum definitions, and static asserts are
-        // type-system-only constructs that do not produce IR instructions.
-        Declaration::Typedef { .. }
-        | Declaration::StructDef { .. }
-        | Declaration::UnionDef { .. }
-        | Declaration::EnumDef { .. }
+        // Typedef declarations record the type mapping so that subsequent
+        // variable declarations using the typedef name resolve correctly.
+        Declaration::Typedef {
+            specifiers,
+            declarators,
+            ..
+        } => {
+            let base_ir_type = resolve_base_ir_type_from_specifiers(ctx, specifiers);
+            for decl in declarators {
+                if let Some(name) = decl.name {
+                    let resolved_type = apply_derived_declarators(&base_ir_type, &decl.derived);
+                    ctx.typedef_types.insert(name, resolved_type);
+                }
+            }
+            Ok(())
+        }
+
+        // Struct/union definitions register field name mappings.
+        Declaration::StructDef { name, fields, .. } => {
+            if let Some(tag) = name {
+                register_struct_field_names(ctx, *tag, fields, false);
+            }
+            Ok(())
+        }
+        Declaration::UnionDef { name, fields, .. } => {
+            if let Some(tag) = name {
+                register_struct_field_names(ctx, *tag, fields, true);
+            }
+            Ok(())
+        }
+        // Enum definitions and static asserts are type-system-only constructs.
+        Declaration::EnumDef { .. }
         | Declaration::StaticAssert { .. }
         | Declaration::Empty { .. }
         | Declaration::Error { .. } => Ok(()),
@@ -1094,7 +1243,7 @@ fn lower_block_declaration(
 /// This is a best-effort resolution that handles the common type specifier
 /// patterns. Complex cases fall back to `IrType::I32`.
 fn resolve_base_ir_type_from_specifiers(
-    _ctx: &LoweringContext<'_>,
+    ctx: &LoweringContext<'_>,
     specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers,
 ) -> IrType {
     use crate::frontend::parser::ast::TypeSpecifier;
@@ -1130,15 +1279,87 @@ fn resolve_base_ir_type_from_specifiers(
             TypeSpecifier::Unsigned => _has_unsigned = true,
             TypeSpecifier::Signed => _has_signed = true,
             TypeSpecifier::Bool => has_bool = true,
-            // Struct, union, enum, typedef name — use a pointer-width
-            // default for struct/union, or I32 for enum/typedef.
-            TypeSpecifier::Struct { .. } | TypeSpecifier::Union { .. } => {
-                return IrType::Ptr;
+            // Struct/union — resolve to IrType::Struct with fields.
+            TypeSpecifier::Struct { name, fields, .. } => {
+                return resolve_struct_or_union_ir_type(
+                    ctx,
+                    name.as_ref().copied(),
+                    fields.as_deref(),
+                    false,
+                );
             }
-            TypeSpecifier::Enum { .. } | TypeSpecifier::TypedefName { .. } => {
+            TypeSpecifier::Union { name, fields, .. } => {
+                return resolve_struct_or_union_ir_type(
+                    ctx,
+                    name.as_ref().copied(),
+                    fields.as_deref(),
+                    true,
+                );
+            }
+            TypeSpecifier::Enum { .. } => {
                 return IrType::I32;
             }
-            _ => {}
+            // __builtin_va_list — always a pointer type (void *).
+            TypeSpecifier::BuiltinVaList => {
+                return IrType::Ptr;
+            }
+            // typeof(expr) / typeof(type-name) — GCC extension.
+            TypeSpecifier::Typeof { operand, .. } => {
+                return resolve_typeof_ir_type(ctx, operand);
+            }
+            // _Atomic(type-name)
+            TypeSpecifier::Atomic(inner_tn) => {
+                // Map _Atomic(T) to the IR type for T (ignoring atomic qualifier
+                // at the IR level — atomics are lowered to atomic load/store ops).
+                let inner_specs = crate::frontend::parser::ast::DeclarationSpecifiers {
+                    type_specifiers: inner_tn.specifiers.specifiers.clone(),
+                    type_qualifiers: inner_tn.specifiers.qualifiers.clone(),
+                    storage_class: None,
+                    function_specifiers: Default::default(),
+                    alignment: None,
+                    attrs: Vec::new(),
+                    has_extension: false,
+                    span: crate::common::diagnostics::Span::DUMMY,
+                };
+                let base = resolve_base_ir_type_from_specifiers(ctx, &inner_specs);
+                if let Some(ref decl) = inner_tn.declarator {
+                    return apply_derived_declarators(&base, &decl.derived);
+                }
+                return base;
+            }
+            // Complex type specifier
+            TypeSpecifier::Complex => {
+                // _Complex alone (without float/double) defaults to _Complex double
+                // Handled via has_float/has_double flags in the combined path below.
+                // If standalone, treat as complex double.
+                return IrType::Struct {
+                    fields: vec![IrType::F64, IrType::F64],
+                    packed: false,
+                };
+            }
+            // Typedef names — look up in the typedef map populated
+            // during lowering.  Falls back to I32 if not found.
+            TypeSpecifier::TypedefName { name, .. } => {
+                if let Some(resolved) = ctx.typedef_types.get(name) {
+                    return resolved.clone();
+                }
+                // Fallback: check if name resolves to a known built-in
+                // typedef in the interner.
+                let name_str = ctx.module_ctx.interner.resolve(*name);
+                match name_str {
+                    "size_t" | "uintptr_t" | "ptrdiff_t" | "ssize_t" | "intptr_t" => {
+                        return match ctx.module_ctx.target.data_model() {
+                            crate::common::target::DataModel::LP64 => IrType::I64,
+                            crate::common::target::DataModel::ILP32 => IrType::I32,
+                        };
+                    }
+                    "uint8_t" | "int8_t" => return IrType::I8,
+                    "uint16_t" | "int16_t" => return IrType::I16,
+                    "uint32_t" | "int32_t" => return IrType::I32,
+                    "uint64_t" | "int64_t" => return IrType::I64,
+                    _ => return IrType::I32,
+                }
+            }
         }
     }
 
@@ -1175,7 +1396,887 @@ fn resolve_base_ir_type_from_specifiers(
     IrType::I32
 }
 
+/// Resolves `typeof(expr)` or `typeof(type-name)` to an IR type.
+///
+/// For expression-based typeof: looks up the variable in the lowering
+/// context to determine its type. For type-name-based typeof: resolves
+/// the specifiers and declarators recursively.
+fn resolve_typeof_ir_type(
+    ctx: &LoweringContext<'_>,
+    operand: &crate::frontend::parser::ast::TypeofOperand,
+) -> IrType {
+    use crate::frontend::parser::ast::TypeofOperand;
+
+    match operand {
+        TypeofOperand::Expression(expr) => {
+            // Try to determine the type from the expression.
+            match expr.as_ref() {
+                Expression::Identifier { name, .. } => {
+                    // Look up the variable's IR element type.
+                    // `variable_ir_types` stores the element type of the alloca
+                    // (e.g., I32 for `int x`), unlike `get_value_type` which
+                    // always returns Ptr for alloca results.
+                    if let Some(ir_ty) = ctx.variable_ir_types.get(name) {
+                        return ir_ty.clone();
+                    }
+                    // Fallback: check typedef types.
+                    if let Some(ir_ty) = ctx.typedef_types.get(name) {
+                        return ir_ty.clone();
+                    }
+                    // Not found as a local variable — could be a parameter
+                    // or global. Default to I32 as fallback.
+                    IrType::I32
+                }
+                Expression::Dereference { operand, .. } => {
+                    // typeof(*ptr) — dereference a pointer. Resolve the
+                    // inner expression's type, and if it's Ptr, we need
+                    // context to know the pointee type. For now, default I32.
+                    let inner_operand = TypeofOperand::Expression(operand.clone());
+                    let inner_ty = resolve_typeof_ir_type(ctx, &inner_operand);
+                    match inner_ty {
+                        IrType::Ptr => IrType::I32, // approximate — pointee type unknown at IR level
+                        _ => inner_ty,
+                    }
+                }
+                Expression::UnaryOp { operand, op, .. } => {
+                    use crate::frontend::parser::ast::UnaryOperator;
+                    match op {
+                        UnaryOperator::AddressOf => {
+                            // typeof(&x) → pointer
+                            IrType::Ptr
+                        }
+                        _ => {
+                            // Propagate the operand type for most unary ops.
+                            let inner = TypeofOperand::Expression(operand.clone());
+                            resolve_typeof_ir_type(ctx, &inner)
+                        }
+                    }
+                }
+                Expression::AddressOf { .. } => IrType::Ptr,
+                Expression::IntegerLiteral { suffix, .. } => {
+                    use crate::frontend::lexer::token::IntegerSuffix;
+                    match suffix {
+                        IntegerSuffix::ULL | IntegerSuffix::LL => IrType::I64,
+                        IntegerSuffix::UL | IntegerSuffix::L => IrType::I64,
+                        _ => IrType::I32,
+                    }
+                }
+                Expression::FloatLiteral { suffix, .. } => {
+                    use crate::frontend::lexer::token::FloatSuffix;
+                    match suffix {
+                        FloatSuffix::F => IrType::F32,
+                        FloatSuffix::L => IrType::F64, // long double → F64 approx
+                        FloatSuffix::None => IrType::F64,
+                    }
+                }
+                Expression::StringLiteral { .. } => IrType::Ptr,
+                Expression::FunctionCall { callee, .. } => {
+                    // typeof(func(args)) — resolve the function's return type.
+                    // Extract the callee name and look up its signature in
+                    // global symbols.
+                    if let Expression::Identifier { name, .. } = callee.as_ref() {
+                        if let Some(info) = ctx.module_ctx.global_symbols.get(name) {
+                            if let IrType::Function {
+                                ref return_type, ..
+                            } = info.ir_type
+                            {
+                                return (**return_type).clone();
+                            }
+                        }
+                    }
+                    // For indirect calls through function pointers, we
+                    // cannot easily determine the return type — default to I32.
+                    IrType::I32
+                }
+                Expression::Cast { type_name, .. } => {
+                    // typeof((int *)expr) — resolve the cast target type.
+                    let inner_specs = crate::frontend::parser::ast::DeclarationSpecifiers {
+                        type_specifiers: type_name.specifiers.specifiers.clone(),
+                        type_qualifiers: type_name.specifiers.qualifiers.clone(),
+                        storage_class: None,
+                        function_specifiers: Default::default(),
+                        alignment: None,
+                        attrs: Vec::new(),
+                        has_extension: false,
+                        span: crate::common::diagnostics::Span::DUMMY,
+                    };
+                    let base = resolve_base_ir_type_from_specifiers(ctx, &inner_specs);
+                    if let Some(ref decl) = type_name.declarator {
+                        return apply_derived_declarators(&base, &decl.derived);
+                    }
+                    base
+                }
+                Expression::BinaryOp {
+                    left, right, op, ..
+                } => {
+                    // typeof(a + b) — use usual arithmetic conversion rules.
+                    // For pointer arithmetic, result is a pointer.
+                    use crate::frontend::parser::ast::BinaryOperator;
+                    let left_ty =
+                        resolve_typeof_ir_type(ctx, &TypeofOperand::Expression(left.clone()));
+                    let right_ty =
+                        resolve_typeof_ir_type(ctx, &TypeofOperand::Expression(right.clone()));
+                    match op {
+                        BinaryOperator::Add | BinaryOperator::Sub => {
+                            // Pointer arithmetic: ptr + int = ptr
+                            if left_ty == IrType::Ptr || right_ty == IrType::Ptr {
+                                return IrType::Ptr;
+                            }
+                            // Float promotion: int + double = double
+                            if left_ty == IrType::F64 || right_ty == IrType::F64 {
+                                return IrType::F64;
+                            }
+                            if left_ty == IrType::F32 || right_ty == IrType::F32 {
+                                return IrType::F32;
+                            }
+                            // Integer promotion: at least I32
+                            if left_ty == IrType::I64 || right_ty == IrType::I64 {
+                                return IrType::I64;
+                            }
+                            IrType::I32
+                        }
+                        _ => {
+                            // Most other binary ops: result is promoted type
+                            if left_ty == IrType::F64 || right_ty == IrType::F64 {
+                                return IrType::F64;
+                            }
+                            if left_ty == IrType::I64 || right_ty == IrType::I64 {
+                                return IrType::I64;
+                            }
+                            IrType::I32
+                        }
+                    }
+                }
+                Expression::MemberAccess { object, member, .. } => {
+                    // typeof(s.field) — resolve the struct field type.
+                    // 1. Get the struct's IR type from the object variable.
+                    // 2. Look up the field name → index mapping.
+                    // 3. Return the field's IR type from the struct.
+                    if let Expression::Identifier { name, .. } = object.as_ref() {
+                        if let Some(ir_ty) = ctx.variable_ir_types.get(name) {
+                            if let IrType::Struct { ref fields, .. } = ir_ty {
+                                // Try to find field index via struct_field_names
+                                if let Some(ctype) = ctx.variable_ctypes.get(name) {
+                                    if let CType::Struct {
+                                        name: Some(ref tag_name),
+                                        ..
+                                    } = ctype
+                                    {
+                                        if let Some(tag_sym) =
+                                            ctx.module_ctx.interner.lookup(tag_name)
+                                        {
+                                            if let Some(field_names) =
+                                                ctx.module_ctx.struct_field_names.get(&tag_sym)
+                                            {
+                                                for (idx, opt_name) in
+                                                    field_names.iter().enumerate()
+                                                {
+                                                    if let Some(fname) = opt_name {
+                                                        if *fname == *member {
+                                                            if idx < fields.len() {
+                                                                return fields[idx].clone();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Fallback if struct field resolution fails.
+                    IrType::I32
+                }
+                Expression::ArrowAccess {
+                    pointer, member, ..
+                } => {
+                    // typeof(p->field) — resolve the pointed-to struct field type.
+                    if let Expression::Identifier { name, .. } = pointer.as_ref() {
+                        if let Some(ctype) = ctx.variable_ctypes.get(name) {
+                            if let CType::Struct {
+                                name: Some(ref tag_name),
+                                ..
+                            } = ctype
+                            {
+                                if let Some(tag_sym) = ctx.module_ctx.interner.lookup(tag_name) {
+                                    // Get the struct's IR type from the module-level struct defs
+                                    if let Some(field_names) =
+                                        ctx.module_ctx.struct_field_names.get(&tag_sym)
+                                    {
+                                        // Look up the actual struct IR type from the pointee
+                                        if let Some(pointee_ty) =
+                                            ctx.variable_pointee_types.get(name)
+                                        {
+                                            if let IrType::Struct { ref fields, .. } = pointee_ty {
+                                                for (idx, opt_name) in
+                                                    field_names.iter().enumerate()
+                                                {
+                                                    if let Some(fname) = opt_name {
+                                                        if *fname == *member {
+                                                            if idx < fields.len() {
+                                                                return fields[idx].clone();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Fallback if field resolution fails.
+                    IrType::I32
+                }
+                Expression::ArraySubscript { array, .. } => {
+                    // typeof(arr[i]) — dereference the array element type.
+                    let arr_ty =
+                        resolve_typeof_ir_type(ctx, &TypeofOperand::Expression(array.clone()));
+                    match arr_ty {
+                        IrType::Array { ref element, .. } => (**element).clone(),
+                        IrType::Ptr => IrType::I32, // pointer subscript defaults
+                        _ => arr_ty,
+                    }
+                }
+                Expression::Conditional { then_expr, .. } => {
+                    // typeof(cond ? a : b) — use the `then` branch type.
+                    if let Some(then_e) = then_expr {
+                        resolve_typeof_ir_type(ctx, &TypeofOperand::Expression(then_e.clone()))
+                    } else {
+                        IrType::I32
+                    }
+                }
+                _ => {
+                    // For complex expressions, attempt to lower the expression
+                    // to determine its type. This is a best-effort approach.
+                    IrType::I32
+                }
+            }
+        }
+        TypeofOperand::TypeName(type_name) => {
+            // Resolve from the type name's specifiers.
+            let inner_specs = crate::frontend::parser::ast::DeclarationSpecifiers {
+                type_specifiers: type_name.specifiers.specifiers.clone(),
+                type_qualifiers: type_name.specifiers.qualifiers.clone(),
+                storage_class: None,
+                function_specifiers: Default::default(),
+                alignment: None,
+                attrs: Vec::new(),
+                has_extension: false,
+                span: crate::common::diagnostics::Span::DUMMY,
+            };
+            let base = resolve_base_ir_type_from_specifiers(ctx, &inner_specs);
+            // Apply abstract declarator modifiers (pointers, arrays).
+            if let Some(ref decl) = type_name.declarator {
+                return apply_derived_declarators(&base, &decl.derived);
+            }
+            base
+        }
+    }
+}
+
+/// Extracts the struct/union tag name from declaration specifiers.
+/// Returns `true` if the declaration specifiers indicate a union type.
+/// Resolve declaration specifiers (and optional derived declarators) to a CType.
+/// This is used by _Generic and other features that need to know the full C
+/// type of a variable at the IR level.
+fn specifiers_to_ctype(
+    ctx: &LoweringContext<'_>,
+    specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers,
+    derived: &[crate::frontend::parser::ast::DerivedDeclarator],
+) -> Option<CType> {
+    use crate::frontend::parser::ast::{DerivedDeclarator, TypeSpecifier};
+
+    let specs = &specifiers.type_specifiers;
+
+    // Determine base type from specifiers.
+    let has_unsigned = specs.iter().any(|s| matches!(s, TypeSpecifier::Unsigned));
+    let has_signed = specs.iter().any(|s| matches!(s, TypeSpecifier::Signed));
+    let long_count = specs
+        .iter()
+        .filter(|s| matches!(s, TypeSpecifier::Long))
+        .count();
+    let has_short = specs.iter().any(|s| matches!(s, TypeSpecifier::Short));
+    let has_char = specs.iter().any(|s| matches!(s, TypeSpecifier::Char));
+    let has_int = specs.iter().any(|s| matches!(s, TypeSpecifier::Int));
+    let has_float = specs.iter().any(|s| matches!(s, TypeSpecifier::Float));
+    let has_double = specs.iter().any(|s| matches!(s, TypeSpecifier::Double));
+    let has_void = specs.iter().any(|s| matches!(s, TypeSpecifier::Void));
+    let has_bool = specs.iter().any(|s| matches!(s, TypeSpecifier::Bool));
+
+    let base = if has_void {
+        CType::Void
+    } else if has_bool {
+        CType::Bool
+    } else if has_float && !has_double {
+        CType::Float
+    } else if has_double {
+        if long_count > 0 {
+            CType::LongDouble
+        } else {
+            CType::Double
+        }
+    } else if has_char {
+        CType::Char {
+            signed: !has_unsigned,
+        }
+    } else if has_short {
+        CType::Short {
+            signed: !has_unsigned,
+        }
+    } else if long_count >= 2 {
+        CType::LongLong {
+            signed: !has_unsigned,
+        }
+    } else if long_count == 1 {
+        CType::Long {
+            signed: !has_unsigned,
+        }
+    } else if has_unsigned {
+        CType::Int { signed: false }
+    } else if has_int || has_signed {
+        CType::Int { signed: true }
+    } else {
+        // Check for struct/union/enum/typedef
+        for spec in specs {
+            match spec {
+                TypeSpecifier::Struct { name, .. } => {
+                    let n = name.map(|s| ctx.module_ctx.interner.resolve(s).to_string());
+                    return Some(CType::Struct {
+                        name: n,
+                        fields: Vec::new(),
+                    });
+                }
+                TypeSpecifier::Union { name, .. } => {
+                    let n = name.map(|s| ctx.module_ctx.interner.resolve(s).to_string());
+                    return Some(CType::Union {
+                        name: n,
+                        fields: Vec::new(),
+                    });
+                }
+                TypeSpecifier::Enum { .. } => {
+                    return Some(CType::Int { signed: true });
+                }
+                TypeSpecifier::TypedefName { name, .. } => {
+                    // Try to resolve the typedef to a known CType.
+                    // We only have IR types for typedefs, not C types, so use best-effort.
+                    if let Some(ir_ty) = ctx.typedef_types.get(name) {
+                        return Some(ir_type_to_rough_ctype(ir_ty));
+                    }
+                    return Some(CType::Int { signed: true }); // fallback
+                }
+                TypeSpecifier::Typeof { operand, .. } => {
+                    if let crate::frontend::parser::ast::TypeofOperand::Expression(expr) = operand {
+                        if let crate::frontend::parser::ast::Expression::Identifier {
+                            name, ..
+                        } = expr.as_ref()
+                        {
+                            if let Some(ctype) = ctx.variable_ctypes.get(name) {
+                                return Some(ctype.clone());
+                            }
+                        }
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        return None;
+    };
+
+    // Apply derived declarators (pointers, arrays).
+    let mut result = base;
+    for d in derived {
+        match d {
+            DerivedDeclarator::Pointer { .. } => {
+                result = CType::Pointer(Box::new(result));
+            }
+            DerivedDeclarator::Array { size, .. } => {
+                let count = match size {
+                    Some(expr) => {
+                        // Try to extract constant size.
+                        if let crate::frontend::parser::ast::Expression::IntegerLiteral {
+                            value,
+                            ..
+                        } = expr.as_ref()
+                        {
+                            *value as usize
+                        } else {
+                            0
+                        }
+                    }
+                    None => 0,
+                };
+                result = CType::Array {
+                    element: Box::new(result),
+                    size: Some(count),
+                };
+            }
+            DerivedDeclarator::Function { .. } => {
+                // Function pointer: wrap in Function type then in Pointer.
+                result = CType::Function {
+                    return_type: Box::new(result),
+                    params: Vec::new(),
+                    variadic: false,
+                };
+            }
+        }
+    }
+
+    Some(result)
+}
+
+/// Rough conversion from IR type back to CType (best-effort for _Generic, etc.).
+fn ir_type_to_rough_ctype(ir_ty: &IrType) -> CType {
+    match ir_ty {
+        IrType::Void => CType::Void,
+        IrType::I1 => CType::Bool,
+        IrType::I8 => CType::Char { signed: true },
+        IrType::I16 => CType::Short { signed: true },
+        IrType::I32 => CType::Int { signed: true },
+        IrType::I64 => CType::Long { signed: true },
+        IrType::I128 => CType::LongLong { signed: true },
+        IrType::F32 => CType::Float,
+        IrType::F64 => CType::Double,
+        IrType::Ptr => CType::Pointer(Box::new(CType::Void)),
+        _ => CType::Int { signed: true },
+    }
+}
+
+fn is_union_specifier(specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers) -> bool {
+    use crate::frontend::parser::ast::TypeSpecifier;
+    for spec in &specifiers.type_specifiers {
+        match spec {
+            TypeSpecifier::Union { .. } => return true,
+            TypeSpecifier::Struct { .. } => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+fn extract_struct_tag_from_specifiers(
+    specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers,
+) -> Option<Symbol> {
+    use crate::frontend::parser::ast::{TypeSpecifier, TypeofOperand};
+    for spec in &specifiers.type_specifiers {
+        match spec {
+            TypeSpecifier::Struct { name, .. } | TypeSpecifier::Union { name, .. } => {
+                return *name;
+            }
+            // Handle typeof(struct tag) — peel through typeof to find
+            // the struct tag in the wrapped type specifiers.
+            TypeSpecifier::Typeof { operand, .. } => {
+                if let TypeofOperand::TypeName(type_name) = operand {
+                    for inner_spec in &type_name.specifiers.specifiers {
+                        match inner_spec {
+                            TypeSpecifier::Struct { name, .. }
+                            | TypeSpecifier::Union { name, .. } => {
+                                return *name;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extracts the CType for a typeof-declared variable by tracing back to
+/// the referenced expression or type.  When `typeof(p)` is used and `p`
+/// has a known CType, that CType is returned so it can be propagated to
+/// the new variable.  This enables member access field resolution even
+/// when the type is expressed through typeof indirection.
+fn extract_typeof_ctype(
+    ctx: &LoweringContext<'_>,
+    specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers,
+) -> Option<CType> {
+    use crate::frontend::parser::ast::{Expression, TypeSpecifier, TypeofOperand};
+    for spec in &specifiers.type_specifiers {
+        if let TypeSpecifier::Typeof { operand, .. } = spec {
+            match operand {
+                TypeofOperand::Expression(expr) => {
+                    // typeof(variable) — look up the variable's CType
+                    match expr.as_ref() {
+                        Expression::Identifier { name, .. } => {
+                            if let Some(ctype) = ctx.variable_ctypes.get(name) {
+                                return Some(ctype.clone());
+                            }
+                        }
+                        // typeof(expr.field) or typeof(expr->field) — try
+                        // to get the struct type from the inner expression
+                        Expression::MemberAccess { object, .. }
+                        | Expression::ArrowAccess {
+                            pointer: object, ..
+                        } => {
+                            if let Expression::Identifier { name, .. } = object.as_ref() {
+                                if let Some(ctype) = ctx.variable_ctypes.get(name) {
+                                    return Some(ctype.clone());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                TypeofOperand::TypeName(_) => {
+                    // typeof(struct pair) — the struct tag is already
+                    // handled by extract_struct_tag_from_specifiers above.
+                    // No extra CType propagation needed here.
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Registers struct/union field names from declaration specifiers into the
+/// module-level registry.  Called before `resolve_base_ir_type_from_specifiers`
+/// so that the field mapping is available immediately.
+/// Registers field name→index mappings for any struct/union type specifiers
+/// found in the declaration.  Returns an optional synthetic tag for anonymous
+/// Checks whether a declaration's type specifiers indicate an unsigned
+/// integer type.  Returns `true` for `unsigned`, `unsigned int`,
+/// `unsigned long`, `unsigned short`, `unsigned char`, `unsigned long long`.
+/// Also returns `true` for `typeof(unsigned_var)` when the typeof operand
+/// refers to a known-unsigned variable.
+fn is_unsigned_from_specifiers(
+    ctx: &LoweringContext<'_>,
+    specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers,
+) -> bool {
+    use crate::frontend::parser::ast::TypeSpecifier;
+    for spec in &specifiers.type_specifiers {
+        match spec {
+            TypeSpecifier::Unsigned => {
+                return true;
+            }
+            TypeSpecifier::Typeof { operand, .. } => {
+                // typeof(var) — check if the source variable is unsigned.
+                if let crate::frontend::parser::ast::TypeofOperand::Expression(expr) = operand {
+                    if let crate::frontend::parser::ast::Expression::Identifier { name, .. } =
+                        expr.as_ref()
+                    {
+                        if ctx.variable_unsigned.contains(name) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// structs so the caller can associate variables with it for field resolution.
+fn register_struct_fields_from_specifiers(
+    ctx: &mut LoweringContext<'_>,
+    specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers,
+) -> Option<Symbol> {
+    use crate::frontend::parser::ast::TypeSpecifier;
+    let mut anon_tag = None;
+    for spec in &specifiers.type_specifiers {
+        match spec {
+            TypeSpecifier::Struct {
+                name: Some(tag),
+                fields: Some(fields),
+                ..
+            } => {
+                register_struct_field_names(ctx, *tag, fields, false);
+            }
+            TypeSpecifier::Union {
+                name: Some(tag),
+                fields: Some(fields),
+                ..
+            } => {
+                register_struct_field_names(ctx, *tag, fields, true);
+            }
+            // Handle anonymous struct: no tag name but has inline fields.
+            TypeSpecifier::Struct {
+                name: None,
+                fields: Some(fields),
+                ..
+            } => {
+                let id = ctx.anon_struct_counter;
+                ctx.anon_struct_counter += 1;
+                let synthetic_name = format!("__anon_struct_{}", id);
+                let sym = ctx.module_ctx.interner.intern(&synthetic_name);
+                register_struct_field_names(ctx, sym, fields, false);
+                anon_tag = Some(sym);
+            }
+            TypeSpecifier::Union {
+                name: None,
+                fields: Some(fields),
+                ..
+            } => {
+                let id = ctx.anon_struct_counter;
+                ctx.anon_struct_counter += 1;
+                let synthetic_name = format!("__anon_union_{}", id);
+                let sym = ctx.module_ctx.interner.intern(&synthetic_name);
+                register_struct_field_names(ctx, sym, fields, true);
+                anon_tag = Some(sym);
+            }
+            _ => {}
+        }
+    }
+    anon_tag
+}
+
+/// Registers the field name→index mapping for a struct/union definition
+/// in the module-level registry. This mapping is used by `infer_field_index`
+/// to resolve member names (e.g. `.x`, `.y`) to their positional index.
+fn register_struct_field_names(
+    ctx: &mut LoweringContext<'_>,
+    tag: Symbol,
+    fields: &[crate::frontend::parser::ast::FieldDeclaration],
+    is_union: bool,
+) {
+    use crate::common::types::{CType, FieldDef};
+    let mut field_names: Vec<Option<Symbol>> = Vec::new();
+    let mut ctype_fields: Vec<FieldDef> = Vec::new();
+
+    for fd in fields {
+        // Convert the AST specifiers to an IR type, then approximate
+        // the corresponding CType for the struct_defs registry.
+        let base_ir = resolve_base_ir_type_from_specifiers(ctx, &fd.specifiers);
+
+        if fd.declarators.is_empty() {
+            field_names.push(None);
+            // Anonymous field (e.g. anonymous struct/union)
+            ctype_fields.push(FieldDef {
+                name: None,
+                ty: ir_type_to_ctype_approx(&base_ir, &ctx.module_ctx.target),
+                bit_width: None,
+            });
+        } else {
+            for fdecl in &fd.declarators {
+                let name_sym = fdecl.declarator.as_ref().and_then(|d| d.name);
+                field_names.push(name_sym);
+
+                let field_ir = if let Some(ref decl) = fdecl.declarator {
+                    apply_derived_declarators(&base_ir, &decl.derived)
+                } else {
+                    base_ir.clone()
+                };
+
+                let name_str = name_sym.map(|s| ctx.module_ctx.interner.resolve(s).to_string());
+                ctype_fields.push(FieldDef {
+                    name: name_str,
+                    ty: ir_type_to_ctype_approx(&field_ir, &ctx.module_ctx.target),
+                    bit_width: None,
+                });
+            }
+        }
+    }
+    ctx.module_ctx.struct_field_names.insert(tag, field_names);
+
+    // Also register in struct_defs so that infer_base_struct_type can
+    // find function-local struct definitions and resolve field IR types
+    // correctly (e.g. float vs int).
+    if !ctx.module_ctx.struct_defs.contains_key(&tag) {
+        let tag_str = ctx.module_ctx.interner.resolve(tag).to_string();
+        let ctype = if is_union {
+            CType::Union {
+                name: Some(tag_str),
+                fields: ctype_fields,
+            }
+        } else {
+            CType::Struct {
+                name: Some(tag_str),
+                fields: ctype_fields,
+            }
+        };
+        ctx.module_ctx.struct_defs.insert(tag, ctype);
+    }
+}
+
+/// Approximates a CType from an IrType for struct_defs registration.
+/// This reverse mapping is not perfect but preserves the essential type
+/// information (int/float/pointer/array sizes) needed for field resolution.
+fn ir_type_to_ctype_approx(ir: &IrType, _target: &crate::common::target::Target) -> CType {
+    use crate::common::types::{CType, FieldDef};
+    match ir {
+        IrType::I1 => CType::Bool,
+        IrType::I8 => CType::Char { signed: true },
+        IrType::I16 => CType::Short { signed: true },
+        IrType::I32 => CType::Int { signed: true },
+        IrType::I64 => CType::LongLong { signed: true },
+        IrType::F32 => CType::Float,
+        IrType::F64 => CType::Double,
+        IrType::F80 => CType::LongDouble,
+        IrType::Ptr => CType::Pointer(Box::new(CType::Void)),
+        IrType::Array { element, count } => CType::Array {
+            element: Box::new(ir_type_to_ctype_approx(element, _target)),
+            size: Some(*count),
+        },
+        IrType::Struct { fields, .. } => CType::Struct {
+            name: None,
+            fields: fields
+                .iter()
+                .map(|f| FieldDef {
+                    name: None,
+                    ty: ir_type_to_ctype_approx(f, _target),
+                    bit_width: None,
+                })
+                .collect(),
+        },
+        _ => CType::Int { signed: true },
+    }
+}
+
+/// Resolves a struct or union type specifier to its IR type.
+///
+/// For structs: produces `IrType::Struct { fields, packed: false }`.
+/// For unions:  produces `IrType::Array { I8, max_field_size }` (all
+///              fields share the same starting address).
+///
+/// Also registers the field name→index mapping in the module context
+/// so that `infer_field_index` can resolve member names.
+fn resolve_struct_or_union_ir_type(
+    ctx: &LoweringContext<'_>,
+    tag_name: Option<Symbol>,
+    inline_fields: Option<&[crate::frontend::parser::ast::FieldDeclaration]>,
+    is_union: bool,
+) -> IrType {
+    // Helper to convert a single field's specifiers to IR type.
+    let field_spec_to_ir = |specs: &crate::frontend::parser::ast::DeclarationSpecifiers| -> IrType {
+        resolve_base_ir_type_from_specifiers(ctx, specs)
+    };
+
+    // Helper to extract field list from either inline or looked-up definition.
+    #[allow(unused_variables)]
+    let build_fields = |field_decls: &[crate::frontend::parser::ast::FieldDeclaration]|
+        -> (Vec<IrType>, Vec<Option<Symbol>>) {
+        let mut ir_fields = Vec::new();
+        let mut field_names: Vec<Option<Symbol>> = Vec::new();
+        for fd in field_decls {
+            let base_ty = field_spec_to_ir(&fd.specifiers);
+            if fd.declarators.is_empty() {
+                // Anonymous field (e.g. anonymous struct/union member)
+                ir_fields.push(base_ty);
+                field_names.push(None);
+            } else {
+                for fdecl in &fd.declarators {
+                    let ty = if let Some(ref decl) = fdecl.declarator {
+                        apply_derived_declarators(&base_ty, &decl.derived)
+                    } else {
+                        base_ty.clone()
+                    };
+                    let name = fdecl.declarator.as_ref().and_then(|d| d.name);
+                    ir_fields.push(ty);
+                    field_names.push(name);
+                }
+            }
+        }
+        (ir_fields, field_names)
+    };
+
+    // Try inline fields first, then look up by tag name from registries.
+    let ir_fields = if let Some(fields) = inline_fields {
+        let (f, _names) = build_fields(fields);
+        f
+    } else if let Some(tag) = tag_name {
+        // Strategy: check both registries.
+        // struct_field_names is populated for function-body defined structs.
+        // struct_defs is populated for file-scope defined structs via CheckedDeclaration.
+        // We prefer struct_defs because it has the full CType with field types.
+
+        if let Some(ctype) = ctx.module_ctx.struct_defs.get(&tag) {
+            // File-scope struct definition available — convert fields from CType.
+            match ctype {
+                CType::Struct {
+                    fields: cfields, ..
+                } => cfields
+                    .iter()
+                    .map(|f| {
+                        super::c_type_to_ir_type(&f.ty, &ctx.module_ctx.target)
+                            .unwrap_or(IrType::I32)
+                    })
+                    .collect(),
+                CType::Union {
+                    fields: cfields, ..
+                } => cfields
+                    .iter()
+                    .map(|f| {
+                        super::c_type_to_ir_type(&f.ty, &ctx.module_ctx.target)
+                            .unwrap_or(IrType::I32)
+                    })
+                    .collect(),
+                _ => vec![IrType::I32],
+            }
+        } else if let Some(names) = ctx.module_ctx.struct_field_names.get(&tag) {
+            // Function-body struct with field names but no CType —
+            // rebuild IR fields from field count with I32 default.
+            names.iter().map(|_| IrType::I32).collect()
+        } else {
+            // Not registered in either registry — return a placeholder.
+            return IrType::Struct {
+                fields: vec![IrType::I32],
+                packed: false,
+            };
+        }
+    } else {
+        // Anonymous struct with no fields visible.
+        return IrType::Struct {
+            fields: vec![IrType::I32],
+            packed: false,
+        };
+    };
+
+    if is_union {
+        // Union: all fields share offset 0. The IR type is an I8 array
+        // sized to the largest field, as per the union representation convention.
+        let target = &ctx.module_ctx.target;
+        let max_size = ir_fields
+            .iter()
+            .map(|f| f.size_bytes(target))
+            .max()
+            .unwrap_or(4);
+        IrType::Array {
+            element: Box::new(IrType::I8),
+            count: max_size as usize,
+        }
+    } else {
+        IrType::Struct {
+            fields: ir_fields,
+            packed: false,
+        }
+    }
+}
+
 /// Adjusts an IR type based on derived declarators (pointers, arrays, etc.).
+/// Returns the array size for a `char arr[] = "..."` initializer.
+///
+/// When a string literal is used to initialize an unsized character array,
+/// the array size is the string length plus the null terminator (1 byte).
+/// Returns `None` if the initializer is not a plain string literal.
+fn get_string_literal_array_size(
+    init: &crate::frontend::parser::ast::Initializer,
+) -> Option<usize> {
+    use crate::frontend::parser::ast::Initializer;
+    match init {
+        Initializer::Expression(expr) => match expr.as_ref() {
+            Expression::StringLiteral { value, prefix, .. } => {
+                let null_size = match prefix {
+                    crate::frontend::parser::ast::StringPrefix::None
+                    | crate::frontend::parser::ast::StringPrefix::U8 => 1,
+                    crate::frontend::parser::ast::StringPrefix::L
+                    | crate::frontend::parser::ast::StringPrefix::BigU => 4,
+                    crate::frontend::parser::ast::StringPrefix::SmallU => 2,
+                };
+                Some(value.len() + null_size)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn apply_derived_declarators(
     base_type: &IrType,
     derived: &[crate::frontend::parser::ast::DerivedDeclarator],
@@ -1214,38 +2315,899 @@ fn apply_derived_declarators(
     current_type
 }
 
+/// Computes the IR type produced when a pointer variable is dereferenced
+/// once.  Given the base type and derived declarator chain, this function
+/// applies one fewer pointer indirection than the full chain.
+///
+/// Examples:
+/// - `int *p`   (base=I32, derived=[Pointer])       → pointee = I32
+/// - `int **pp` (base=I32, derived=[Pointer, Pointer]) → pointee = Ptr
+/// - `char *s`  (base=I8,  derived=[Pointer])        → pointee = I8
+/// - `int (*a)[10]` (base=I32, derived=[Pointer, Array(10)]) → pointee = Array(I32, 10)
+fn compute_pointee_type(
+    base_type: &IrType,
+    derived: &[crate::frontend::parser::ast::DerivedDeclarator],
+) -> IrType {
+    use crate::frontend::parser::ast::DerivedDeclarator;
+
+    // Count how many pointer derivations exist.
+    let ptr_count = derived
+        .iter()
+        .filter(|d| matches!(d, DerivedDeclarator::Pointer { .. }))
+        .count();
+
+    if ptr_count <= 1 {
+        // Single pointer: dereferencing gives the base type (possibly
+        // modified by array/function derivations that precede the pointer).
+        // Apply all non-pointer derivations to get the element type.
+        let mut ty = base_type.clone();
+        for d in derived {
+            match d {
+                DerivedDeclarator::Pointer { .. } => {
+                    // Skip the single pointer — we're computing what's behind it.
+                    break;
+                }
+                DerivedDeclarator::Array { size, .. } => {
+                    let count = size
+                        .as_ref()
+                        .and_then(|s| match s.as_ref() {
+                            Expression::IntegerLiteral { value, .. } => Some(*value as usize),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    ty = IrType::Array {
+                        element: Box::new(ty),
+                        count,
+                    };
+                }
+                DerivedDeclarator::Function { .. } => {
+                    ty = IrType::Ptr;
+                    break;
+                }
+            }
+        }
+        ty
+    } else {
+        // Multiple pointers: dereferencing removes one layer, result is
+        // still a pointer.
+        IrType::Ptr
+    }
+}
+
+/// Resolves the pointee type for a pointer variable whose pointer-ness
+/// originates from the declaration specifiers (typeof, typedef) rather
+/// than from derived declarators (`*`).
+///
+/// When we have `typeof(p) q` where `p` is `int*`, the base IR type is
+/// already `Ptr` and there are no pointer derivations.
+/// `compute_pointee_type(Ptr, [])` incorrectly returns `Ptr` (the base
+/// itself).  This function looks into the typeof / typedef expression to
+/// determine the real pointee.
+/// Resolves the "deep" pointee type from a `typeof(var)` specifier by
+/// inheriting the deep_pointee recorded for the referenced variable.
+///
+/// For `typeof(pp) pp2` where `pp` is `int**`, `pp` has
+/// `deep_pointee = I32`.  This function returns `Some(I32)`.
+fn resolve_deep_pointee_from_typeof(
+    ctx: &LoweringContext<'_>,
+    specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers,
+) -> Option<IrType> {
+    use crate::frontend::parser::ast::{Expression, TypeSpecifier, TypeofOperand};
+    for spec in &specifiers.type_specifiers {
+        if let TypeSpecifier::Typeof { operand, .. } = spec {
+            if let TypeofOperand::Expression(expr) = operand {
+                if let Expression::Identifier { name, .. } = expr.as_ref() {
+                    // Inherit the deep_pointee from the source variable.
+                    if let Some(deep) = ctx.variable_deep_pointee_types.get(name) {
+                        return Some(deep.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn resolve_pointee_from_specifiers(
+    ctx: &LoweringContext<'_>,
+    specifiers: &crate::frontend::parser::ast::DeclarationSpecifiers,
+) -> Option<IrType> {
+    use crate::frontend::parser::ast::TypeSpecifier;
+    for spec in &specifiers.type_specifiers {
+        match spec {
+            TypeSpecifier::Typeof { operand, .. } => {
+                return resolve_typeof_pointee(ctx, operand);
+            }
+            TypeSpecifier::TypedefName { name, .. } => {
+                // If the typedef expands to a pointer type, check whether
+                // we recorded a pointee for it.  Otherwise fall back to I32
+                // which is the most common element type for C pointer-typed
+                // typedefs (e.g. `typedef int *intptr;`).
+                if let Some(resolved) = ctx.typedef_types.get(name) {
+                    if *resolved == IrType::Ptr {
+                        return Some(IrType::I32);
+                    }
+                }
+                return None;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Given a `typeof(...)` operand that is known to evaluate to a pointer
+/// type, determine the type it points to.
+///
+/// Examples:
+///  - `typeof(&val)` where `val: int`   → pointee is I32
+///  - `typeof(p)` where `p: int*`       → pointee from `variable_pointee_types[p]`
+///  - `typeof(func(...))` returning ptr  → I32 (default)
+///  - `typeof(typeof(x) *)` with x: int → pointee is I32
+fn resolve_typeof_pointee(
+    ctx: &LoweringContext<'_>,
+    operand: &crate::frontend::parser::ast::TypeofOperand,
+) -> Option<IrType> {
+    use crate::frontend::parser::ast::{
+        DerivedDeclarator, Expression, TypeofOperand, UnaryOperator,
+    };
+
+    match operand {
+        TypeofOperand::Expression(expr) => match expr.as_ref() {
+            // typeof(&x) → pointer to typeof(x).  Pointee = typeof(x).
+            Expression::UnaryOp {
+                op: UnaryOperator::AddressOf,
+                operand: inner,
+                ..
+            }
+            | Expression::AddressOf { operand: inner, .. } => {
+                let inner_op = TypeofOperand::Expression(inner.clone());
+                Some(resolve_typeof_ir_type(ctx, &inner_op))
+            }
+
+            // typeof(var) → look up var's known pointee type.
+            Expression::Identifier { name, .. } => ctx.variable_pointee_types.get(name).cloned(),
+
+            // typeof(*ptr) resolves to the pointee type of ptr.  If that
+            // pointee is itself a Ptr (e.g. ptr is `int**`, *ptr is `int*`),
+            // the pointee-of-the-result is one level further → default I32.
+            Expression::Dereference { .. } => Some(IrType::I32),
+
+            // typeof(func(...)) returning a pointer — no richer type info.
+            Expression::FunctionCall { .. } => Some(IrType::I32),
+
+            // Any other expression producing Ptr — conservative default.
+            _ => Some(IrType::I32),
+        },
+
+        TypeofOperand::TypeName(type_name) => {
+            // typeof(T *)   → Ptr, pointee is T
+            // typeof(T **)  → Ptr, pointee is Ptr
+            let specs = crate::frontend::parser::ast::DeclarationSpecifiers {
+                type_specifiers: type_name.specifiers.specifiers.clone(),
+                type_qualifiers: type_name.specifiers.qualifiers.clone(),
+                storage_class: None,
+                function_specifiers: Default::default(),
+                alignment: None,
+                attrs: Vec::new(),
+                has_extension: false,
+                span: crate::common::diagnostics::Span::DUMMY,
+            };
+            let base = resolve_base_ir_type_from_specifiers(ctx, &specs);
+
+            if let Some(ref decl) = type_name.declarator {
+                let ptr_count = decl
+                    .derived
+                    .iter()
+                    .filter(|d| matches!(d, DerivedDeclarator::Pointer { .. }))
+                    .count();
+                if ptr_count == 1 {
+                    // typeof(T *) — pointee is T (the base).
+                    return Some(base);
+                } else if ptr_count > 1 {
+                    // typeof(T **) — pointee is still a pointer.
+                    return Some(IrType::Ptr);
+                }
+            }
+            // typeof(T) where T itself is Ptr (e.g. via nested typeof).
+            Some(IrType::I32)
+        }
+    }
+}
+
 /// Lowers a variable initializer and stores the result into the alloca.
+/// Resolves a designator list (e.g., `.z`) to the actual struct field
+/// index by looking up the field name in the struct_field_names registry.
+///
+/// For a designator `.z` on a struct with fields `[x, y, z]`, this returns
+/// `Some(2)` because `z` is at index 2.
+/// Evaluate a constant array index expression at compile time.
+/// For cases like `[3] = 30`, the expression is typically an integer literal.
+fn eval_const_array_index(
+    _ctx: &LoweringContext<'_>,
+    expr: &crate::frontend::parser::ast::Expression,
+) -> usize {
+    use crate::frontend::parser::ast::Expression;
+    match expr {
+        Expression::IntegerLiteral { value, .. } => *value as usize,
+        Expression::UnaryOp { op, operand, .. } => {
+            let inner = eval_const_array_index(_ctx, operand);
+            match op {
+                crate::frontend::parser::ast::UnaryOperator::Neg => (-(inner as i64)) as usize,
+                _ => inner,
+            }
+        }
+        _ => 0, // fallback
+    }
+}
+
+fn resolve_designator_field_index(
+    ctx: &LoweringContext<'_>,
+    designators: &[crate::frontend::parser::ast::Designator],
+    ir_type: &IrType,
+) -> Option<usize> {
+    use crate::frontend::parser::ast::Designator;
+
+    // We only handle a single Field designator for now (the common case).
+    if designators.len() != 1 {
+        return None;
+    }
+    let field_name = match &designators[0] {
+        Designator::Field(sym) => *sym,
+        _ => return None,
+    };
+
+    // Look up the struct tag associated with this IR type.
+    // Try all struct tags in struct_field_names and find one whose fields
+    // include the designated field name.
+    let field_name_str = ctx.module_ctx.interner.resolve(field_name);
+
+    for (_tag, field_names) in ctx.module_ctx.struct_field_names.iter() {
+        for (idx, opt_name) in field_names.iter().enumerate() {
+            if let Some(name_sym) = opt_name {
+                let name_str = ctx.module_ctx.interner.resolve(*name_sym);
+                if name_str == field_name_str {
+                    // Verify the index is valid for the IR type
+                    if let IrType::Struct { fields, .. } = ir_type {
+                        if idx < fields.len() {
+                            return Some(idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Resolves a multi-level designator chain (e.g., `.origin.z` or `.items[0]`)
+/// by emitting GEPs step by step.  Returns `(final_ptr, final_ir_type, first_field_idx)`
+/// where `first_field_idx` is the top-level struct field index (for pos_index tracking).
+fn resolve_nested_designator_chain(
+    ctx: &mut LoweringContext<'_>,
+    base_ptr: ValueId,
+    base_ir_type: &IrType,
+    designators: &[crate::frontend::parser::ast::Designator],
+) -> Option<(ValueId, IrType, usize)> {
+    use crate::frontend::parser::ast::Designator;
+
+    if designators.is_empty() {
+        return None;
+    }
+
+    let mut current_ptr = base_ptr;
+    let mut current_type = base_ir_type.clone();
+    let mut first_idx: Option<usize> = None;
+
+    for (_d_idx, desig) in designators.iter().enumerate() {
+        match desig {
+            Designator::Field(sym) => {
+                // We need to find the field index for this name in current_type
+                let field_name_str = ctx.module_ctx.interner.resolve(*sym).to_string();
+
+                match &current_type {
+                    IrType::Struct { fields, .. } => {
+                        // Find field index by searching struct_field_names
+                        let mut found_idx = None;
+                        for (_tag, field_names) in ctx.module_ctx.struct_field_names.iter() {
+                            // Check this struct's field names match the current type's field count
+                            if field_names.len() == fields.len() {
+                                for (fidx, opt_name) in field_names.iter().enumerate() {
+                                    if let Some(name_sym) = opt_name {
+                                        let ns = ctx.module_ctx.interner.resolve(*name_sym);
+                                        if ns == field_name_str && fidx < fields.len() {
+                                            found_idx = Some(fidx);
+                                            break;
+                                        }
+                                    }
+                                }
+                                if found_idx.is_some() {
+                                    break;
+                                }
+                            }
+                        }
+
+                        let fidx = found_idx.unwrap_or(0);
+                        if first_idx.is_none() {
+                            first_idx = Some(fidx);
+                        }
+
+                        // Emit GEP [0, fidx]
+                        let zero = ctx.builder.build_const_int(ctx.function, IrType::I32, 0);
+                        let fi =
+                            ctx.builder
+                                .build_const_int(ctx.function, IrType::I32, fidx as i64);
+                        let field_ptr = ctx.builder.build_gep(
+                            ctx.function,
+                            current_ptr,
+                            vec![zero, fi],
+                            current_type.clone(),
+                            true,
+                        );
+                        current_ptr = field_ptr;
+                        current_type = fields[fidx].clone();
+                    }
+                    _ => return None,
+                }
+            }
+            Designator::Index(expr) => {
+                let idx_val = eval_const_array_index(ctx, expr);
+                if first_idx.is_none() {
+                    first_idx = Some(idx_val);
+                }
+
+                match &current_type {
+                    IrType::Array { element, .. } => {
+                        let index =
+                            ctx.builder
+                                .build_const_int(ctx.function, IrType::I64, idx_val as i64);
+                        let elem_ptr = ctx.builder.build_gep(
+                            ctx.function,
+                            current_ptr,
+                            vec![index],
+                            current_type.clone(),
+                            true,
+                        );
+                        current_ptr = elem_ptr;
+                        current_type = (**element).clone();
+                    }
+                    _ => return None,
+                }
+            }
+            Designator::IndexRange(_, _) => {
+                // Range designators are handled separately
+                return None;
+            }
+        }
+    }
+
+    first_idx.map(|fi| (current_ptr, current_type, fi))
+}
+
 fn lower_variable_initializer(
     ctx: &mut LoweringContext<'_>,
     alloca: ValueId,
     initializer: &crate::frontend::parser::ast::Initializer,
-    _ir_type: &IrType,
+    ir_type: &IrType,
+    is_unsigned: bool,
 ) -> Result<(), LoweringError> {
     use crate::frontend::parser::ast::Initializer;
 
     match initializer {
         Initializer::Expression(expr) => {
+            // Special case: string literal initializing a character array.
+            // Instead of storing a pointer to .rodata, expand the string
+            // bytes directly into the stack-allocated array.
+            if let IrType::Array { ref element, count } = ir_type {
+                if matches!(**element, IrType::I8) {
+                    if let Expression::StringLiteral { value, prefix, .. } = expr.as_ref() {
+                        let null_size = match prefix {
+                            crate::frontend::parser::ast::StringPrefix::None
+                            | crate::frontend::parser::ast::StringPrefix::U8 => 1,
+                            crate::frontend::parser::ast::StringPrefix::L
+                            | crate::frontend::parser::ast::StringPrefix::BigU => 4,
+                            crate::frontend::parser::ast::StringPrefix::SmallU => 2,
+                        };
+                        let total = if *count > 0 {
+                            *count
+                        } else {
+                            value.len() + null_size
+                        };
+                        // Array type for reference (GEP uses element type).
+                        let _array_ty = IrType::Array {
+                            element: Box::new(IrType::I8),
+                            count: total,
+                        };
+                        // Emit individual byte stores for each character.
+                        for i in 0..total {
+                            let byte_val = if i < value.len() {
+                                value[i] as i64
+                            } else {
+                                0i64 // null terminator or zero-padding
+                            };
+                            let val =
+                                ctx.builder
+                                    .build_const_int(ctx.function, IrType::I8, byte_val);
+                            let idx =
+                                ctx.builder
+                                    .build_const_int(ctx.function, IrType::I64, i as i64);
+                            let elem_ptr = ctx.builder.build_gep(
+                                ctx.function,
+                                alloca,
+                                vec![idx],
+                                IrType::I8,
+                                true,
+                            );
+                            ctx.builder.build_store(ctx.function, val, elem_ptr);
+                        }
+                        return Ok(());
+                    }
+                }
+            }
             // Lower the initializer expression and store into the alloca.
             let init_val = lower_expression(ctx, expr)?;
+            // Coerce the initializer value to the alloca's type to prevent
+            // width mismatches (e.g., storing an I32 literal `16` into an
+            // I64 alloca for `unsigned long`, which would leave the upper
+            // 32 bits as stack garbage).
+            let init_val = coerce_init_to_alloca_type(ctx, init_val, ir_type, is_unsigned);
             ctx.builder.build_store(ctx.function, init_val, alloca);
             Ok(())
         }
         Initializer::List { items, .. } => {
-            // Brace-enclosed initializer list: lower each element.
-            // For simple cases (e.g., arrays), store element-by-element.
-            // For complex cases, this is a simplification — full designated
-            // initializer support requires the semantic layer.
-            for (idx, item) in items.iter().enumerate() {
-                if let Some(expr) = extract_initializer_expression(item) {
-                    let val = lower_expression(ctx, expr)?;
-                    // For array elements, compute the GEP address.
-                    // Simplified: store directly for single-element initializers.
-                    if idx == 0 && items.len() == 1 {
-                        ctx.builder.build_store(ctx.function, val, alloca);
+            // Brace-enclosed initializer list: lower each element using GEP
+            // to compute the address of each array/struct element.
+            use crate::frontend::parser::ast::Designator;
+
+            let is_struct = matches!(ir_type, IrType::Struct { .. });
+            let is_array = matches!(ir_type, IrType::Array { .. });
+
+            // Determine element type for GEP
+            let elem_ir_type = match ir_type {
+                IrType::Array { element, .. } => (**element).clone(),
+                IrType::Struct { fields, .. } => {
+                    if !fields.is_empty() {
+                        fields[0].clone()
+                    } else {
+                        IrType::I32
                     }
-                    // Multi-element initialization requires GEP — the
-                    // expr_lowering module handles the full GEP pattern.
-                    // For now, store the first element as a common case.
+                }
+                _ => ir_type.clone(),
+            };
+
+            // Detect if ANY item uses designators (designated init).
+            // If so, we should zero-initialize the entire aggregate first
+            // because designated initializers may skip elements/fields.
+            let has_any_designator = items.iter().any(|it| !it.designators.is_empty());
+
+            // Also zero-init if the number of initializer items is fewer
+            // than the aggregate size (partial initialization).
+            let is_partial = match ir_type {
+                IrType::Array { count, .. } => items.len() < *count,
+                IrType::Struct { fields, .. } => items.len() < fields.len(),
+                _ => false,
+            };
+
+            if has_any_designator || is_partial {
+                // Zero-initialize the entire aggregate, then selectively
+                // overwrite with designated values.
+                let type_size = ir_type.size_bytes(&ctx.module_ctx.target);
+                if type_size > 0 {
+                    // Use a series of 8-byte stores to zero the memory.
+                    let zero_8 = ctx.builder.build_const_int(ctx.function, IrType::I64, 0);
+                    let zero_4 = ctx.builder.build_const_int(ctx.function, IrType::I32, 0);
+                    let zero_1 = ctx.builder.build_const_int(ctx.function, IrType::I8, 0);
+                    let mut offset = 0u64;
+                    while offset + 8 <= type_size {
+                        let off_val =
+                            ctx.builder
+                                .build_const_int(ctx.function, IrType::I64, offset as i64);
+                        let ptr = ctx.builder.build_gep(
+                            ctx.function,
+                            alloca,
+                            vec![off_val],
+                            IrType::Array {
+                                element: Box::new(IrType::I8),
+                                count: type_size as usize,
+                            },
+                            true,
+                        );
+                        ctx.builder.build_store(ctx.function, zero_8, ptr);
+                        offset += 8;
+                    }
+                    while offset + 4 <= type_size {
+                        let off_val =
+                            ctx.builder
+                                .build_const_int(ctx.function, IrType::I64, offset as i64);
+                        let ptr = ctx.builder.build_gep(
+                            ctx.function,
+                            alloca,
+                            vec![off_val],
+                            IrType::Array {
+                                element: Box::new(IrType::I8),
+                                count: type_size as usize,
+                            },
+                            true,
+                        );
+                        ctx.builder.build_store(ctx.function, zero_4, ptr);
+                        offset += 4;
+                    }
+                    while offset < type_size {
+                        let off_val =
+                            ctx.builder
+                                .build_const_int(ctx.function, IrType::I64, offset as i64);
+                        let ptr = ctx.builder.build_gep(
+                            ctx.function,
+                            alloca,
+                            vec![off_val],
+                            IrType::Array {
+                                element: Box::new(IrType::I8),
+                                count: type_size as usize,
+                            },
+                            true,
+                        );
+                        ctx.builder.build_store(ctx.function, zero_1, ptr);
+                        offset += 1;
+                    }
+                }
+            }
+
+            // ===== Brace Elision Detection =====
+            // When initializing an array of structs with flat scalars
+            // (no inner braces), distribute the values across struct fields.
+            // Example: struct point pts[3] = { 10, 20, 30, 40, 50, 60 };
+            // => pts[0].x=10, pts[0].y=20, pts[0].z=30, pts[1].x=40, ...
+            if is_array && !has_any_designator {
+                if let IrType::Array { element, count } = ir_type {
+                    if let IrType::Struct {
+                        fields: struct_fields,
+                        ..
+                    } = element.as_ref()
+                    {
+                        let fields_per_struct = struct_fields.len();
+                        if fields_per_struct > 0 {
+                            // Check if items are all scalar (no nested lists)
+                            // and item count doesn't match array count but does
+                            // match total field count.
+                            let all_scalar = items
+                                .iter()
+                                .all(|it| matches!(it.initializer, Initializer::Expression(_)));
+                            let total_flat_fields = count * fields_per_struct;
+                            if all_scalar
+                                && items.len() != *count
+                                && items.len() <= total_flat_fields
+                            {
+                                // Zero-init the entire array first so that
+                                // unfilled elements/fields are guaranteed
+                                // to be zero.
+                                if items.len() < total_flat_fields {
+                                    let type_size = ir_type.size_bytes(&ctx.module_ctx.target);
+                                    if type_size > 0 {
+                                        let zero_8 = ctx.builder.build_const_int(
+                                            ctx.function,
+                                            IrType::I64,
+                                            0,
+                                        );
+                                        let zero_4 = ctx.builder.build_const_int(
+                                            ctx.function,
+                                            IrType::I32,
+                                            0,
+                                        );
+                                        let zero_1 = ctx.builder.build_const_int(
+                                            ctx.function,
+                                            IrType::I8,
+                                            0,
+                                        );
+                                        let mut off = 0u64;
+                                        while off + 8 <= type_size {
+                                            let o = ctx.builder.build_const_int(
+                                                ctx.function,
+                                                IrType::I64,
+                                                off as i64,
+                                            );
+                                            let p = ctx.builder.build_gep(
+                                                ctx.function,
+                                                alloca,
+                                                vec![o],
+                                                IrType::Array {
+                                                    element: Box::new(IrType::I8),
+                                                    count: type_size as usize,
+                                                },
+                                                true,
+                                            );
+                                            ctx.builder.build_store(ctx.function, zero_8, p);
+                                            off += 8;
+                                        }
+                                        while off + 4 <= type_size {
+                                            let o = ctx.builder.build_const_int(
+                                                ctx.function,
+                                                IrType::I64,
+                                                off as i64,
+                                            );
+                                            let p = ctx.builder.build_gep(
+                                                ctx.function,
+                                                alloca,
+                                                vec![o],
+                                                IrType::Array {
+                                                    element: Box::new(IrType::I8),
+                                                    count: type_size as usize,
+                                                },
+                                                true,
+                                            );
+                                            ctx.builder.build_store(ctx.function, zero_4, p);
+                                            off += 4;
+                                        }
+                                        while off < type_size {
+                                            let o = ctx.builder.build_const_int(
+                                                ctx.function,
+                                                IrType::I64,
+                                                off as i64,
+                                            );
+                                            let p = ctx.builder.build_gep(
+                                                ctx.function,
+                                                alloca,
+                                                vec![o],
+                                                IrType::Array {
+                                                    element: Box::new(IrType::I8),
+                                                    count: type_size as usize,
+                                                },
+                                                true,
+                                            );
+                                            ctx.builder.build_store(ctx.function, zero_1, p);
+                                            off += 1;
+                                        }
+                                    }
+                                }
+                                // Brace-elided flat initialization.
+                                let mut item_pos = 0usize;
+                                for arr_idx in 0..*count {
+                                    let arr_index = ctx.builder.build_const_int(
+                                        ctx.function,
+                                        IrType::I64,
+                                        arr_idx as i64,
+                                    );
+                                    let struct_ptr = ctx.builder.build_gep(
+                                        ctx.function,
+                                        alloca,
+                                        vec![arr_index],
+                                        ir_type.clone(),
+                                        true,
+                                    );
+                                    for (field_idx, field_ty) in struct_fields.iter().enumerate() {
+                                        if item_pos < items.len() {
+                                            if let Initializer::Expression(expr) =
+                                                &items[item_pos].initializer
+                                            {
+                                                let val = lower_expression(ctx, expr)?;
+                                                // Coerce to struct field type to
+                                                // prevent store-width mismatch.
+                                                let val = coerce_init_to_alloca_type(
+                                                    ctx, val, field_ty, false,
+                                                );
+                                                let zero = ctx.builder.build_const_int(
+                                                    ctx.function,
+                                                    IrType::I32,
+                                                    0,
+                                                );
+                                                let fi = ctx.builder.build_const_int(
+                                                    ctx.function,
+                                                    IrType::I32,
+                                                    field_idx as i64,
+                                                );
+                                                let field_ptr = ctx.builder.build_gep(
+                                                    ctx.function,
+                                                    struct_ptr,
+                                                    vec![zero, fi],
+                                                    element.as_ref().clone(),
+                                                    true,
+                                                );
+                                                ctx.builder.build_store(
+                                                    ctx.function,
+                                                    val,
+                                                    field_ptr,
+                                                );
+                                            }
+                                            item_pos += 1;
+                                        }
+                                        // else: zero-init (already done above)
+                                    }
+                                }
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Track the "current positional index" for items without
+            // designators.  This is separate from `idx` (iteration index)
+            // because designated items can reset or skip the position.
+            let mut pos_index: usize = 0;
+
+            for (_idx, item) in items.iter().enumerate() {
+                // ==== Handle multi-level designators (e.g., .origin.z or .items[0]) ====
+                if item.designators.len() > 1 {
+                    if let Some((final_ptr, final_type, first_fi)) =
+                        resolve_nested_designator_chain(ctx, alloca, ir_type, &item.designators)
+                    {
+                        pos_index = first_fi + 1;
+                        match &item.initializer {
+                            Initializer::Expression(expr) => {
+                                let val = lower_expression(ctx, expr)?;
+                                let val = coerce_init_to_alloca_type(ctx, val, &final_type, false);
+                                ctx.builder.build_store(ctx.function, val, final_ptr);
+                            }
+                            Initializer::List { .. } => {
+                                lower_variable_initializer(
+                                    ctx,
+                                    final_ptr,
+                                    &item.initializer,
+                                    &final_type,
+                                    false,
+                                )?;
+                            }
+                        }
+                        continue;
+                    }
+                    // Fallthrough to standard logic if resolution failed
+                }
+
+                // Resolve the actual target index from designators.
+                let actual_idx = if !item.designators.is_empty() {
+                    if is_struct {
+                        let resolved =
+                            resolve_designator_field_index(ctx, &item.designators, ir_type)
+                                .unwrap_or(pos_index);
+                        pos_index = resolved + 1;
+                        resolved
+                    } else if is_array {
+                        // Array index designator: resolve [N] or [lo...hi].
+                        match &item.designators[0] {
+                            Designator::Index(expr) => {
+                                let idx_val = eval_const_array_index(ctx, expr);
+                                pos_index = idx_val + 1;
+                                idx_val
+                            }
+                            Designator::IndexRange(lo, hi) => {
+                                let lo_val = eval_const_array_index(ctx, lo);
+                                let hi_val = eval_const_array_index(ctx, hi);
+                                // Store the value at each index in [lo, hi].
+                                if let Initializer::Expression(expr) = &item.initializer {
+                                    let val = lower_expression(ctx, expr)?;
+                                    let val =
+                                        coerce_init_to_alloca_type(ctx, val, &elem_ir_type, false);
+                                    for range_idx in lo_val..=hi_val {
+                                        let index = ctx.builder.build_const_int(
+                                            ctx.function,
+                                            IrType::I64,
+                                            range_idx as i64,
+                                        );
+                                        let elem_ptr = ctx.builder.build_gep(
+                                            ctx.function,
+                                            alloca,
+                                            vec![index],
+                                            ir_type.clone(),
+                                            true,
+                                        );
+                                        ctx.builder.build_store(ctx.function, val, elem_ptr);
+                                    }
+                                }
+                                pos_index = hi_val + 1;
+                                continue; // Already handled range stores
+                            }
+                            Designator::Field(_sym) => {
+                                // Field designator on an array? Shouldn't
+                                // happen, but use pos_index as fallback.
+                                let r =
+                                    resolve_designator_field_index(ctx, &item.designators, ir_type)
+                                        .unwrap_or(pos_index);
+                                pos_index = r + 1;
+                                r
+                            }
+                        }
+                    } else {
+                        let p = pos_index;
+                        pos_index += 1;
+                        p
+                    }
+                } else {
+                    let p = pos_index;
+                    pos_index += 1;
+                    p
+                };
+
+                // Determine the element type for this index
+                let field_type = match ir_type {
+                    IrType::Struct { fields, .. } => {
+                        if actual_idx < fields.len() {
+                            fields[actual_idx].clone()
+                        } else {
+                            elem_ir_type.clone()
+                        }
+                    }
+                    _ => elem_ir_type.clone(),
+                };
+
+                match &item.initializer {
+                    Initializer::Expression(expr) => {
+                        let val = lower_expression(ctx, expr)?;
+                        // Coerce the initializer value to the target field/element
+                        // type.  Without this, an integer literal typed as I32
+                        // would be stored with a 4-byte `mov` into an I8 slot,
+                        // corrupting adjacent stack variables on i686 and other
+                        // backends that choose store width from the value type.
+                        let val = coerce_init_to_alloca_type(ctx, val, &field_type, false);
+                        if !is_struct && !is_array && items.len() == 1 && actual_idx == 0 {
+                            // Single-element scalar init: store directly.
+                            ctx.builder.build_store(ctx.function, val, alloca);
+                        } else if is_struct {
+                            // Struct field: two-index GEP [0, field_idx].
+                            let zero = ctx.builder.build_const_int(ctx.function, IrType::I32, 0);
+                            let field_idx_val = ctx.builder.build_const_int(
+                                ctx.function,
+                                IrType::I32,
+                                actual_idx as i64,
+                            );
+                            let elem_ptr = ctx.builder.build_gep(
+                                ctx.function,
+                                alloca,
+                                vec![zero, field_idx_val],
+                                ir_type.clone(),
+                                true,
+                            );
+                            ctx.builder.build_store(ctx.function, val, elem_ptr);
+                        } else {
+                            // Array element: single-index GEP [actual_idx].
+                            let index = ctx.builder.build_const_int(
+                                ctx.function,
+                                IrType::I64,
+                                actual_idx as i64,
+                            );
+                            let elem_ptr = ctx.builder.build_gep(
+                                ctx.function,
+                                alloca,
+                                vec![index],
+                                ir_type.clone(),
+                                true,
+                            );
+                            ctx.builder.build_store(ctx.function, val, elem_ptr);
+                        }
+                    }
+                    Initializer::List { .. } => {
+                        // Nested initializer list: compute sub-aggregate
+                        // address and recurse.
+                        let indices = if is_struct {
+                            let zero = ctx.builder.build_const_int(ctx.function, IrType::I32, 0);
+                            let field_idx_val = ctx.builder.build_const_int(
+                                ctx.function,
+                                IrType::I32,
+                                actual_idx as i64,
+                            );
+                            vec![zero, field_idx_val]
+                        } else {
+                            let index = ctx.builder.build_const_int(
+                                ctx.function,
+                                IrType::I64,
+                                actual_idx as i64,
+                            );
+                            vec![index]
+                        };
+                        let elem_ptr = ctx.builder.build_gep(
+                            ctx.function,
+                            alloca,
+                            indices,
+                            ir_type.clone(),
+                            true,
+                        );
+                        lower_variable_initializer(
+                            ctx,
+                            elem_ptr,
+                            &item.initializer,
+                            &field_type,
+                            false,
+                        )?;
+                    }
                 }
             }
             Ok(())
@@ -1253,12 +3215,77 @@ fn lower_variable_initializer(
     }
 }
 
-/// Extracts the expression from an initializer item (skipping designators).
-fn extract_initializer_expression(
-    item: &crate::frontend::parser::ast::InitializerItem,
-) -> Option<&Expression> {
-    match &item.initializer {
-        crate::frontend::parser::ast::Initializer::Expression(e) => Some(e),
-        _ => None,
+// ---------------------------------------------------------------------------
+// Initializer value coercion
+// ---------------------------------------------------------------------------
+
+/// Coerces an initializer value to match the alloca's target type.
+///
+/// This prevents width mismatches where, e.g., an integer literal typed as
+/// `I32` is stored into an `I64` alloca.  Without this coercion the backend
+/// emits a 32-bit store (`movl`) into a 64-bit stack slot, leaving the
+/// upper 32 bits as whatever garbage was previously on the stack.
+///
+/// The `is_unsigned` flag controls whether widening uses zero-extension
+/// (for unsigned C types) or sign-extension (for signed C types).
+fn coerce_init_to_alloca_type(
+    ctx: &mut LoweringContext<'_>,
+    val: ValueId,
+    target_ty: &IrType,
+    is_unsigned: bool,
+) -> ValueId {
+    let val_ty = ctx.function.get_value_type(val).clone();
+    if val_ty == *target_ty {
+        return val;
+    }
+
+    // Integer-to-integer coercion: widen or narrow as needed.
+    if val_ty.is_integer() && target_ty.is_integer() {
+        let from_bits = ir_int_bits(&val_ty);
+        let to_bits = ir_int_bits(target_ty);
+        if from_bits < to_bits {
+            // Widen: unsigned types use zero-extension, signed use sign-extension.
+            if is_unsigned {
+                return ctx.builder.build_zext(ctx.function, val, target_ty.clone());
+            } else {
+                return ctx.builder.build_sext(ctx.function, val, target_ty.clone());
+            }
+        } else if from_bits > to_bits {
+            return ctx
+                .builder
+                .build_trunc(ctx.function, val, target_ty.clone());
+        }
+    }
+
+    // Integer to pointer (e.g., `void *p = 0;`)
+    if val_ty.is_integer() && target_ty.is_pointer() {
+        return ctx
+            .builder
+            .build_int_to_ptr(ctx.function, val, target_ty.clone());
+    }
+
+    // Pointer to integer (rare, but legal in C)
+    if val_ty.is_pointer() && target_ty.is_integer() {
+        return ctx
+            .builder
+            .build_ptr_to_int(ctx.function, val, target_ty.clone());
+    }
+
+    // Fall through: no coercion needed or types are incompatible
+    // (e.g., struct, array, float).  Return as-is and let the backend
+    // handle it.
+    val
+}
+
+/// Returns the bit width of an integer IR type, or 0 for non-integer types.
+fn ir_int_bits(ty: &IrType) -> u32 {
+    match ty {
+        IrType::I1 => 1,
+        IrType::I8 => 8,
+        IrType::I16 => 16,
+        IrType::I32 => 32,
+        IrType::I64 => 64,
+        IrType::I128 => 128,
+        _ => 0,
     }
 }

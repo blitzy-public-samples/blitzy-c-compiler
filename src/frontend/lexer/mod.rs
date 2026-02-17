@@ -170,7 +170,10 @@ fn keyword_table() -> &'static FxHashMap<&'static str, TokenKind> {
         // C11 special keywords (10)
         // =================================================================
         m.insert("_Alignas", TokenKind::Alignas);
+        m.insert("__alignas__", TokenKind::Alignas);
         m.insert("_Alignof", TokenKind::Alignof);
+        m.insert("__alignof__", TokenKind::Alignof);
+        m.insert("__alignof", TokenKind::Alignof);
         m.insert("_Atomic", TokenKind::Atomic);
         m.insert("_Bool", TokenKind::Bool);
         m.insert("_Complex", TokenKind::Complex);

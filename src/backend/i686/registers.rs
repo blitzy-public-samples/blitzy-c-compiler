@@ -215,7 +215,9 @@ pub const CALLEE_SAVED: [PhysReg; 4] = [EBX, ESI, EDI, EBP];
 
 /// Caller-saved (volatile) registers: may be clobbered by function calls.
 /// The caller must save these before a call if their values are needed after.
-pub const CALLER_SAVED: [PhysReg; 3] = [EAX, ECX, EDX];
+/// This includes both GPRs (EAX, ECX, EDX) and x87 FPU stack registers
+/// (ST0–ST7), since x87 registers are caller-saved by convention in cdecl.
+pub const CALLER_SAVED: [PhysReg; 11] = [EAX, ECX, EDX, ST0, ST1, ST2, ST3, ST4, ST5, ST6, ST7];
 
 /// Allocatable integer registers (with frame pointer in use).
 /// Excludes ESP (always stack pointer) and EBP (frame pointer when active).
@@ -465,6 +467,24 @@ pub fn reg_name(reg: PhysReg) -> &'static str {
     }
 }
 
+/// Parses an i686 register name string (e.g., `"eax"`, `"ecx"`) and returns
+/// the corresponding `PhysReg`, or `None` if unrecognized.
+pub fn parse_i686_reg_name(name: &str) -> Option<PhysReg> {
+    match name.to_lowercase().as_str() {
+        "eax" => Some(EAX),
+        "ecx" => Some(ECX),
+        "edx" => Some(EDX),
+        "ebx" => Some(EBX),
+        "esp" => Some(ESP),
+        "ebp" => Some(EBP),
+        "esi" => Some(ESI),
+        "edi" => Some(EDI),
+        "al" => Some(AL),
+        "cl" => Some(CL),
+        _ => None,
+    }
+}
+
 // ===========================================================================
 // Register Property Query Functions
 // ===========================================================================
@@ -521,24 +541,25 @@ pub fn is_callee_saved(reg: PhysReg) -> bool {
 /// Returns `true` if the given register can be used by the register allocator.
 ///
 /// ESP is never allocatable (it is the dedicated stack pointer). All other
-/// 32-bit GPRs are potentially allocatable (EBP's allocatability depends on
-/// frame pointer usage, but this function returns `true` for EBP — the
-/// caller should use `ALLOCATABLE_INT` vs `ALLOCATABLE_INT_NO_FP` to respect
-/// the frame pointer setting).
+/// 32-bit GPRs and x87 FPU stack registers (ST0–ST7) are potentially
+/// allocatable.  EBP's allocatability depends on frame pointer usage — this
+/// function returns `true` for EBP and the caller should consult
+/// `ALLOCATABLE_INT` vs `ALLOCATABLE_INT_NO_FP` for the frame pointer policy.
 ///
-/// x87 FPU registers, EFLAGS, and sub-registers are not directly allocatable
-/// in the integer register allocator.
+/// 16-bit sub-registers, 8-bit sub-registers, and EFLAGS are never directly
+/// allocatable.
 ///
 /// # Examples
 /// ```ignore
 /// assert!(is_allocatable(EAX));
 /// assert!(is_allocatable(EBP));  // may be allocatable if FP omitted
+/// assert!(is_allocatable(ST0));  // x87 FPU register
 /// assert!(!is_allocatable(ESP)); // never allocatable
 /// ```
 #[inline]
 pub fn is_allocatable(reg: PhysReg) -> bool {
-    // Only 32-bit GPRs are allocatable for integer values, ESP is excluded
-    reg.0 < 8 && reg != ESP
+    // 32-bit GPRs (0–7) excluding ESP, plus x87 FPU stack registers (24–31)
+    (reg.0 < 8 && reg != ESP) || (reg.0 >= 24 && reg.0 < 32)
 }
 
 /// Returns `true` if the given 32-bit GPR has addressable 8-bit sub-registers.
@@ -830,10 +851,13 @@ mod tests {
 
     #[test]
     fn test_caller_saved() {
-        assert_eq!(CALLER_SAVED.len(), 3);
+        // 3 GPRs + 8 x87 FPU stack registers
+        assert_eq!(CALLER_SAVED.len(), 11);
         assert!(CALLER_SAVED.contains(&EAX));
         assert!(CALLER_SAVED.contains(&ECX));
         assert!(CALLER_SAVED.contains(&EDX));
+        assert!(CALLER_SAVED.contains(&ST0));
+        assert!(CALLER_SAVED.contains(&ST7));
     }
 
     #[test]
@@ -1032,6 +1056,7 @@ mod tests {
 
     #[test]
     fn test_is_allocatable() {
+        // GPRs (except ESP) are allocatable
         assert!(is_allocatable(EAX));
         assert!(is_allocatable(ECX));
         assert!(is_allocatable(EDX));
@@ -1040,10 +1065,13 @@ mod tests {
         assert!(is_allocatable(ESI));
         assert!(is_allocatable(EDI));
         assert!(!is_allocatable(ESP));
-        // Sub-registers and FPU are not allocatable in integer allocator
+        // Sub-registers are not directly allocatable
         assert!(!is_allocatable(AX));
         assert!(!is_allocatable(AL));
-        assert!(!is_allocatable(ST0));
+        // x87 FPU registers ARE allocatable (for float register pool)
+        assert!(is_allocatable(ST0));
+        assert!(is_allocatable(ST7));
+        // EFLAGS is never allocatable
         assert!(!is_allocatable(EFLAGS));
     }
 
@@ -1238,13 +1266,23 @@ mod tests {
 
     #[test]
     fn test_all_caller_saved_in_allocatable() {
-        // All caller-saved regs should appear in allocatable sets
+        // All caller-saved GPRs should appear in integer allocatable sets.
+        // x87 FPU regs (ST0–ST7) are float-class and handled by the float
+        // register pool, not ALLOCATABLE_INT.
         for &reg in &CALLER_SAVED {
-            assert!(
-                ALLOCATABLE_INT.contains(&reg),
-                "{:?} is caller-saved but not allocatable",
-                reg
-            );
+            if is_gpr(reg) {
+                assert!(
+                    ALLOCATABLE_INT.contains(&reg),
+                    "{:?} is caller-saved GPR but not in ALLOCATABLE_INT",
+                    reg
+                );
+            } else if is_fpu(reg) {
+                assert!(
+                    is_allocatable(reg),
+                    "{:?} is caller-saved FPU but not allocatable",
+                    reg
+                );
+            }
         }
     }
 

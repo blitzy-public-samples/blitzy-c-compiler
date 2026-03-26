@@ -1,0 +1,7 @@
+# Rustfmt configuration for BCC (Blitzy's C Compiler)
+# Rust 2021 Edition formatting rules
+
+edition = "2021"
+max_width = 100
+tab_spaces = 4
+use_field_init_shorthand = true

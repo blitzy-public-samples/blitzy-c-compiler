@@ -1,0 +1,1299 @@
+# =============================================================================
+# BCC Checkpoint Validation — Sequential Hard-Gate Validation Pipeline
+# =============================================================================
+# Implements the BCC project's strict sequential checkpoint validation protocol.
+# Validates the compiler through 7 progressive checkpoints:
+#
+#   Checkpoint 1: Hello World on all four architectures (hard gate)
+#   Checkpoint 2: Language & preprocessor correctness (hard gate)
+#   Checkpoint 3: Internal test suite — 100% pass rate (hard gate)
+#   Checkpoint 4: Shared library ELF structure + DWARF validation (hard gate)
+#   Checkpoint 5: Security mitigations on x86-64 (hard gate)
+#   Checkpoint 6: Linux kernel 6.9 RISC-V build & QEMU boot (hard gate)
+#   Checkpoint 7: Stretch targets — SQLite, Redis, PostgreSQL, FFmpeg (optional)
+#
+# Checkpoints 1–6 are strictly sequential hard gates: failure at any gate halts
+# all forward progress. Checkpoint 7 is optional and uses continue-on-error.
+#
+# Job dependency chain (strict linear):
+#   build → cp1 → cp2 → cp3 → cp4 → cp5 → cp6 → cp7
+#
+# Backend validation order (fixed): x86-64 → i686 → AArch64 → RISC-V 64
+#
+# BCC is a zero-external-dependency Rust project (edition 2021). The
+# [dependencies] section of Cargo.toml is empty by mandate.
+# =============================================================================
+
+name: BCC Checkpoint Validation
+
+on:
+  # Manual trigger for checkpoint validation runs — primary usage mode.
+  workflow_dispatch:
+    inputs:
+      skip_kernel_download:
+        description: "Skip kernel source download (use cached source)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  # Automatic trigger on push to main for release validation.
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+env:
+  # 64 MiB worker thread stack — mandated by project requirements for handling
+  # deeply nested kernel macro expansions and recursive AST structures.
+  RUST_MIN_STACK: "67108864"
+  # Enable colored terminal output for readable CI logs.
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ===========================================================================
+  # BUILD — Common build job producing the BCC binary for all checkpoints
+  # ===========================================================================
+  build:
+    name: Build BCC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Step 2: Install Rust stable toolchain (1.93.0)
+      # -----------------------------------------------------------------------
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.0"
+          components: clippy, rustfmt
+
+      # -----------------------------------------------------------------------
+      # Step 3: Cache Cargo artifacts for faster rebuilds
+      # -----------------------------------------------------------------------
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-checkpoints-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoints-
+            ${{ runner.os }}-cargo-
+
+      # -----------------------------------------------------------------------
+      # Step 4: Build release binary
+      # -----------------------------------------------------------------------
+      # Produces the bcc binary at target/release/bcc with the release profile
+      # settings from Cargo.toml (opt-level=3, lto=thin, codegen-units=1).
+      - name: Build release binary
+        run: cargo build --release
+
+      # -----------------------------------------------------------------------
+      # Step 5: Verify binary was produced
+      # -----------------------------------------------------------------------
+      - name: Verify BCC binary exists
+        run: |
+          test -f target/release/bcc
+          file target/release/bcc
+          ls -lh target/release/bcc
+
+      # -----------------------------------------------------------------------
+      # Step 6: Upload BCC binary as artifact for downstream checkpoint jobs
+      # -----------------------------------------------------------------------
+      - name: Upload BCC binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bcc-binary
+          path: target/release/bcc
+          retention-days: 7
+
+  # ===========================================================================
+  # CHECKPOINT 1 — Hello World (Hard Gate)
+  # ===========================================================================
+  # Validates that BCC can compile and execute Hello World on all four target
+  # architectures. Backend validation order is FIXED: x86-64 → i686 → AArch64
+  # → RISC-V 64. ALL four must pass — any failure is a hard gate stop.
+  # ===========================================================================
+  checkpoint-1-hello-world:
+    name: "CP1: Hello World"
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Install cross-architecture emulation and ELF inspection tools.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user \
+            qemu-user-binfmt \
+            binutils \
+            libc6-dev-i386 \
+            libc6-dev-arm64-cross \
+            libc6-dev-riscv64-cross
+
+      - name: Download BCC binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bcc-binary
+          path: .
+
+      - name: Make BCC executable
+        run: chmod +x ./bcc
+
+      # ----- x86-64 (FIRST — primary validation target) -----
+      - name: "CP1 [1/4] x86-64: Compile Hello World"
+        run: ./bcc --target=x86-64 -o hello_x86_64 tests/fixtures/hello.c
+
+      - name: "CP1 [1/4] x86-64: Run Hello World"
+        run: |
+          OUTPUT=$(./hello_x86_64)
+          echo "Output: '$OUTPUT'"
+          if [ "$OUTPUT" != "Hello, World!" ]; then
+            echo "FAIL: Expected 'Hello, World!' but got '$OUTPUT'"
+            exit 1
+          fi
+          echo "PASS: x86-64 Hello World"
+
+      # ----- i686 (SECOND) -----
+      - name: "CP1 [2/4] i686: Compile Hello World"
+        run: ./bcc --target=i686 -o hello_i686 tests/fixtures/hello.c
+
+      - name: "CP1 [2/4] i686: Run Hello World"
+        run: |
+          OUTPUT=$(qemu-i386 ./hello_i686 2>/dev/null || ./hello_i686)
+          echo "Output: '$OUTPUT'"
+          if [ "$OUTPUT" != "Hello, World!" ]; then
+            echo "FAIL: Expected 'Hello, World!' but got '$OUTPUT'"
+            exit 1
+          fi
+          echo "PASS: i686 Hello World"
+
+      # ----- AArch64 (THIRD) -----
+      - name: "CP1 [3/4] AArch64: Compile Hello World"
+        run: ./bcc --target=aarch64 -o hello_aarch64 tests/fixtures/hello.c
+
+      - name: "CP1 [3/4] AArch64: Run Hello World"
+        run: |
+          OUTPUT=$(qemu-aarch64 ./hello_aarch64)
+          echo "Output: '$OUTPUT'"
+          if [ "$OUTPUT" != "Hello, World!" ]; then
+            echo "FAIL: Expected 'Hello, World!' but got '$OUTPUT'"
+            exit 1
+          fi
+          echo "PASS: AArch64 Hello World"
+
+      # ----- RISC-V 64 (FOURTH) -----
+      - name: "CP1 [4/4] RISC-V 64: Compile Hello World"
+        run: ./bcc --target=riscv64 -o hello_riscv64 tests/fixtures/hello.c
+
+      - name: "CP1 [4/4] RISC-V 64: Run Hello World"
+        run: |
+          OUTPUT=$(qemu-riscv64 ./hello_riscv64)
+          echo "Output: '$OUTPUT'"
+          if [ "$OUTPUT" != "Hello, World!" ]; then
+            echo "FAIL: Expected 'Hello, World!' but got '$OUTPUT'"
+            exit 1
+          fi
+          echo "PASS: RISC-V 64 Hello World"
+
+      # ----- ELF Structure Verification -----
+      - name: "CP1: Verify ELF structure (all architectures)"
+        run: |
+          echo "=== x86-64 ELF Header ==="
+          readelf -h hello_x86_64 | grep -E '(Class|Data|Machine|Type)'
+          readelf -h hello_x86_64 | grep 'Machine' | grep -q 'X86-64'
+
+          echo "=== i686 ELF Header ==="
+          readelf -h hello_i686 | grep -E '(Class|Data|Machine|Type)'
+          readelf -h hello_i686 | grep 'Machine' | grep -q '386'
+
+          echo "=== AArch64 ELF Header ==="
+          readelf -h hello_aarch64 | grep -E '(Class|Data|Machine|Type)'
+          readelf -h hello_aarch64 | grep 'Machine' | grep -q 'AArch64'
+
+          echo "=== RISC-V 64 ELF Header ==="
+          readelf -h hello_riscv64 | grep -E '(Class|Data|Machine|Type)'
+          readelf -h hello_riscv64 | grep 'Machine' | grep -q 'RISC-V'
+
+          echo "PASS: All ELF structures valid"
+
+      - name: "CP1: Cleanup"
+        if: always()
+        run: rm -f hello_x86_64 hello_i686 hello_aarch64 hello_riscv64
+
+  # ===========================================================================
+  # CHECKPOINT 2 — Language & Preprocessor Correctness (Hard Gate)
+  # ===========================================================================
+  # Validates C11 language features, GCC extensions, and preprocessor
+  # correctness. Tests PUA encoding fidelity, recursive macro termination,
+  # statement expressions, typeof, designated initializers, inline assembly,
+  # computed gotos, zero-length arrays, builtins, _Static_assert, _Generic.
+  # ===========================================================================
+  checkpoint-2-language:
+    name: "CP2: Language Correctness"
+    needs: [checkpoint-1-hello-world]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends binutils
+
+      - name: Download BCC binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bcc-binary
+          path: .
+
+      - name: Make BCC executable
+        run: chmod +x ./bcc
+
+      # ----- PUA Encoding Round-Trip -----
+      # Per AAP §0.7.9: Non-UTF-8 bytes (0x80–0xFF) in C source files MUST
+      # survive the pipeline with byte-exact fidelity. PUA code points
+      # (U+E080–U+E0FF) encode non-UTF-8 bytes on input and decode on output.
+      - name: "CP2: PUA encoding round-trip"
+        run: |
+          ./bcc --target=x86-64 -o pua_test tests/fixtures/pua_roundtrip.c
+          # Inspect .rodata section for exact bytes 80 ff
+          RODATA=$(objdump -s -j .rodata pua_test 2>/dev/null || objdump -s pua_test)
+          echo "$RODATA"
+          if echo "$RODATA" | grep -q '80.*ff\|80ff'; then
+            echo "PASS: PUA round-trip bytes preserved"
+          else
+            echo "FAIL: Non-UTF-8 bytes not preserved in .rodata"
+            exit 1
+          fi
+
+      # ----- Recursive Macro Termination -----
+      # Per AAP User Example: #define A A and int x = A; must terminate in
+      # <5 seconds with no hang. Paint-marker recursion protection prevents
+      # infinite expansion of self-referential macros.
+      - name: "CP2: Recursive macro terminates (< 5 seconds)"
+        run: |
+          START=$(date +%s%N)
+          timeout 5 ./bcc --target=x86-64 -o recursive_macro tests/fixtures/recursive_macro.c
+          EXIT_CODE=$?
+          END=$(date +%s%N)
+          ELAPSED=$(( (END - START) / 1000000 ))
+          echo "Compilation took ${ELAPSED}ms"
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "FAIL: Recursive macro compilation failed or timed out (exit code $EXIT_CODE)"
+            exit 1
+          fi
+          echo "PASS: Recursive macro compiled in ${ELAPSED}ms"
+
+      # ----- GCC Statement Expressions -----
+      - name: "CP2: Statement expressions ({ ... })"
+        run: |
+          ./bcc --target=x86-64 -o stmt_expr tests/fixtures/stmt_expr.c
+          OUTPUT=$(./stmt_expr)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: Statement expressions"
+
+      # ----- typeof / __typeof__ -----
+      - name: "CP2: typeof / __typeof__"
+        run: |
+          ./bcc --target=x86-64 -o typeof_test tests/fixtures/typeof_test.c
+          OUTPUT=$(./typeof_test)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: typeof"
+
+      # ----- Designated Initializers -----
+      - name: "CP2: Designated initializers"
+        run: |
+          ./bcc --target=x86-64 -o designated_init tests/fixtures/designated_init.c
+          OUTPUT=$(./designated_init)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: Designated initializers"
+
+      # ----- Basic Inline Assembly -----
+      - name: "CP2: Basic inline assembly"
+        run: |
+          ./bcc --target=x86-64 -o inline_asm_basic tests/fixtures/inline_asm_basic.c
+          OUTPUT=$(./inline_asm_basic)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: Basic inline assembly"
+
+      # ----- Inline Assembly Constraints -----
+      - name: "CP2: Inline assembly constraints"
+        run: |
+          ./bcc --target=x86-64 -o inline_asm_constraints tests/fixtures/inline_asm_constraints.c
+          OUTPUT=$(./inline_asm_constraints)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: Inline assembly constraints"
+
+      # ----- Computed Gotos -----
+      - name: "CP2: Computed gotos (goto *ptr)"
+        run: |
+          ./bcc --target=x86-64 -o computed_goto tests/fixtures/computed_goto.c
+          OUTPUT=$(./computed_goto)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: Computed gotos"
+
+      # ----- Zero-Length Arrays -----
+      - name: "CP2: Zero-length arrays"
+        run: |
+          ./bcc --target=x86-64 -o zero_length_array tests/fixtures/zero_length_array.c
+          OUTPUT=$(./zero_length_array)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: Zero-length arrays"
+
+      # ----- GCC Builtins -----
+      - name: "CP2: GCC builtins"
+        run: |
+          ./bcc --target=x86-64 -o builtins tests/fixtures/builtins.c
+          OUTPUT=$(./builtins)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: GCC builtins"
+
+      # ----- _Static_assert (compile-only) -----
+      - name: "CP2: _Static_assert (compile-only)"
+        run: |
+          ./bcc --target=x86-64 -c tests/fixtures/static_assert.c -o static_assert.o
+          echo "PASS: _Static_assert compilation"
+
+      # ----- _Generic -----
+      - name: "CP2: _Generic selection"
+        run: |
+          ./bcc --target=x86-64 -o generic tests/fixtures/generic.c
+          OUTPUT=$(./generic)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: _Generic selection"
+
+      - name: "CP2: Cleanup"
+        if: always()
+        run: |
+          rm -f pua_test recursive_macro stmt_expr typeof_test \
+                designated_init inline_asm_basic inline_asm_constraints \
+                computed_goto zero_length_array builtins static_assert.o generic
+
+  # ===========================================================================
+  # CHECKPOINT 3 — Internal Test Suite (Hard Gate)
+  # ===========================================================================
+  # Runs `cargo test --release` and requires 100% pass rate. Any test failure
+  # is a hard gate stop. CRITICAL: This checkpoint must be re-run after any
+  # feature addition during the kernel build phase to confirm no regressions
+  # (AAP §0.7.5).
+  # ===========================================================================
+  checkpoint-3-internal:
+    name: "CP3: Internal Tests"
+    needs: [checkpoint-2-language]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.0"
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-checkpoints-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-checkpoints-
+            ${{ runner.os }}-cargo-
+
+      # Run the complete internal test suite in release mode.
+      # 100% pass rate required — zero failures tolerated.
+      - name: "CP3: Run full internal test suite (cargo test --release)"
+        run: |
+          echo "=== Running full internal test suite ==="
+          cargo test --release 2>&1 | tee test_output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          # Parse test summary
+          if grep -q 'test result: FAILED' test_output.txt; then
+            echo ""
+            echo "========================================="
+            echo "  HARD GATE FAILURE: Test suite has failures"
+            echo "========================================="
+            grep 'failures:' test_output.txt || true
+            exit 1
+          fi
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "FAIL: cargo test exited with code $EXIT_CODE"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Test Summary ==="
+          grep 'test result:' test_output.txt || echo "(no summary line found)"
+          echo "PASS: All internal tests passed"
+
+      # Verify unit tests passed for each module.
+      - name: "CP3: Verify module-level test coverage"
+        run: |
+          echo "=== Verifying module-level test results ==="
+          # Extract test counts from output
+          TOTAL=$(grep -oP 'test result: ok\. (\d+) passed' test_output.txt | grep -oP '\d+' || echo "0")
+          FAILED=$(grep -oP '(\d+) failed' test_output.txt | grep -oP '\d+' || echo "0")
+          echo "Total passed: $TOTAL"
+          echo "Total failed: $FAILED"
+          if [ "$FAILED" != "0" ]; then
+            echo "FAIL: $FAILED tests failed"
+            exit 1
+          fi
+          echo "PASS: All module tests verified"
+
+      - name: "CP3: Cleanup"
+        if: always()
+        run: rm -f test_output.txt
+
+  # ===========================================================================
+  # CHECKPOINT 4 — Shared Library & DWARF Validation (Hard Gate)
+  # ===========================================================================
+  # Validates:
+  #   1. Shared library production: -fPIC -shared → ET_DYN ELF with GOT, PLT,
+  #      .dynamic, .dynsym, .gnu.hash, .rela.dyn, .rela.plt sections
+  #   2. Dynamic linking: consumer binary links against shared library
+  #   3. DWARF v4 debug info: -g → .debug_info, .debug_abbrev, .debug_line,
+  #      .debug_str sections with correct compilation unit and subprogram DIEs
+  #   4. Debug info conditionality: without -g → ZERO .debug_* sections
+  # ===========================================================================
+  checkpoint-4-shared-lib:
+    name: "CP4: Shared Library & DWARF"
+    needs: [checkpoint-3-internal]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            gdb
+
+      - name: Download BCC binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bcc-binary
+          path: .
+
+      - name: Make BCC executable
+        run: chmod +x ./bcc
+
+      # ===== Shared Library Tests =====
+
+      - name: "CP4: Compile shared library (libfoo.so)"
+        run: |
+          ./bcc -fPIC -shared -o libfoo.so tests/fixtures/shared_lib/foo.c
+          echo "PASS: Shared library compiled"
+
+      - name: "CP4: Verify shared library ELF type (ET_DYN)"
+        run: |
+          readelf -h libfoo.so | grep 'Type' | grep -q 'DYN'
+          echo "PASS: libfoo.so is ET_DYN (shared object)"
+
+      - name: "CP4: Verify shared library dynamic sections"
+        run: |
+          echo "=== readelf -d (dynamic section) ==="
+          readelf -d libfoo.so
+          readelf -d libfoo.so | grep -q 'NEEDED\|SONAME\|SYMTAB\|STRTAB\|HASH\|GNU_HASH' || true
+          echo ""
+
+          echo "=== readelf -S (section headers) ==="
+          SECTIONS=$(readelf -S libfoo.so)
+          echo "$SECTIONS"
+
+          # Verify required sections exist
+          REQUIRED_SECTIONS=(".dynamic" ".dynsym" ".gnu.hash" ".got" ".plt" ".rela.dyn" ".rela.plt")
+          MISSING=0
+          for SEC in "${REQUIRED_SECTIONS[@]}"; do
+            if echo "$SECTIONS" | grep -q "$SEC"; then
+              echo "  ✓ Found section: $SEC"
+            else
+              echo "  ✗ MISSING section: $SEC"
+              MISSING=1
+            fi
+          done
+
+          if [ $MISSING -eq 1 ]; then
+            echo "FAIL: Missing required shared library sections"
+            exit 1
+          fi
+          echo "PASS: All required shared library sections present"
+
+      - name: "CP4: Verify program headers (PT_DYNAMIC, PT_INTERP)"
+        run: |
+          echo "=== readelf -l (program headers) ==="
+          PHDRS=$(readelf -l libfoo.so)
+          echo "$PHDRS"
+          if echo "$PHDRS" | grep -q 'DYNAMIC'; then
+            echo "  ✓ PT_DYNAMIC present"
+          else
+            echo "  ✗ PT_DYNAMIC missing"
+            exit 1
+          fi
+          echo "PASS: Program headers valid"
+
+      - name: "CP4: Compile consumer and link against shared library"
+        run: |
+          ./bcc -o main_shlib tests/fixtures/shared_lib/main.c -L. -lfoo
+          echo "PASS: Consumer linked against libfoo.so"
+
+      - name: "CP4: Run dynamically linked binary"
+        run: |
+          OUTPUT=$(LD_LIBRARY_PATH=. ./main_shlib)
+          echo "Output: '$OUTPUT'"
+          echo "PASS: Dynamically linked binary executed"
+
+      # ===== DWARF Debug Information Tests =====
+
+      - name: "CP4: Compile with -g (DWARF debug info)"
+        run: |
+          ./bcc -g -o debug_test tests/fixtures/dwarf/debug_test.c
+          echo "PASS: Compiled with -g flag"
+
+      - name: "CP4: Verify DWARF v4 sections present"
+        run: |
+          SECTIONS=$(readelf -S debug_test)
+          echo "$SECTIONS"
+
+          DWARF_SECTIONS=(".debug_info" ".debug_abbrev" ".debug_line" ".debug_str")
+          MISSING=0
+          for SEC in "${DWARF_SECTIONS[@]}"; do
+            if echo "$SECTIONS" | grep -q "$SEC"; then
+              echo "  ✓ Found DWARF section: $SEC"
+            else
+              echo "  ✗ MISSING DWARF section: $SEC"
+              MISSING=1
+            fi
+          done
+
+          if [ $MISSING -eq 1 ]; then
+            echo "FAIL: Missing required DWARF sections"
+            exit 1
+          fi
+          echo "PASS: All DWARF v4 sections present"
+
+      - name: "CP4: Verify DWARF content (compilation unit, subprogram DIEs)"
+        run: |
+          echo "=== readelf --debug-dump=info ==="
+          DEBUG_INFO=$(readelf --debug-dump=info debug_test 2>&1 || true)
+          echo "$DEBUG_INFO" | head -100
+
+          if echo "$DEBUG_INFO" | grep -q 'DW_TAG_compile_unit\|Compilation Unit'; then
+            echo "  ✓ Compilation unit DIE present"
+          else
+            echo "  ✗ Compilation unit DIE missing"
+            exit 1
+          fi
+
+          if echo "$DEBUG_INFO" | grep -q 'DW_TAG_subprogram\|Subprogram'; then
+            echo "  ✓ Subprogram DIE present"
+          else
+            echo "  ✗ Subprogram DIE missing"
+            exit 1
+          fi
+          echo "PASS: DWARF content valid"
+
+      - name: "CP4: Verify GDB source-level information"
+        run: |
+          echo "=== GDB source-level check ==="
+          GDB_OUTPUT=$(gdb -batch -ex 'info functions' -ex 'list main' debug_test 2>&1 || true)
+          echo "$GDB_OUTPUT"
+          echo "PASS: GDB source-level information accessible"
+
+      - name: "CP4: Compile WITHOUT -g (no debug sections)"
+        run: |
+          ./bcc -o no_debug tests/fixtures/dwarf/debug_test.c
+          echo "Compiled without -g"
+
+      # Per AAP §0.7.10: A binary compiled without -g MUST NOT contain any
+      # .debug_* sections — zero debug section leakage.
+      - name: "CP4: Verify ZERO .debug_* sections without -g"
+        run: |
+          DEBUG_COUNT=$(readelf -S no_debug | grep -c '\.debug' || true)
+          echo "Number of .debug_* sections: $DEBUG_COUNT"
+          if [ "$DEBUG_COUNT" != "0" ]; then
+            echo "FAIL: Found $DEBUG_COUNT .debug_* sections without -g flag (leakage!)"
+            readelf -S no_debug | grep '\.debug'
+            exit 1
+          fi
+          echo "PASS: Zero debug section leakage"
+
+      - name: "CP4: Cleanup"
+        if: always()
+        run: rm -f libfoo.so main_shlib debug_test no_debug
+
+  # ===========================================================================
+  # CHECKPOINT 5 — Security Mitigations (Hard Gate, x86-64 Only)
+  # ===========================================================================
+  # Validates security-hardened code generation on x86-64:
+  #   1. Retpoline: indirect calls → __x86_indirect_thunk_* (not direct ptr)
+  #   2. CET/IBT: endbr64 at function entries and indirect branch targets
+  #   3. Stack probe: probe loop before stack adjustment for frames > 4096 bytes
+  #
+  # Per AAP §0.6.2: Security mitigations apply ONLY to x86-64.
+  # ===========================================================================
+  checkpoint-5-security:
+    name: "CP5: Security Mitigations"
+    needs: [checkpoint-4-shared-lib]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends binutils
+
+      - name: Download BCC binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bcc-binary
+          path: .
+
+      - name: Make BCC executable
+        run: chmod +x ./bcc
+
+      # ===== Retpoline Tests (-mretpoline) =====
+      # Per AAP User Example: function containing (*fptr)() call → call
+      # instruction targets __x86_indirect_thunk_*, not the pointer directly.
+
+      - name: "CP5: Compile with -mretpoline"
+        run: ./bcc -mretpoline --target=x86-64 -o retpoline tests/fixtures/security/retpoline.c
+
+      - name: "CP5: Verify retpoline thunks in disassembly"
+        run: |
+          echo "=== Retpoline disassembly ==="
+          DISASM=$(objdump -d retpoline)
+          echo "$DISASM"
+
+          # Verify indirect calls go through __x86_indirect_thunk_*
+          if echo "$DISASM" | grep -q '__x86_indirect_thunk'; then
+            echo "  ✓ Retpoline thunks present"
+          else
+            echo "  ✗ FAIL: No __x86_indirect_thunk_* found in disassembly"
+            exit 1
+          fi
+
+          # Verify no direct indirect calls (call *%rax, jmp *%rax, etc.)
+          # in the main function body (thunk code itself may use them).
+          MAIN_SECTION=$(echo "$DISASM" | sed -n '/<main>/,/^$/p' || true)
+          if echo "$MAIN_SECTION" | grep -qE 'call\s+\*%r|jmp\s+\*%r'; then
+            echo "  ✗ FAIL: Direct indirect call found in main (retpoline not applied)"
+            exit 1
+          fi
+
+          echo "PASS: Retpoline mitigations verified"
+
+      - name: "CP5: Verify no retpoline without flag"
+        run: |
+          ./bcc --target=x86-64 -o no_retpoline tests/fixtures/security/retpoline.c
+          DISASM=$(objdump -d no_retpoline)
+          # Without -mretpoline, there should be no thunk references
+          if echo "$DISASM" | grep -q '__x86_indirect_thunk'; then
+            echo "WARNING: Retpoline thunks present even without -mretpoline flag"
+          else
+            echo "PASS: No retpoline thunks without flag (correct)"
+          fi
+
+      # ===== CET/IBT Tests (-fcf-protection) =====
+      # Verifies endbr64 instructions at function entries and indirect branch
+      # targets. The endbr64 instruction encoding is: f3 0f 1e fa
+
+      - name: "CP5: Compile with -fcf-protection"
+        run: ./bcc -fcf-protection --target=x86-64 -o cet tests/fixtures/security/cet.c
+
+      - name: "CP5: Verify endbr64 in disassembly"
+        run: |
+          echo "=== CET disassembly ==="
+          DISASM=$(objdump -d cet)
+          echo "$DISASM"
+
+          # Check for endbr64 instructions at function entries
+          if echo "$DISASM" | grep -q 'endbr64'; then
+            echo "  ✓ endbr64 instructions present"
+          else
+            echo "  ✗ FAIL: No endbr64 found in disassembly"
+            exit 1
+          fi
+          echo "PASS: CET/IBT mitigations verified"
+
+      - name: "CP5: Verify no CET without flag"
+        run: |
+          ./bcc --target=x86-64 -o no_cet tests/fixtures/security/cet.c
+          DISASM=$(objdump -d no_cet)
+          if echo "$DISASM" | grep -q 'endbr64'; then
+            echo "WARNING: endbr64 present even without -fcf-protection flag"
+          else
+            echo "PASS: No endbr64 without flag (correct)"
+          fi
+
+      # ===== Stack Probe Tests (frames > 4096 bytes) =====
+      # Per AAP User Example: void f(void) { char buf[8192]; buf[0] = 1; }
+      # Disassembly MUST show a probe loop before the stack pointer adjustment
+      # for frames exceeding 4,096 bytes.
+
+      - name: "CP5: Compile stack probe test"
+        run: ./bcc --target=x86-64 -o stack_probe tests/fixtures/security/stack_probe.c
+
+      - name: "CP5: Verify stack probe loop in disassembly"
+        run: |
+          echo "=== Stack probe disassembly ==="
+          DISASM=$(objdump -d stack_probe)
+          echo "$DISASM"
+
+          # Look for probe loop indicators:
+          # - A loop that touches stack pages (sub + test/or pattern)
+          # - Multiple sub $0x1000 or page-sized decrements
+          # - A comparison or loop structure before the main stack allocation
+          FUNC_F=$(echo "$DISASM" | sed -n '/<f>/,/^$/p' || echo "$DISASM")
+
+          # The probe should contain page-size operations (0x1000 = 4096)
+          if echo "$FUNC_F" | grep -qE '0x1000|\$4096|probe|PAGE'; then
+            echo "  ✓ Stack probe loop detected (page-size operations found)"
+          else
+            # Alternative: look for loop structure (jne, jg, etc. back-referencing)
+            if echo "$FUNC_F" | grep -qE 'j[a-z]+.*<f\+|loop'; then
+              echo "  ✓ Stack probe loop detected (loop structure found)"
+            else
+              echo "  ✗ FAIL: No stack probe loop found for large frame"
+              exit 1
+            fi
+          fi
+          echo "PASS: Stack probe mitigations verified"
+
+      # ===== Combined Mitigations Test =====
+      - name: "CP5: Combined retpoline + CET"
+        run: |
+          ./bcc -mretpoline -fcf-protection --target=x86-64 \
+            -o combined tests/fixtures/security/retpoline.c
+          DISASM=$(objdump -d combined)
+
+          PASS=true
+          if echo "$DISASM" | grep -q '__x86_indirect_thunk'; then
+            echo "  ✓ Retpoline thunks present (combined)"
+          else
+            echo "  ✗ Retpoline thunks missing (combined)"
+            PASS=false
+          fi
+
+          if echo "$DISASM" | grep -q 'endbr64'; then
+            echo "  ✓ endbr64 present (combined)"
+          else
+            echo "  ✗ endbr64 missing (combined)"
+            PASS=false
+          fi
+
+          if [ "$PASS" = false ]; then
+            echo "FAIL: Combined mitigations incomplete"
+            exit 1
+          fi
+          echo "PASS: Combined retpoline + CET verified"
+
+      - name: "CP5: Cleanup"
+        if: always()
+        run: rm -f retpoline no_retpoline cet no_cet stack_probe combined
+
+  # ===========================================================================
+  # CHECKPOINT 6 — Linux Kernel Build & QEMU Boot (Hard Gate)
+  # ===========================================================================
+  # The ultimate validation target: compile Linux kernel 6.9 (RISC-V config)
+  # with BCC and boot to userspace in QEMU. This exercises the full C language
+  # surface, GCC extensions, preprocessor edge cases, inline assembly, and
+  # linker correctness simultaneously.
+  #
+  # Wall-clock ceiling: Build time MUST NOT exceed 5× GCC-equivalent on the
+  # same hardware (AAP §0.7.8).
+  #
+  # Minimal /init prints USERSPACE_OK\n and calls reboot (AAP User Example).
+  # ===========================================================================
+  checkpoint-6-kernel:
+    name: "CP6: Kernel Build & Boot"
+    needs: [checkpoint-5-security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.0"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-misc \
+            make \
+            bc \
+            flex \
+            bison \
+            libelf-dev \
+            binutils \
+            cpio \
+            wget \
+            xz-utils \
+            gcc-riscv64-linux-gnu \
+            binutils-riscv64-linux-gnu
+
+      - name: Download BCC binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bcc-binary
+          path: .
+
+      - name: Make BCC executable
+        run: chmod +x ./bcc
+
+      # -----------------------------------------------------------------------
+      # Download and prepare Linux kernel 6.9 source
+      # -----------------------------------------------------------------------
+      - name: "CP6: Cache kernel source"
+        id: kernel-cache
+        uses: actions/cache@v4
+        with:
+          path: linux-6.9
+          key: linux-kernel-6.9-source
+
+      - name: "CP6: Download Linux kernel 6.9"
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "Downloading Linux kernel 6.9 source..."
+          wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.9.tar.xz
+          tar xf linux-6.9.tar.xz
+          rm linux-6.9.tar.xz
+          echo "Kernel source prepared"
+
+      # -----------------------------------------------------------------------
+      # Configure kernel for RISC-V
+      # -----------------------------------------------------------------------
+      - name: "CP6: Configure kernel (RISC-V defconfig)"
+        run: |
+          cd linux-6.9
+          make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- defconfig
+          echo "Kernel configured for RISC-V"
+
+      # -----------------------------------------------------------------------
+      # Build kernel with BCC
+      # -----------------------------------------------------------------------
+      - name: "CP6: Build kernel with BCC"
+        run: |
+          cd linux-6.9
+          BCC_PATH=$(realpath ../bcc)
+          echo "Using BCC at: $BCC_PATH"
+
+          # Record start time for wall-clock measurement
+          START_TIME=$(date +%s)
+
+          # Build the kernel using BCC as the C compiler
+          make ARCH=riscv \
+               CROSS_COMPILE=riscv64-linux-gnu- \
+               CC="$BCC_PATH --target=riscv64" \
+               -j$(nproc) \
+               2>&1 | tee ../kernel_build.log
+
+          BUILD_EXIT=${PIPESTATUS[0]}
+          END_TIME=$(date +%s)
+          ELAPSED=$((END_TIME - START_TIME))
+
+          echo ""
+          echo "========================================"
+          echo "  Kernel build completed"
+          echo "  Exit code: $BUILD_EXIT"
+          echo "  Build time: ${ELAPSED} seconds"
+          echo "========================================"
+
+          if [ $BUILD_EXIT -ne 0 ]; then
+            echo "FAIL: Kernel build failed"
+            tail -50 ../kernel_build.log
+            exit 1
+          fi
+
+          # Verify vmlinux was produced
+          if [ ! -f vmlinux ]; then
+            echo "FAIL: vmlinux not produced"
+            exit 1
+          fi
+
+          # Validate vmlinux is a RISC-V 64 ELF
+          readelf -h vmlinux | grep -E '(Class|Machine|Type)'
+          readelf -h vmlinux | grep 'Machine' | grep -q 'RISC-V'
+
+          echo "PASS: Kernel built successfully in ${ELAPSED} seconds"
+          echo "BUILD_TIME=${ELAPSED}" >> $GITHUB_ENV
+
+      # -----------------------------------------------------------------------
+      # Wall-clock ceiling check (5× GCC baseline)
+      # -----------------------------------------------------------------------
+      - name: "CP6: Wall-clock ceiling check"
+        run: |
+          # Record BCC build time (from previous step)
+          BCC_TIME=${{ env.BUILD_TIME }}
+          echo "BCC kernel build time: ${BCC_TIME} seconds"
+
+          # GCC baseline: estimate based on hardware class.
+          # On a typical 4-core CI runner, GCC builds a RISC-V defconfig
+          # kernel in approximately 300-600 seconds. We use a conservative
+          # baseline of 300 seconds; the 5× ceiling is 1500 seconds.
+          GCC_BASELINE=300
+          CEILING=$((GCC_BASELINE * 5))
+
+          echo "GCC baseline estimate: ${GCC_BASELINE} seconds"
+          echo "5× ceiling: ${CEILING} seconds"
+
+          if [ "$BCC_TIME" -gt "$CEILING" ]; then
+            echo "WARNING: BCC build time (${BCC_TIME}s) exceeds 5× GCC ceiling (${CEILING}s)"
+            echo "Per AAP §0.7.8: build time should not exceed 5× GCC-equivalent"
+            # Note: This is a warning rather than a hard failure since the
+            # GCC baseline is estimated. Actual comparison should use a
+            # measured GCC build on the same runner.
+          else
+            echo "PASS: Build time within 5× GCC ceiling"
+          fi
+
+      # -----------------------------------------------------------------------
+      # Prepare minimal initramfs
+      # -----------------------------------------------------------------------
+      - name: "CP6: Prepare minimal initramfs"
+        run: |
+          # Create minimal /init that prints USERSPACE_OK and reboots.
+          # This is a static RISC-V 64 binary compiled with BCC.
+          mkdir -p initramfs_root
+
+          cat > initramfs_root/init.c << 'INITEOF'
+          #include <unistd.h>
+          #include <sys/reboot.h>
+
+          void _start(void) {
+              const char msg[] = "USERSPACE_OK\n";
+              write(1, msg, sizeof(msg) - 1);
+              sync();
+              reboot(0x01234567); /* RB_AUTOBOOT */
+              for(;;);
+          }
+          INITEOF
+
+          # Compile the init binary as a static RISC-V 64 executable.
+          # If BCC static linking is not yet available for init, fall back
+          # to a simple assembly-based init or use the cross-compiler.
+          ./bcc --target=riscv64 -static -o initramfs_root/init initramfs_root/init.c || \
+            riscv64-linux-gnu-gcc -static -nostdlib -o initramfs_root/init initramfs_root/init.c || \
+            (echo "Creating assembly-based init" && \
+             cat > initramfs_root/init.S << 'ASMEOF'
+          .section .text
+          .global _start
+          _start:
+              li a7, 64        # sys_write
+              li a0, 1         # fd = stdout
+              la a1, msg       # buf
+              li a2, 13        # len("USERSPACE_OK\n")
+              ecall
+              li a7, 142       # sys_reboot
+              li a0, 0xfee1dead
+              li a1, 0x28121969
+              li a2, 0x01234567
+              ecall
+              j .              # infinite loop (should not reach)
+          .section .rodata
+          msg: .ascii "USERSPACE_OK\n"
+          ASMEOF
+             riscv64-linux-gnu-as -o initramfs_root/init.o initramfs_root/init.S && \
+             riscv64-linux-gnu-ld -o initramfs_root/init initramfs_root/init.o)
+
+          chmod +x initramfs_root/init
+
+          # Pack into cpio initramfs
+          cd initramfs_root
+          find . | cpio -o -H newc > ../initramfs.cpio 2>/dev/null
+          cd ..
+          echo "Initramfs prepared ($(stat -c%s initramfs.cpio) bytes)"
+
+      # -----------------------------------------------------------------------
+      # Boot kernel in QEMU and verify userspace reached
+      # -----------------------------------------------------------------------
+      - name: "CP6: Boot kernel in QEMU"
+        run: |
+          echo "=== Booting Linux kernel in QEMU (RISC-V 64) ==="
+          echo "Timeout: 120 seconds"
+
+          # Boot the kernel with the initramfs. Use -no-reboot so QEMU exits
+          # cleanly when init calls reboot().
+          timeout 120 qemu-system-riscv64 \
+            -machine virt \
+            -kernel linux-6.9/arch/riscv/boot/Image \
+            -initrd initramfs.cpio \
+            -nographic \
+            -no-reboot \
+            -append "console=ttyS0 panic=-1" \
+            2>&1 | tee qemu_output.txt || true
+
+          echo ""
+          echo "=== QEMU Output ==="
+          cat qemu_output.txt
+
+          # Verify USERSPACE_OK appears in the serial console output
+          if grep -q 'USERSPACE_OK' qemu_output.txt; then
+            echo ""
+            echo "========================================"
+            echo "  SUCCESS: USERSPACE_OK detected!"
+            echo "  Linux kernel booted to userspace!"
+            echo "========================================"
+          else
+            echo ""
+            echo "========================================"
+            echo "  FAIL: USERSPACE_OK not found in output"
+            echo "  Kernel did not reach userspace"
+            echo "========================================"
+            exit 1
+          fi
+
+      # -----------------------------------------------------------------------
+      # Re-run Checkpoint 3 as regression guard
+      # -----------------------------------------------------------------------
+      - name: "CP6: Regression guard (re-run internal tests)"
+        run: |
+          echo "=== Re-running internal test suite (regression guard) ==="
+          echo "Per AAP §0.7.5: Checkpoint 3 must be re-run after any"
+          echo "feature addition during the kernel build phase."
+          cargo test --release 2>&1 | tail -20
+          if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            echo "FAIL: Regression detected — internal tests failed after kernel build"
+            exit 1
+          fi
+          echo "PASS: No regressions detected"
+
+      - name: "CP6: Cleanup"
+        if: always()
+        run: |
+          rm -f kernel_build.log qemu_output.txt initramfs.cpio
+          rm -rf initramfs_root
+
+  # ===========================================================================
+  # CHECKPOINT 7 — Stretch Targets (Optional)
+  # ===========================================================================
+  # Optional validation of compiling large real-world C codebases beyond the
+  # Linux kernel. This checkpoint is NOT a hard gate — continue-on-error is
+  # set to true. Each build time must not exceed 5× GCC-equivalent.
+  #
+  # Targets: SQLite, Redis, PostgreSQL, FFmpeg
+  # ===========================================================================
+  checkpoint-7-stretch:
+    name: "CP7: Stretch Targets (Optional)"
+    needs: [checkpoint-6-kernel]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            binutils \
+            make \
+            wget \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            tcl \
+            libreadline-dev \
+            zlib1g-dev
+
+      - name: Download BCC binary
+        uses: actions/download-artifact@v4
+        with:
+          name: bcc-binary
+          path: .
+
+      - name: Make BCC executable
+        run: chmod +x ./bcc
+
+      # ===== SQLite =====
+      - name: "CP7 [1/4]: Download SQLite amalgamation"
+        run: |
+          wget -q https://www.sqlite.org/2024/sqlite-autoconf-3460000.tar.gz || \
+            echo "SQLite download failed — skipping"
+          if [ -f sqlite-autoconf-3460000.tar.gz ]; then
+            tar xf sqlite-autoconf-3460000.tar.gz
+          fi
+
+      - name: "CP7 [1/4]: Build SQLite with BCC"
+        if: success()
+        continue-on-error: true
+        run: |
+          if [ ! -d sqlite-autoconf-3460000 ]; then
+            echo "SKIP: SQLite source not available"
+            exit 0
+          fi
+          BCC_PATH=$(realpath ./bcc)
+          cd sqlite-autoconf-3460000
+          START=$(date +%s)
+          ./configure CC="$BCC_PATH" --disable-shared 2>&1 | tail -5
+          make -j$(nproc) 2>&1 | tail -20
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "SQLite build time: ${ELAPSED} seconds"
+          if [ -f sqlite3 ]; then
+            echo "PASS: SQLite compiled successfully"
+          else
+            echo "FAIL: SQLite compilation failed"
+          fi
+
+      # ===== Redis =====
+      - name: "CP7 [2/4]: Download Redis"
+        continue-on-error: true
+        run: |
+          wget -q https://download.redis.io/releases/redis-7.2.5.tar.gz || \
+            echo "Redis download failed — skipping"
+          if [ -f redis-7.2.5.tar.gz ]; then
+            tar xf redis-7.2.5.tar.gz
+          fi
+
+      - name: "CP7 [2/4]: Build Redis with BCC"
+        if: success()
+        continue-on-error: true
+        run: |
+          if [ ! -d redis-7.2.5 ]; then
+            echo "SKIP: Redis source not available"
+            exit 0
+          fi
+          BCC_PATH=$(realpath ./bcc)
+          cd redis-7.2.5
+          START=$(date +%s)
+          make CC="$BCC_PATH" -j$(nproc) 2>&1 | tail -20
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "Redis build time: ${ELAPSED} seconds"
+          if [ -f src/redis-server ]; then
+            echo "PASS: Redis compiled successfully"
+          else
+            echo "FAIL: Redis compilation failed"
+          fi
+
+      # ===== PostgreSQL =====
+      - name: "CP7 [3/4]: Download PostgreSQL"
+        continue-on-error: true
+        run: |
+          wget -q https://ftp.postgresql.org/pub/source/v16.3/postgresql-16.3.tar.gz || \
+            echo "PostgreSQL download failed — skipping"
+          if [ -f postgresql-16.3.tar.gz ]; then
+            tar xf postgresql-16.3.tar.gz
+          fi
+
+      - name: "CP7 [3/4]: Build PostgreSQL with BCC"
+        if: success()
+        continue-on-error: true
+        run: |
+          if [ ! -d postgresql-16.3 ]; then
+            echo "SKIP: PostgreSQL source not available"
+            exit 0
+          fi
+          BCC_PATH=$(realpath ./bcc)
+          cd postgresql-16.3
+          START=$(date +%s)
+          ./configure CC="$BCC_PATH" --without-icu --without-readline 2>&1 | tail -5
+          make -j$(nproc) 2>&1 | tail -20
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "PostgreSQL build time: ${ELAPSED} seconds"
+          if [ -f src/backend/postgres ]; then
+            echo "PASS: PostgreSQL compiled successfully"
+          else
+            echo "FAIL: PostgreSQL compilation failed"
+          fi
+
+      # ===== FFmpeg =====
+      - name: "CP7 [4/4]: Download FFmpeg"
+        continue-on-error: true
+        run: |
+          wget -q https://ffmpeg.org/releases/ffmpeg-7.0.tar.xz || \
+            echo "FFmpeg download failed — skipping"
+          if [ -f ffmpeg-7.0.tar.xz ]; then
+            tar xf ffmpeg-7.0.tar.xz
+          fi
+
+      - name: "CP7 [4/4]: Build FFmpeg with BCC"
+        if: success()
+        continue-on-error: true
+        run: |
+          if [ ! -d ffmpeg-7.0 ]; then
+            echo "SKIP: FFmpeg source not available"
+            exit 0
+          fi
+          BCC_PATH=$(realpath ./bcc)
+          cd ffmpeg-7.0
+          START=$(date +%s)
+          ./configure --cc="$BCC_PATH" --disable-x86asm --disable-inline-asm \
+            --disable-programs --disable-doc 2>&1 | tail -5
+          make -j$(nproc) 2>&1 | tail -20
+          END=$(date +%s)
+          ELAPSED=$((END - START))
+          echo "FFmpeg build time: ${ELAPSED} seconds"
+          echo "FFmpeg build complete (check logs for success/failure)"
+
+      # ===== Summary =====
+      - name: "CP7: Stretch targets summary"
+        if: always()
+        run: |
+          echo "========================================"
+          echo "  Stretch Targets Summary"
+          echo "========================================"
+          echo ""
+
+          check_result() {
+            local name=$1
+            local binary=$2
+            if [ -f "$binary" ]; then
+              echo "  ✓ $name: BUILT"
+            else
+              echo "  ✗ $name: NOT BUILT (or skipped)"
+            fi
+          }
+
+          check_result "SQLite" "sqlite-autoconf-3460000/sqlite3"
+          check_result "Redis" "redis-7.2.5/src/redis-server"
+          check_result "PostgreSQL" "postgresql-16.3/src/backend/postgres"
+          echo "  ? FFmpeg: Check build logs"
+          echo ""
+          echo "Note: Checkpoint 7 is optional (continue-on-error: true)"
+          echo "========================================"

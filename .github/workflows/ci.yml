@@ -1,0 +1,126 @@
+# =============================================================================
+# BCC CI — Primary Continuous Integration Pipeline
+# =============================================================================
+# Validates build, tests, linting, and code formatting for the BCC
+# (Blitzy's C Compiler) project on every push and pull request.
+#
+# BCC is a zero-external-dependency Rust project (edition 2021) that compiles
+# C source code into native Linux ELF executables for x86-64, i686, AArch64,
+# and RISC-V 64 target architectures.
+#
+# This workflow runs a single job with sequential steps:
+#   1. Format check (cargo fmt)
+#   2. Lint check (cargo clippy)
+#   3. Release build (cargo build --release)
+#   4. Test suite (cargo test --release)
+#
+# The single-job approach avoids redundant compilation across parallel jobs,
+# which is efficient for a zero-dependency project where only std is compiled.
+# =============================================================================
+
+name: BCC CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+
+env:
+  # 64 MiB worker thread stack — mandated by project requirements for handling
+  # deeply nested kernel macro expansions and recursive AST structures.
+  RUST_MIN_STACK: "67108864"
+  # Enable colored terminal output for readable CI logs.
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    name: Build & Test
+    runs-on: ubuntu-24.04
+
+    steps:
+      # -----------------------------------------------------------------------
+      # Step 1: Checkout repository
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Step 2: Install Rust stable toolchain (1.93.0) with clippy and rustfmt
+      # -----------------------------------------------------------------------
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.0"
+          components: clippy, rustfmt
+
+      # -----------------------------------------------------------------------
+      # Step 3: Cache Cargo registry, git index, and compiled artifacts
+      # -----------------------------------------------------------------------
+      # Even though BCC has zero external crate dependencies, caching the
+      # compiled target directory and Cargo registry metadata speeds up
+      # subsequent CI runs by reusing compiled std library artifacts and
+      # incremental compilation state.
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # -----------------------------------------------------------------------
+      # Step 4: Format check — fast, catches style issues early
+      # -----------------------------------------------------------------------
+      # Validates all source files against rustfmt.toml configuration.
+      # --check ensures no modifications are made, only verification.
+      # --all checks all workspace crates (BCC is a single crate).
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      # -----------------------------------------------------------------------
+      # Step 5: Clippy lint — catches common mistakes and enforces quality
+      # -----------------------------------------------------------------------
+      # -D warnings treats all Clippy warnings as errors for strict quality
+      # enforcement. Validates against clippy.toml configuration in repo root.
+      - name: Run Clippy lints
+        run: cargo clippy -- -D warnings
+
+      # -----------------------------------------------------------------------
+      # Step 6: Release build — full optimized compilation
+      # -----------------------------------------------------------------------
+      # Produces the bcc binary at target/release/bcc with the release profile
+      # settings from Cargo.toml (opt-level=3, lto=thin, codegen-units=1).
+      # This validates that the entire codebase compiles under optimizations.
+      - name: Build release binary
+        run: cargo build --release
+
+      # -----------------------------------------------------------------------
+      # Step 7: Run test suite — all unit and integration tests
+      # -----------------------------------------------------------------------
+      # Executes all tests in release mode, including:
+      #   - Unit tests within src/ modules (#[test] functions)
+      #   - Integration tests in tests/ (checkpoint1 through checkpoint7)
+      # The --release flag ensures tests run against the optimized binary,
+      # matching the production configuration.
+      - name: Run tests
+        run: cargo test --release
+
+      # -----------------------------------------------------------------------
+      # Step 8: Upload built binary as artifact
+      # -----------------------------------------------------------------------
+      # Makes the compiled bcc binary available for downstream workflows
+      # (e.g., the checkpoint validation workflow) and manual inspection.
+      - name: Upload bcc binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bcc-binary
+          path: target/release/bcc
+          retention-days: 7

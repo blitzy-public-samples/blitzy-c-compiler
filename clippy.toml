@@ -1,0 +1,12 @@
+# Clippy lint configuration for BCC (Blitzy's C Compiler)
+# Adjusted thresholds for compiler-specific code patterns
+
+# Compiler types like CType, IrType, and AST nodes involve deep nesting
+type-complexity-threshold = 500
+
+# Some compiler pipeline functions require many parameters
+too-many-arguments-threshold = 10
+
+# Compiler algorithms (register allocation, dominance, instruction selection)
+# inherently have high cognitive complexity
+cognitive-complexity-threshold = 100

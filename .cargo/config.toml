@@ -1,0 +1,25 @@
+# Cargo build configuration for BCC (Blitzy's C Compiler)
+#
+# Key settings:
+# - RUST_MIN_STACK: Sets the main thread stack size to 64 MiB (67,108,864 bytes)
+#   Worker threads are separately configured in src/main.rs via
+#   std::thread::Builder::new().stack_size(64 * 1024 * 1024)
+#   This environment variable ensures the main thread also has sufficient stack
+#   for deeply nested Linux kernel macro expansions and recursive parsing.
+#
+# Architectural notes:
+# - BCC operates in standalone backend mode: it includes its own built-in
+#   assembler and linker for all four target architectures (x86-64, i686,
+#   AArch64, RISC-V 64). No external toolchain components (as, ld, llvm-mc)
+#   are invoked at any point in the compilation pipeline.
+# - The 512-depth recursion limit is enforced in source code (parser and
+#   macro expander), not via Cargo configuration.
+# - The zero-dependency mandate means no external crates; only the Rust
+#   standard library is used.
+
+[env]
+# 64 MiB stack for the main thread (64 * 1024 * 1024 = 67,108,864)
+# Required by project specification for handling deeply nested constructs
+# such as Linux kernel macro expansions during preprocessing and recursive
+# descent parsing of complex translation units.
+RUST_MIN_STACK = "67108864"
